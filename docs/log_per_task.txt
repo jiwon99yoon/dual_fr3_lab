@@ -1,0 +1,156 @@
+# dual_fr3_lift
+
+환경: Isaac-Lift-Cube-DualFR3-v0 (오른팔 joint pos + binary gripper, 왼팔 ready 고정)
+씬: 바닥 위 로봇(base z=0.405) + 박스 테이블(상판 0.6) + DexCube, obs 36 / action 8
+
+2026-07-24_13-24-51 : 첫 run. franka 기본 세팅 상속 (커리큘럼 10k 스텝, lifted 문턱 상판+8cm), 4096 envs, 1500 iter.
+                      -> 실패: it~417 커리큘럼(action_rate/joint_vel 페널티 1000배) 발동 시점에 아직 들기 미발견 상태라
+                         "안 움직이는" local optimum으로 붕괴 (mean reward 2.5 -> -0.2, entropy -8.5까지 붕괴)
+2026-07-24_14-46-05 : 수정 1차 (lifted 문턱 +4cm 완화, 커리큘럼 30k 스텝 지연, max_iter 3000). ~1895 iter에서 중단.
+                      -> 파지 성공 (lifting 13.9/15, mean reward 134). 아래 16-07-02와 사실상 동일 세팅.
+2026-07-24_16-07-02 : 위와 동일 세팅 3000 iter 완주. -> 성공: mean reward 126, lifting 14.0/15, goal_tracking 10.9/16,
+                      커리큘럼(it1250) 생존. 남은 문제: fine_grained 0.59/5 (목표 5cm 근방 안착 불안정, 아직 상승 중이었음),
+                      목표 y가 -0.05까지 열려 있어 오른팔이 왼팔과 충돌하는 케이스 발생.
+
+2026-07-25_18-40-22 : 아래 수정사항 전체 적용 후 첫 run (5000 iter 완주).
+                      -> 지표상 최고 (pos err 0.12) 그러나 play에서 "서커스" 거동: 잡지 않고 손등에
+                         얹어 나르는 exploit. 근거: reaching 0.86 -> 0.07 붕괴 (이 지표가 사실상 파지 유지율).
+                         원인: tracking gate가 "높이"만 봄 + fine_grained 10 강화가 exploit에 유리.
+
+--- 위 run부터 반영된 env 수정 (2026-07-25) ---
+  - 목표 y 범위 (-0.45,-0.05) -> (-0.45,-0.15) : 왼팔 충돌 방지
+  - object_goal_tracking_fine_grained weight 5 -> 10 : 목표 안착 강화
+  - max_iterations 3000 -> 5000
+  - 커리큘럼을 스텝 기반(30k) -> 성능 기반으로 교체 (lifting 초당평균 > 10 이면 발동, latch)
+  - 큐브 크기 DR: 한 변 4.5~5.5cm (env별 고정, replicate_physics=False)
+  - DR 범위 시각화 판 추가 (파란: 스폰, 초록 2장: 목표 z 상하한) - 시각 전용
+
+--- Run A부터 반영: grasp gating (2026-07-27) ---
+  - finger별 ContactSensor 2개 (Object filter; PhysX 제약상 body당 filter 1개라 finger별 분리 필수)
+  - lifting/tracking/fine_grained 전부에 "양 finger pad 동시 0.5N 접촉" gate 곱함 -> 얹어 나르기 차단
+  - fine_grained weight 10 -> 5 원복. v2 정책 replay로 gate==lifted (false negative ~0) 사전 검증
+
+2026-07-27_14-59-58 : Run A (gating만 적용, 3000 iter). -> 성공: reaching 0.85 복귀 (서커스 소멸),
+                      lifting 14.0, tracking 14.3 / fine 3.68 (역대 최고), drop 0%.
+
+--- Run B부터 반영 (2026-07-27) ---
+  - MJCF 테이블 이식 (선배 MuJoCo 세팅, 얇은 상판 0.6x1.0x0.02 윗면 z=0.75 + 양옆 다리 y=+-0.49,
+    x=0.6 배치 유지 - 원본 0.8이면 스폰존이 상판 앞모서리 밖). cube 스폰 z 0.78, goal z 0.45~0.60 (world 0.855~1.005)
+  - 중력보상 모델링: 로봇 링크 disable_gravity=True (실물 FR3 g(q) 보상과 등가, stiffness 80 유지)
+  - 충돌 페널티: right_fr3_link[1-7] net-force 센서 + undesired_contacts w-1e-4 -> 커리큘럼 -1.0
+  - 측정 joint 토크 obs 7dim 추가 (get_dof_projected_joint_forces, FR3 내장 tau_ext 대응) -> obs 43
+  - goal y 상한 -0.15 -> -0.05 복원 (충돌 페널티 신뢰)
+
+2026-07-27_15-59-59 : Run B (5000 iter). -> 성공: reaching 0.87, lifting 14.3, 충돌 -0.037/s (≈없음),
+                      pos err 0.21. 단 fine 1.82 / entropy 2.5로 수렴 미완.
+                      강건성 진단 (Play-Noisy-v0 + scripts/tools/eval_dual_fr3_lift_robustness.py):
+                      baseline hold 0.957 / obs noise만 drop 0 / 물성 DR만 drop 0 / "조합"만 468~750 drop/128ep
+                      -> "perception 떨림 x 낮은 마찰" 상호작용이 슬립 드랍 유발 = Run C 근거.
+
+--- Run C부터 반영 (2026-07-27) ---
+  - obs noise: joint_pos σ0.005 / joint_vel σ0.05 / object_position σ1cm / 토크 σ0.5Nm (Gaussian)
+  - cube 물성 DR: 마찰 static 0.4~1.2, dynamic 0.3~1.0 (make_consistent) / 질량 x0.7~1.3
+  - object_hold_still 신설 (w-0.5): goal 10cm 이내에서만 cube 속도^2 페널티 (도착 후 팔 흔들림 대응)
+
+2026-07-27_18-38-13 : Run C 1차 (5000 iter). -> 실패: ① obs noise로 advantage 흐려져 noise_std
+                      1.0 -> 5.5 폭주 (팔 휘저음) ② it~1520 커리큘럼 조기 latch: drop 종료 env는
+                      "들다 놓친" 것이라 lifting 합이 구조적으로 높은 편향 표본인데, 소수 리셋 배치
+                      평균으로 판정해버림 (전체 lifting ~4/s 시점) -> action_rate -59/s 직격,
+                      보상 +30 -> -288 붕괴 ③ 이후 페널티를 쓴 채 재학습되어 나쁜 국소해 수렴:
+                      reward 80 (B 143), pos err 0.32, contact -1.64/s (play에서 왼팔 충돌 관찰), fine 0.16.
+
+--- Run C 2차부터 반영 (2026-07-27) ---
+  - 커리큘럼 판정을 배치 크기 가중 EMA로 교체: α = min(0.5, 3·batch/num_envs), term별 분리 저장
+    -> drop 배치(α~0.001)는 무력화, 대형 timeout 배치도 2회 연속 threshold 초과해야 발동
+  - goal y 상한 -0.05 -> -0.15 재원복 (중앙선 goal은 실익 없이 왼팔 충돌 위험만 키움)
+  - 조기 경보: noise_std가 2를 넘어 계속 오르면 entropy_coef 0.006 -> 0.002 낮춰 재시작 검토
+
+2026-07-27_20-57-10 : Run C 2차 (from-scratch, 5000 iter, 진행 중). 판정 기준: 강건성 재평가에서
+                      drop≈0 복귀 + hold_still -> 0 수렴 + reaching >= 0.8 + play에서 흔들림/충돌 없음.
+
+----------------------------------------------------------------------------------------
+
+# dual_fr3_plate_lift
+
+환경: Isaac-Lift-Box-DualFR3-Plate-v0 (양팔 14 joint delta position(scale 0.1), 그리퍼 없음 - 판 EE 140x140x25mm로 squeeze 파지)
+씬: 바닥 위 로봇(base z=0.405) + 바닥 박스, obs 54 (joint 28 + box pos 3 + goal 7 + action 14 + 양판 접촉력 2) / action 14
+정밀 분석: lift/config/DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md
+
+2026-07-27_16-00-04 : 첫 run (Run P1). 4096 envs, max_iter 5000. 세팅 요약:
+                      - DR: 박스 크기 30~50cm(env별 고정) / 질량 scale 0.6~1.4 (밀도 30kg/m3 기준, 실질 0.5~5.3kg)
+                        / 마찰 static 0.5~1.0 (판 재질 0.6 명시, 유효 0.55~0.8) / 스폰 x -0.05~+0.10, y +-0.10, yaw +-0.3
+                      - goal: base 기준 x 0.45~0.60, y +-0.10, z 0.15~0.35 (world 0.555~0.755)
+                      - reward: reaching(양판 평균, w2) + squeezing(양판 동시 1N 접촉, w2)
+                        + lifting(w15)/tracking(w16)/fine_grained(w5) 전부 squeeze gate + 높이 gate(z>0.35)
+                        + 성능 기반 페널티 커리큘럼(lifting>10/s 시 -1e-4 -> -0.1)
+                      관찰 포인트: squeezing 상승 시점 -> lifting 발견 -> 커리큘럼 생존.
+                      하드 케이스: 최대 질량(5.3kg)+최저 마찰(0.55) 조합은 판당 ~47N 필요. 정체 시 마찰 하한 0.6
+                      또는 질량 상한 1.2x 완화가 첫 조정 카드.
+                      -> 중간 관찰 (play): 들긴 하는데 판 "모서리/가장자리"로 걸쳐 드는 거동 발현.
+                         원인: gate가 접촉 여부(1N)만 보고 접촉 품질(면접촉, 마주보기)은 보상에 없음.
+
+--- 다음 run부터 반영: 면-면 꼬집기(pinch) 유도 v2 (2026-07-27) ---
+  - reaching 목표 변경: 박스 중심 -> 양 측면 중심점 (왼판 +y면, 오른판 -y면, yaw/env별 크기 반영)
+  - plate_alignment 신설 (w+1.0): 판 법선(TCP z)과 박스 면 법선의 반평행 dot [0,1]
+  - plates_misalignment 신설 (w-2.0): 두 판 높이차+전후차 |z_L-z_R|+|x_L-x_R| 페널티
+  - env별 박스 반너비는 xformOp:scale을 startup 1회 캐싱해 계산
+  - 보류 카드: 그래도 모서리 파지가 남으면 gate에 접촉력 방향 조건(법선 성분 비율 > 0.7) 추가
+
+--- 다음 run부터 반영: 강건성 v3 (2026-07-27, cube Run C와 동일 근거 - noise x 물성 조합만 드랍 유발) ---
+  - obs noise: joint_pos σ0.005 rad / joint_vel σ0.05 / object_position σ1cm / plate_forces σ0.04(=2N, tau_ext 오차)
+  - 박스 마찰 DR 폭 확대: static 0.5~1.0 -> 0.4~1.2, dynamic 0.3~1.0 (유효 마찰 0.5~0.9)
+  - joint 물성 DR: 액추에이터 PD 게인 +-15% scale (양팔 14 joint, startup)
+  - lifting 판정 env별로 교체: 고정 z>0.35 -> z > 안착중심(반너비)+0.10 (작은 박스 불리 해소)
+    lifting/tracking/fine_grained 전부 per-env gate 버전 함수로 교체
+  - object_dropping 종료는 계속 없음: 바닥 task라 떨어뜨려도 회복 가능, 들었다 놓치면
+    높이 gate가 꺼져 보상 손실(~35/s)로 이미 페널티됨. 밀려나 도달불가 종료는 보류 카드
+  - 충돌 페널티 추가 (cube Run B 패턴): arms_contact net-force 센서(양팔 link1~6, 판=link7 제외)
+    + undesired_contacts w-1e-4, 커리큘럼으로 들기 습득 후 -1.0 강화.
+    미감지 구멍: 판(link7)-바닥 충돌 (link7 센서는 박스 filter 전용) - 문제 시 추가 검토
+
+2026-07-27_18-38-18 : Run P2 = 위 v2(꼬집기 유도) + v3(강건성 + 충돌 페널티) 전부 반영한 첫 run.
+                      4096 envs, max_iter 5000. 관찰 포인트: P1 대비 ① plate_alignment/misalignment로
+                      면-면 꼬집기 발현 여부 (play로 확인) ② noise+DR로 수렴 속도 저하 정도
+                      ③ squeezing -> lifting 사다리 정상 작동 ④ 커리큘럼 3종(action_rate/joint_vel/
+                      contact_penalty) 발동 후 생존.
+                      -> 결과 (5000 완주): 성공. mean reward 129.6 (P1 105), lifting 12.3/15,
+                         tracking 11.3/16, fine 1.80/5, squeezing 1.71/2, noise_std 0.68 수렴,
+                         충돌 -0.006/s. noise+DR로 들기 발견이 P1(<it1250)보다 늦은 it~1500,
+                         발견 전 noise_std 1.98까지 팽창했다가 커리큘럼 발동 후 정상 수축.
+                         남은 문제 (play 관찰): 판이 면 "중심"이 아닌 한쪽 모서리 쪽으로 몰려 잡음.
+                         로그 근거: reaching 0.61/2 (최대의 30%), misalignment 후반 악화(-0.23->-0.38)
+                         - 중심 파지의 기회비용이 ~1.5/s로 너무 쌈 (task 보상 ~26/s 대비).
+
+--- 다음 run부터 반영: 중심 파지 유도 v4 (2026-07-27) ---
+  - reaching_fine 신설 (w+3.0, std 0.08): 측면 중심점 거리의 날카로운 kernel
+    (goal fine_grained와 같은 패턴) - 공통 오프셋(모서리 몰림)과 개별 오프셋 모두 잡음
+  - plates_misalignment w -2 -> -4: 대각 잡기 비용 2배
+  - 중심 파지 이득 ~1.5/s -> ~7/s로 확대. P2 checkpoint resume 대신 새 run 권장 (보상 지형 변경)
+  - 커리큘럼을 배치 크기 가중 EMA로 교체 (공유 함수 modify_reward_weight_on_lifting_learned,
+    cube Run C 1차 실패에서 나온 수정을 import로 자동 상속): alpha=min(0.5, 3*batch/N), term별 분리.
+    plate task는 종료가 time_out뿐(전체 배치 리셋)이라 영향 = "전체 평균 2회 연속 >10이어야 발동"
+    (기존 1회 -> 스파이크 오발동 방지, 발동이 에피소드 1주기 늦어짐)
+
+2026-07-27_20-57-07 : Run P3 = v4(중심 파지: reaching_fine w3/std0.08 + misalignment -4) + 커리큘럼 EMA.
+                      -> 실패 (it2343에서 중단): "가만히 정렬만 유지" 국소해. lifting/squeezing 0,
+                         reaching 0.14 (P2 동시점 0.73 - 접근 자체를 안 함), alignment 0.963 (제자리 만점),
+                         misalignment -0.019 (완벽 대칭 정지).
+                         원인: ① alignment는 접근 없이 제자리에서 손목만 돌려도 만점인 공짜 보상
+                         ② misalignment -4가 탐색의 순간 비대칭에 세금 -> "움직이면 손해, 멈추면 이득" 지형.
+                         P2는 misalignment -2라 균형이 안 깨졌던 것. v4의 페널티 2배가 임계점을 넘김.
+
+--- 다음 run부터 반영: 근접 게이팅 v5 (2026-07-27) ---
+  - plate_alignment / plates_misalignment에 근접 factor 곱:
+    (1-tanh(d_L/0.15))*(1-tanh(d_R/0.15)) - 양 판이 "둘 다" 측면 중심점 근처일 때만 유효
+  - 멀리서는 alignment 공짜 보상도 misalignment 탐색 세금도 0 -> 접근 단계는 reaching(w2)만 (P1/P2와 동일 지형)
+  - misalignment w -4 유지 (근접 시에만 작동하므로 과세 아님), reaching/reaching_fine 불변
+  - 교훈: "제자리에서 딸 수 있는 shaping 보상 + 움직임 페널티" 조합은 정지 국소해를 만든다.
+    파지 품질 항은 반드시 파지 맥락(근접/접촉)으로 게이팅할 것
+
+2026-07-27_21-53-08 : Run P4 = v5 (v4 중심 파지 + 근접 게이팅) + 커리큘럼 EMA. 4096 envs, max_iter 5000.
+                      조기 확인 (it500): reaching이 P2처럼 0.4+로 올라오는지 (접근 지형 복구 검증).
+                      이후 관찰: ① lifting 발견 시점 (P2 기준 ~it1500) ② 근접 게이팅된
+                      alignment/misalignment가 접촉 후 작동하는지 (alignment가 접촉 시점부터 상승해야 정상,
+                      P3처럼 초반부터 0.9면 재발) ③ play에서 면 "중심" 파지 여부. 결과 추후 기록.
+
+----------------------------------------------------------------------------------------

@@ -69,3 +69,13 @@ tests/
 
 # Docker history
 .isaac-lab-docker-history
+
+# --- dual_fr3_lab 프로젝트 규칙 ---
+# 실험 로그/체크포인트는 로컬 보관 (원격 미추적)
+logs/
+outputs/
+*.pt
+
+# 완성품 로봇 USD는 예외적으로 추적 (git-lfs) — 위의 전역 *.usd 차단을 덮어씀
+!source/dual_fr3_lab/dual_fr3_lab/assets/*.usd
+!content/plate_ee/*.usd
