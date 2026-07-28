@@ -83,7 +83,9 @@ r_total = 2.0  · mean_i(1 − tanh(d_ee_i-face_i / 0.3))    # reaching (양 "�
         + 15.0 · L · G                                    # lifting        (squeeze-gated)
         + 16.0 · L · G · (1 − tanh(d_obj-goal / 0.3))     # goal_tracking  (squeeze-gated)
         +  5.0 · L · G · (1 − tanh(d_obj-goal / 0.05))    # fine_grained   (squeeze-gated)
-        − 2.0  · (1 − ẑ_box·ẑ_world)                      # box_upright (수평 유지, v6 — 문헌 |roll|+|pitch| 상당)
+        − 3.0  · (1 − ẑ_box·ẑ_world)                      # box_upright (v6 신설, P7 −2→−3: 강건성 평가상 수평 운반이 병목)
+        − 0.05 · Σ_i relu(‖F_i‖ − 60N)                    # excessive_squeeze (P7 — Bi-Touch 실물 과조임 사례 근거)
+        + 30   · 𝟙[goal<10cm ∧ tilt<15° ∧ G, 0.5s 연속] (1회/ep)  # success (P7 — 2310.03191+Bi-Touch 정의)
         − 1e-4 · N_{link[1-6] 접촉}  (curriculum 발동 후 −1.0)   # undesired_contact_penalty (v3)
         − 1e-4 · ‖a_t − a_{t−1}‖²   (curriculum 발동 후 −0.1)   # action_rate
         − 1e-4 · ‖q̇‖²              (curriculum 발동 후 −0.1)   # joint_vel
@@ -238,7 +240,8 @@ r_total = 2.0  · mean_i(1 − tanh(d_ee_i-face_i / 0.3))    # reaching (양 "�
    override — b 성공 시 이후 b로 고정, 실물 중력보상 정합). 관찰: lifting 재발견(P4 페이스),
    alignment(min) 상승, box_upright ~0, play에서 "수평 + 회전 박스 파지" 개선
 
-- [ ] **5-5. Success 정의** + sparse bonus / 성공률 지표 (cube task와 공용 설계 가능)
+- [x] **5-5. Success 정의** — P7 반영: goal 10cm + 기울기 15° + 양판 접촉 0.5s 유지 → +30 (1회).
+   `Episode_Reward/success / 6 = 성공률`. 평가 스크립트와 기준 통일
 - [ ] **5-6. sim2real 잔여**: 판 질량(~1.4kg) link7 반영, obs latency, τ_ext 바이어스/드리프트 모델,
    접촉력 크기 페널티(과조임 방지)
 

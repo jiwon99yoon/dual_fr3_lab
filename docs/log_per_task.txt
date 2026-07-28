@@ -112,6 +112,40 @@
     탐색기(std~3)엔 ‖a‖²가 커서 즉시 강하게 걸면 탐색 억압 -> 성능 커리큘럼(lifting>10)에 태움.
   - PhysX gpu_total_aggregate_pairs_capacity 16384 -> 65536
 
+2026-07-28_16-13-14 : Run C 4차 [PC2: IsaacLab 2.3.2 / Isaac Sim 5.1 / rsl-rl 3.0.1] (from-scratch
+                      5000 iter 완주, 로그 PC1 이관 완료). -> 성공 (지표 기준):
+                      - action_l2: 커리큘럼 it1154 발동, 페널티 -1.10/s -> tail -0.13/s (88% 감소)
+                        = 움직임 명령이 0 근처로 수렴 -> null-space 유영 억제의 정량 신호
+                      - 핵심 지표 C3와 동급 이상: reward 147.2(C3 145.5), reaching 0.850, lifting 13.7,
+                        fine 3.32(C3 3.09, 역대 최고), drop 1.2%, pos err 0.216
+                      - noise_std 2.95 피크(it1150) -> 0.59 수축: delta 레시피가 다른 물리(5.1)에서도
+                        재현 = 레시피 강건성 확인
+                      - hold_still -0.78 (C3 동일): 유영은 cube에 안 보이는 null-space 운동이라
+                        hold_still로는 원래 안 잡혔음 -> action_l2가 옳은 지렛대였다는 방증
+                      남은 판정: play 육안 (joint1/2 유영 소멸) + 강건성 재평가 (Run C 시리즈 최종 관문).
+                      -> play 관찰 (PC1): 들기/운반 정상, "눕는" 거동 소멸 (action_l2 효과 육안 확인).
+                         잔존 2건: ① 운반 중 cube 기울어짐 (rotation 무관심 — 실물 전이 시 슬립 위험)
+                         ② 시작 시 finger가 상판을 "콩" 박음 (finger는 충돌 페널티에서 의도적 제외였음).
+
+--- Run D부터 반영 (2026-07-28): 거동 교정 2건 (C4 play 관찰 대응, obs 43 유지) ---
+  * 최초엔 yaw DR + orientation obs까지 4건 묶음이었으나 분리 결정 (사용자, 2026-07-28 저녁):
+    "orientation은 일정하게 두고 제대로 lift부터" — 거동 교정과 난이도 상승을 한 run에 섞으면
+    실패 시 원인 분리 불가 (C 시리즈 교훈). yaw 없는 동안 cube 기울기 = 그리퍼 기울기라
+    joint_pos로 추론 가능 -> orientation obs도 불필요 -> obs 43 유지 (C4와 비교 가능).
+  1. object_upright 보상 신설 (w+3.0): cube z축·world z 정렬도 x (파지∧들림) gate
+     — 운반 중 윗면 유지 -> 파지면 비틀림 토크 축소 = sim2real 슬립 여유. yaw 회전은 자유
+  2. finger_table_impact 페널티 신설 (w -1e-4 -> 커리큘럼 -1.0): finger-Table 접촉력 >10N만
+     카운트 (가벼운 스침 무죄). finger 센서 filter를 [Object, Table] 2개로 확장
+     ** 주의: object_grasped가 filter 인덱스 0(Object)만 보도록 수정 — 전체 amax면 테이블
+        누르기가 파지로 오인됨. plate는 filter 1개라 무영향 **
+  판정: upright >= 2.5/3 + finger_impact -> 0 + C4 지표 유지 (reaching>=0.85, fine>=2.8)
+
+--- Run E 예약 (yaw 축, Run D 성공 후): ---
+  - 스폰 yaw ±45° DR + cube orientation obs (quat w>=0, obs 43->47, checkpoint 비호환)
+    함수는 mdp에 구현 완료 (object_orientation_in_robot_root_frame), cfg 배선만 하면 됨.
+    초기 범위 카드: lifting 발견이 심하게 늦으면 ±20°로 낮춰 재시작 (plate는 ±17°로 시작했음)
+  - 정합 shaping은 여전히 보류: 모서리 파지 관찰 시에만 근접 게이팅과 함께 (P3 교훈)
+
 ----------------------------------------------------------------------------------------
 
 # dual_fr3_plate_lift
@@ -263,6 +297,48 @@ obs: P1~P4는 54 (joint 28 + box pos 3 + goal 7 + action 14 + 양판 접촉력 2
                       ③ box_upright ~0 유지 + play에서 "수평 들기" (P4의 기울어진 운반 해소 확인)
                       ④ yaw 큰 박스 파지 개선 (misalignment 버그픽스 효과, play에서 확인)
                       ⑤ a/b 학습 속도·최종 성능 비교 -> b 성공 시 이후 전부 b(중력보상)로 고정.
-                      결과 추후 기록.
+                      -> 결과 (둘 다 5000 완주): P6b 완승, 역대 최고.
+                         공통: lifting 재발견 대성공 (it~465에 10+/15, P4의 3배 속도 - 판정선 원복 적중),
+                         entropy 폭주 없음 (noise_std 0.58~0.63 수렴), misalignment -0.03~-0.07
+                         (P4 -0.28의 1/4, yaw-aware 픽스 효과), 충돌 ~0, 커리큘럼 생존.
+                         P6b vs P6a: reward 140.8 vs 130.6 / reaching_fine 1.22 vs 0.34 (3.5배)
+                         / alignment(min) 0.78 vs 0.21 / box_upright -0.30 vs -0.37 (a는 중반 -0.78까지
+                         기울여 운반) / value loss·entropy도 b가 낮음 (더 안정 수렴).
+                         해석: 중력보상으로 팔 처짐 보정에 쓰던 제어 용량이 파지 품질로 전환됨.
+                         P6b의 alignment는 종료 시점에도 상승 중 (0.55@2500 -> 0.78@4999)
+                         -> resume 추가 학습 여지. fine은 2.26@4000 피크 후 2.12로 미세 등락.
+                         box_upright -0.25~-0.30 잔존 (평균 환산 ~30도 기울기 구간 존재 추정,
+                         파지 순간 tipping 포함) - play에서 운반 중 수평 여부 확인 필요.
+                         판정: P6b = keeper. 이후 run은 전부 disable_gravity=true로 고정.
+                         play 검증 (2026-07-28): 최초 play에서 "판 손뼉 + 박스 놓침" 관찰 -> 원인은
+                         정책이 아니라 play에 disable_gravity override 누락 (중력보상 정책을 중력 있는
+                         팔에서 실행 -> 전 동작 처짐 미달). override 추가 후 정상 파지·운반 확인.
+                         교훈: 학습-실행 물리 설정 불일치 주의. b 고정 시 robot cfg 기본값에 박을 것.
+                         play 명령: DR_VIS=0 python scripts/rsl_rl/play.py --task ...Play-v0
+                                   (disable_gravity는 이후 robot cfg 기본값으로 편입 - override 불필요)
+                         강건성 평가 (P6b, noise+DR 조합, 32env x 2ep): hold 0.845 / precise(<10cm) 0.801
+                         / goal err 0.037m / drop 0 - 배포 관문 통과 수준. 단 upright hold(<15도) 0.202,
+                         운반 중 평균 기울기 ~34도 -> "기울여 운반"이 유일 병목으로 확정 (P7 근거).
+                         도구: scripts/tools/eval_dual_fr3_plate_robustness.py + Play-Noisy-v0 등록
+                         (cube 패턴 이식, plate 고유지표: env별 판정높이/기울기/drop 전이).
+
+--- Run P7부터 반영 (2026-07-28) ---
+  - disable_gravity=True를 robot cfg 기본값으로 편입 (P6 A/B에서 b 완승).
+    [잠정] sim 검증 단계 한정 - SR·파이프라인 안정 후 a/b 재학습 + 실로봇 transfer 비교로 최종 고정 예정
+  - box_upright w -2 -> -3: 강건성 평가에서 수평 운반(0.20)이 유일 병목으로 확정
+  - excessive_squeeze 신설 (w-0.05, 판당 60N 초과분): Bi-Touch 실물 "unwanted squeezing" 사례 근거,
+    실물 배포 전 필수 항목. 60N은 최악 케이스 필요 조임력(~52N)보다 위 -> 필요한 힘은 무벌
+  - success 신설 (실효 +30, 1회/에피소드): "goal 10cm + 기울기 15도 + 양판 접촉"을 0.5s(25step)
+    연속 유지 시 지급 (humanoid 2310.03191의 위치+수평 성공 정의 + Bi-Touch N-step 유지).
+    TB의 Episode_Reward/success / 6 = 성공률. 기울기 조건이 병목이라 upright 압력도 겸함
+  - 평가 기준 통일: eval 스크립트의 SUCCESS_D=0.10, UPRIGHT 15도 = success 정의와 동일
+
+2026-07-28_18-51-44 : Run P7 = 위 변경 전부 (upright -3 / excessive_squeeze / success +30 / 중력보상 기본값).
+                      4096 envs, 5000 iter. 관찰 포인트:
+                      ① Episode_Reward/success 상승 시점과 최종값 (/6 = 성공률, 목표 4+ = 성공률 70%+)
+                      ② box_upright -0.30(P6b) -> -0.1 이하로 개선되는지 (w 상향 + success 압력 이중 효과)
+                      ③ excessive_squeeze ~0 유지 (60N 초과 조임이 애초에 드문지 확인 - 크면 실물 위험 신호)
+                      ④ P6b 대비 lifting/tracking 회귀 없는지 (페널티 추가의 부작용 감시)
+                      ⑤ 완료 후 강건성 재평가로 upright hold 0.20 -> 0.7+ 확인. 결과 추후 기록.
 
 ----------------------------------------------------------------------------------------

@@ -69,7 +69,14 @@ from isaaclab.envs import (
 )
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+# IsaacLab 2.3+에서 pretrained_checkpoint 모듈 제거 -> 버전 호환 fallback
+# (--use_pretrained_checkpoint 기능만 비활성화되고 일반 checkpoint 재생은 무관)
+try:
+    from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+except ImportError:
+
+    def get_published_pretrained_checkpoint(*args, **kwargs):
+        raise RuntimeError("IsaacLab 2.3+에서는 --use_pretrained_checkpoint 미지원 (모듈 제거됨)")
 
 from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
 
@@ -140,7 +147,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
     if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        agent_dict = agent_cfg.to_dict()
+        # rsl_rl 버전 호환: isaaclab_rl(2.3+) cfg의 미지 키(optimizer 등)를 PPO 시그니처 기준 제거
+        try:
+            import inspect as _inspect
+
+            from rsl_rl.algorithms import PPO as _PPO
+
+            _allowed = set(_inspect.signature(_PPO.__init__).parameters) | {"class_name"}
+            _alg = agent_dict.get("algorithm", {})
+            _dropped = [k for k in list(_alg) if k not in _allowed]
+            for _k in _dropped:
+                _alg.pop(_k)
+            if _dropped:
+                print(f"[compat] rsl_rl PPO가 모르는 cfg 키 제거: {_dropped}")
+        except Exception:
+            pass
+        runner = OnPolicyRunner(env, agent_dict, log_dir=None, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     else:

@@ -8,11 +8,32 @@ from __future__ import annotations
 import torch
 from typing import TYPE_CHECKING
 
-from isaaclab.assets import Articulation
+from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.utils.math import subtract_frame_transforms
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+
+
+def object_orientation_in_robot_root_frame(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """cube orientation (robot root frame 기준 quat, w>=0 부호 고정) (num_envs, 4).
+
+    Run D: 스폰 yaw DR을 넣으면 정책이 cube 회전을 관측할 수 있어야 파지 정합과
+    운반 자세(upright) 제어가 가능해짐 (plate P5 교훈 — DR을 넣으면 관측도 줘야 함).
+    실물은 6D pose 인식(ArUco/FoundationPose 등)으로 획득 가능한 신호.
+    """
+    robot: RigidObject = env.scene[robot_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+    _, quat = subtract_frame_transforms(
+        robot.data.root_pos_w, robot.data.root_quat_w, obj.data.root_pos_w, obj.data.root_quat_w
+    )
+    sign = torch.where(quat[:, 0:1] >= 0.0, 1.0, -1.0)
+    return quat * sign
 
 
 def joint_measured_torques(

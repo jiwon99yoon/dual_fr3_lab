@@ -25,7 +25,7 @@ from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.sensors import ContactSensorCfg, FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
@@ -215,6 +215,78 @@ def box_upright(
     z_axis[:, 2] = 1.0
     box_z = quat_apply(obj.data.root_quat_w, z_axis)
     return 1.0 - box_z[:, 2]
+
+
+def excessive_squeeze_penalty(
+    env,
+    force_threshold: float = 60.0,
+    left_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    right_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+) -> torch.Tensor:
+    """과조임 페널티 (P7): 판별 접촉력이 threshold(N)를 넘는 초과분 합 [N].
+
+    sim에서는 박스가 안 부서져 과조임이 무해하지만 실물에서는 tau_ext 포화/물체 손상으로
+    이어짐 — Bi-Touch(arXiv:2307.06423)가 동일 구조에서 실물 "unwanted squeezing"을 겪고
+    페널티로 해결한 사례가 직접 근거. threshold 60N은 최악 케이스(5.3kg, 유효 마찰 0.5)의
+    필요 조임력 ~52N보다 위 -> 필요한 힘은 벌주지 않음.
+    """
+    forces = []
+    for cfg in (left_sensor_cfg, right_sensor_cfg):
+        sensor = env.scene.sensors[cfg.name]
+        forces.append(torch.norm(sensor.data.force_matrix_w, dim=-1).amax(dim=(-1, -2)))
+    f = torch.stack(forces, dim=-1)
+    return (f - force_threshold).clamp(min=0.0).sum(dim=-1)
+
+
+class success_bonus(ManagerTermBase):
+    """Success 판정 + 1회성 보너스 (P7).
+
+    success_step = [박스-goal 거리 < dist_threshold] x [기울기 < tilt_threshold] x [양판 접촉 G]
+    이 조건이 hold_steps(기본 25 step = 0.5s) 연속 유지되면 에피소드당 1회 보너스 지급 (latch).
+    설계 근거: humanoid box loco-mani(arXiv:2310.03191)의 "목표 위치 + flat orientation" 성공
+    정의 + Bi-Touch의 "N-step 유지 후 성공 인정". 기울기 조건이 현 정책의 병목(P6b 강건성
+    평가에서 upright hold 0.20)이라 success 보상 자체가 수평 운반을 당기는 두 번째 압력이 됨.
+    TB 지표: Episode_Reward/success = (weight x dt x 1회) / 에피소드길이(s) = 6 x 성공률
+    (weight 1500, dt 0.02, 5s 기준) -> 값/6 = 성공률.
+    """
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        self._count = torch.zeros(env.num_envs, device=env.device)
+        self._latched = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids=None):
+        if env_ids is None:
+            env_ids = slice(None)
+        self._count[env_ids] = 0.0
+        self._latched[env_ids] = False
+        return {}
+
+    def __call__(
+        self,
+        env,
+        dist_threshold: float,
+        tilt_threshold: float,
+        hold_steps: int,
+        finger1_sensor_cfg: SceneEntityCfg,
+        finger2_sensor_cfg: SceneEntityCfg,
+        threshold: float = 1.0,
+        command_name: str = "object_pose",
+        robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ) -> torch.Tensor:
+        robot = env.scene[robot_cfg.name]
+        obj = env.scene[object_cfg.name]
+        cmd = env.command_manager.get_command(command_name)[:, :3]
+        goal_w, _ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, cmd)
+        near = torch.norm(goal_w - obj.data.root_pos_w, dim=1) < dist_threshold
+        upright = box_upright(env, object_cfg) < tilt_threshold
+        gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold).bool()
+        ok = near & upright & gate
+        self._count = torch.where(ok, self._count + 1.0, torch.zeros_like(self._count))
+        fire = (self._count >= hold_steps) & ~self._latched
+        self._latched |= fire
+        return fire.float()
 
 
 def _lifted_perenv(env, lift_delta: float, object_cfg: SceneEntityCfg) -> torch.Tensor:
@@ -499,7 +571,25 @@ class DualFR3PlateBoxLiftEnvCfg(LiftEnvCfg):
             func=plates_pair_misalignment, params={"prox_std": 0.15}, weight=-4.0
         )
         # 박스 수평 유지 (v6): 기울어진 채 운반 방지. 문헌의 roll/pitch 페널티 상당, yaw 자유
-        self.rewards.box_upright = RewTerm(func=box_upright, weight=-2.0)
+        # P7: -2 -> -3 상향 (P6b 강건성 평가: hold 0.85/drop 0인데 운반 중 평균 기울기 ~34도,
+        # upright hold 0.20 - 수평 운반이 유일한 병목으로 확정됨)
+        self.rewards.box_upright = RewTerm(func=box_upright, weight=-3.0)
+        # 과조임 페널티 (P7): 판당 60N 초과분 [N]. w-0.05 -> 20N 초과 시 -1/s
+        self.rewards.excessive_squeeze = RewTerm(
+            func=excessive_squeeze_penalty, params={"force_threshold": 60.0}, weight=-0.05
+        )
+        # Success 보너스 (P7): goal 10cm + 기울기 15도 + 양판 접촉을 0.5s 유지 -> 1회 지급.
+        # weight 1500 = 실효 +30 (RewardManager가 dt 0.02를 곱하므로 1500 x 0.02 = 30)
+        self.rewards.success = RewTerm(
+            func=success_bonus,
+            weight=1500.0,
+            params={
+                "dist_threshold": 0.10,
+                "tilt_threshold": 0.034,  # 1 - cos(15도)
+                "hold_steps": 25,  # 0.5s @ 50Hz
+                **squeeze_gate_params,
+            },
+        )
         # 양판 동시 접촉 자체에 보상 (squeeze 발견 가속)
         self.rewards.squeezing_object = RewTerm(func=mdp.object_grasped, params=dict(squeeze_gate_params), weight=2.0)
         # 들기/운반 보상 전부 "양판 접촉 중"일 때만 지급 (밀어서 옮기는 exploit 차단)
@@ -579,3 +669,17 @@ class DualFR3PlateBoxLiftEnvCfg_PLAY(DualFR3PlateBoxLiftEnvCfg):
         self.scene.env_spacing = 3.0
         # disable randomization for play
         self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_PLAY):
+    """sim2real 강건성 평가용: 학습 분포 그대로 + obs noise 활성 (cube Play-Noisy 패턴 이식).
+
+    obs noise/물성 DR이 학습 cfg에 포함되어 있으므로, 이 cfg는 PLAY가 끈 corruption을
+    되켜는 것만 담당한다 (물성/크기 DR은 PLAY에도 상속되어 이미 활성).
+    평가 도구: scripts/tools/eval_dual_fr3_plate_robustness.py
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True

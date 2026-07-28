@@ -3,8 +3,9 @@
 > 대상: `Isaac-Lift-Cube-DualFR3-v0` (`lift/config/dual_fr3/joint_pos_env_cfg.py` + 베이스 `lift/lift_env_cfg.py`)
 > 알고리즘: PPO (rsl_rl), 4096 envs
 > 작성 기준: **2026-07-27 14:42** — grasp gating(ContactSensor) 구현·검증 완료 시점.
-> **최종 갱신 2026-07-28 (Run C 3차 준비)**: action 절대→delta 전환 (§2-2 근거 표), Run C 1·2차
-> 실패 분석 (§5-5), 강건성 진단 (§5-6) 반영. 이하 원문 헤더:
+> **최종 갱신 2026-07-28 저녁 (Run D 구현 완료)**: §2는 Run D 기준 (obs 43, delta action,
+> action_l2, upright 보상, finger-table 충격 페널티). yaw DR + orientation obs는 Run E로 분리
+> (거동 교정과 난이도 상승 분리 — 사용자 결정). 이하 이력 헤더:
 > **갱신 2026-07-27 16시경 (Run B 준비 완료)**: MJCF 테이블(상판 0.75) + 중력보상(disable_gravity)
 > + 충돌 페널티 + 측정 joint 토크 obs(43 dims) 반영. §2는 Run B 기준, Run A까지의 상태는 git 이력 참조.
 > 이력: run 4개 (`logs/rsl_rl/dual_fr3_lift/`) TensorBoard + `params/env.yaml` 대조 분석 포함.
@@ -33,6 +34,7 @@
 | `target_object_position` | goal pose command (pos 3 + quat 4) | 7 | **quat 4 dims는 항상 identity → dead dims** (orientation 명령 미사용) |
 | `actions` | 직전 action | 8 | arm 7 + gripper 1 |
 | `joint_torques` | 오른팔 측정 joint 토크 (`get_dof_projected_joint_forces`) | 7 | **FR3 내장 토크센서(tau_ext) 대응 → 실배포 가능**. disable_gravity 덕에 링크 자중이 빠져 실물 tau_ext와 성격 일치 |
+| ~~`object_orientation`~~ (Run E 예약) | cube 자세 quat (root frame, w≥0) | (4) | **yaw DR과 세트로 연기** — yaw 없는 동안 cube 기울기=그리퍼 기울기라 joint_pos로 추론 가능. mdp 함수는 구현 완료 |
 
 **obs noise (Run C부터 학습에 포함)**: joint_pos σ0.005 rad, joint_vel σ0.05, object_position σ0.01 m
 (perception 모사), joint_torques σ0.5 Nm — 전부 additive Gaussian, `enable_corruption=True`로 학습 시 활성.
@@ -67,13 +69,16 @@ Design (arXiv:2602.23408 — delta 일관 우위, joint-space 안정 우위), Be
 
 ```python
 # joint_pos_env_cfg.py — PhysX 제약: filter는 sensor body당 1:1이라 finger마다 분리
+# Run D부터 filter 2개: [0]=Object(파지 gate), [1]=Table(충격 페널티)
 leftfinger_object_contact  = ContactSensorCfg(prim_path=".../right_fr3_leftfinger",
-                                              filter_prim_paths_expr=[".../Object"])
+                                              filter_prim_paths_expr=[".../Object", ".../Table"])
 rightfinger_object_contact = ContactSensorCfg(prim_path=".../right_fr3_rightfinger",
-                                              filter_prim_paths_expr=[".../Object"])
+                                              filter_prim_paths_expr=[".../Object", ".../Table"])
 ```
 
-- `filter_prim_paths_expr`로 **Object와의 접촉력만** 측정 (테이블·자기충돌 제외)
+- `filter_prim_paths_expr`로 접촉 상대를 분리 측정. **주의 (Run D): `object_grasped`는 반드시
+  filter index 0(Object)만 봐야 함** — 전체 filter에 amax를 취하면 finger로 테이블을 누르는
+  것도 파지로 오인된다 (구현은 `filter_idx=0` 기본값으로 처리, plate는 filter 1개라 무영향)
 - 전제: `DUAL_FR3_CFG.spawn.activate_contact_sensors=True` (`dual_fr3.py`, 2026-07-27 변경)
 - **주의**: ContactSensor 하나에 finger 2개를 regex로 묶으면 PhysX filter가
   `expected 2N, found N` 에러를 냄 → 반드시 finger당 sensor 분리
@@ -93,6 +98,10 @@ r_total = 1.0  · (1 − tanh(d_ee-obj / 0.1))              # reaching_object (�
         − 0.1  · ‖a_t − a_{t−1}‖²   (curriculum 발동 후; 초기 −1e-4)   # action_rate
         − 0.1  · ‖q̇‖²              (curriculum 발동 후; 초기 −1e-4)   # joint_vel
         − 1.0  · Σ 𝟙[‖F_link_i‖ > 1 N]  (curriculum 발동 후; 초기 −1e-4)  # undesired_contact_penalty (Run B)
+        − 0.5  · ‖v_obj‖² 𝟙[d_goal < 0.1]                                  # object_hold_still (Run C)
+        − 0.005· ‖a‖²  (curriculum 발동 후; 초기 −1e-4)                    # action_l2 (C4, delta 전용 — null-space 유영 차단)
+        + 3.0  · (ẑ_cube · ẑ_world)⁺ · L · G                               # object_upright (Run D, 운반 중 윗면 유지)
+        − 1.0  · Σ_finger 𝟙[F_finger-table > 10 N]  (curriculum 후)        # finger_table_impact (Run D, "콩 박기" 대응)
 ```
 
 - 구현: `lift/mdp/rewards.py`의 `object_grasped` / `object_is_lifted_and_grasped` / `object_goal_distance_grasped`
@@ -110,7 +119,7 @@ r_total = 1.0  · (1 − tanh(d_ee-obj / 0.1))              # reaching_object (�
 | object_dropping | cube z < 0.65 (상판 −10cm) |
 | curriculum | `modify_reward_weight_on_lifting_learned` — lifting 보상(만렙~15/s)이 **10/s 초과 시** action_rate·joint_vel·contact 페널티 강화 (latch, 성능 기반) |
 | DR: cube 크기 | 한 변 4.5~5.5cm, `mode="usd"` per-env 고정 (`replicate_physics=False`) |
-| DR: cube 스폰 | x ±0.08, y ±0.12 (상판 위) |
+| DR: cube 스폰 | x ±0.08, y ±0.12 (상판 위). **yaw ±45°는 Run E 예약** |
 | DR: goal | base 기준 x 0.35~0.55, y −0.45~**−0.15** (Run B~C에서 −0.05 시도 후 원복 — 중앙선 goal은 실익 없이 왼팔 충돌 위험만 증가, 2026-07-27), z 0.45~0.60 |
 | DR: cube 물성 (Run C) | 마찰 static 0.4~1.2 / dynamic 0.3~1.0 (make_consistent), 질량 ×0.7~1.3 — startup, per-env |
 | DR: obs noise (Run C) | §2-1 참조 (Gaussian, 학습 시 활성) |
@@ -228,9 +237,13 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
 - [x] **5-0. Run A (gating만 재학습)**: `2026-07-27_14-59-58`, 3000 iter — **판정 성공**: reaching tail **0.853** (기준 0.8, v4 0.07), lifting 14.04, tracking 14.29 / fine 3.68 (역대 최고), drop ~0%. 서커스 exploit 소멸
 - [x] **5-4. 충돌 페널티** — Run B에 포함 (right_arm_contact + undesired_contacts, 성능 curriculum). goal y −0.05 복원
 - [x] **Run B 학습 실행 중**: `2026-07-27_15-59-59`, 3000 iter (2026-07-27 16시경 시작). 체크: contact_penalty가 curriculum 발동 후에도 ~0 유지 / reaching ≥ 0.8 / tracking 절대값은 goal 상향 탓에 Run A보다 낮게 시작 가능
-- [ ] **5-7. Run D (파지 자세 정합, 2026-07-28 확정)**: Run C 3차(delta 검증) 성공 후 실행.
-  스폰 yaw ±45° DR + cube 자세 obs 추가 (§4-3의 확정 계획·plate 대응표 참조). 정합 shaping은
-  모서리 파지 관찰 시에만 후속 투입 (근접 게이팅 필수 — plate P3 교훈)
+- [x] **5-7. Run D 환경 구현 완료 (2026-07-28 저녁, 스모크 통과 — 학습 대기, obs 43 유지)**:
+  ① object_upright 보상 (w3.0, C4 play의 운반 중 기울어짐 대응) ② finger_table_impact 페널티
+  (>10N, "콩 박기" 대응; finger 센서 filter [Object, Table] 확장 — **object_grasped는 filter_idx=0
+  필수**, 아니면 테이블 누르기가 파지로 오인). 판정: upright ≥ 2.5/3, finger_impact → 0, C4 지표 유지
+- [ ] **5-8. Run E 예약 (Run D 성공 후)**: 스폰 yaw ±45° DR + orientation obs (43→47) 세트.
+  mdp 함수 구현 완료, cfg 배선만 남음. 난이도 카드: 심하게 늦으면 yaw ±20°부터.
+  정합 shaping은 모서리 파지 관찰 시에만 (근접 게이팅 필수 — P3 교훈)
 - [ ] **5-3. Success 정의**: `𝟙[d < 0.05, N step 유지]` sparse bonus(+50) 및/또는 종료 + eval 성공률
 - [x] **5-5. Run C 1차 (`2026-07-27_18-38-13`, 5000 iter) — 실패, 원인 규명 완료**:
   구성 = obs noise + cube 물성 DR + `object_hold_still`(goal 10cm 내 속도² w−0.5).
@@ -282,5 +295,5 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
 | sparse bonus | +100 (4cm 도달) | 없음 | §5-3 |
 | 접촉 안전 | FT tare 페널티 + threshold DR | **충돌 페널티 (Run B, undesired_contacts + 성능 curriculum)** | 완료 |
 | obs noise | pos/vel/FT 전부 | **pos/vel/obj_pos/토크 Gaussian (Run C)** | 완료 |
-| history | ×5 stack (175 dims) | 없음 (36 dims) | 정적 태스크라 당장 불필요 |
+| history | ×5 stack (175 dims) | 없음 (47 dims) | 정적 태스크라 당장 불필요 |
 | 성공 판정 | 4cm threshold, eval 3 seeds×100ep | 없음 | §5-3 |

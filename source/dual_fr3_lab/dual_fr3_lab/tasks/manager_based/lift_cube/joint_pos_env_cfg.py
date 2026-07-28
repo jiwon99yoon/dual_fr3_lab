@@ -199,6 +199,8 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
             func=mdp.joint_measured_torques,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=["right_fr3_joint[1-7]"])},
         )
+        # cube orientation obs는 Run E(yaw DR)와 세트로 연기 — yaw 없는 지금은 cube 기울기가
+        # 그리퍼 기울기와 같아 joint_pos로 추론 가능 (upright 제어에 별도 관측 불필요)
 
         # ---------- obs noise (Run C): 실물 센서/인식 수준 ----------
         # 강건성 진단(2026-07-27, Run B 정책): obs noise 단독 drop 0, 물성 DR 단독 drop 0,
@@ -256,6 +258,8 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
             ),
         )
         # 리셋 시 물체 위치 랜덤화: 오른팔 workspace를 벗어나지 않게 franka(y ±0.25)보다 좁힘
+        # 스폰 yaw DR(±45°)은 Run E로 연기 (2026-07-28 결정): upright/finger_impact 거동 교정을
+        # 먼저 단독 검증. yaw DR을 넣을 때 orientation obs(43->47)도 세트로 (파지 정합에 관측 필수)
         self.events.reset_object_position.params["pose_range"] = {
             "x": (-0.08, 0.08),
             "y": (-0.12, 0.12),
@@ -301,13 +305,14 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
         # 양쪽 pad가 동시에 물체를 눌러야 파지로 인정 -> 손등에 얹어 나르는 exploit은 gate 통과 불가
         # (2026-07-25 run에서 확인: reaching 보상 0.86 -> 0.07로 붕괴하며 서커스 거동 발현)
         # PhysX 제약: filter는 sensor body당 1:1 매칭이라 finger마다 sensor를 분리해야 함
+        # filter 순서 고정: [0]=Object(파지 gate용), [1]=Table(충격 페널티용, Run D)
         self.scene.leftfinger_object_contact = ContactSensorCfg(
             prim_path="{ENV_REGEX_NS}/Robot/right_fr3_leftfinger",
-            filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
+            filter_prim_paths_expr=["{ENV_REGEX_NS}/Object", "{ENV_REGEX_NS}/Table"],
         )
         self.scene.rightfinger_object_contact = ContactSensorCfg(
             prim_path="{ENV_REGEX_NS}/Robot/right_fr3_rightfinger",
-            filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
+            filter_prim_paths_expr=["{ENV_REGEX_NS}/Object", "{ENV_REGEX_NS}/Table"],
         )
         # 오른팔 링크 충돌 감지 (finger 제외 — 물체를 만져야 하는 부위): 테이블/왼팔/자기몸 등
         # 모든 접촉의 net force를 본다 (filter 없음 -> body 수 제약 없음)
@@ -379,6 +384,22 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
         # 세트로 쓰는 항. 절대 action 시절엔 "ready 편차 페널티"가 되어 태스크와 상충했으므로 부재.
         # 탐색기(std~3)엔 ‖a‖²가 커서 즉시 -0.005를 걸면 탐색 억압 -> 성능 curriculum에 태움
         self.rewards.action_l2 = RewTerm(func=mdp.action_l2, weight=-1e-4)
+        # Run D: 운반 중 윗면 유지 (cube z축·world z 정렬도 × 파지∧들림 gate)
+        self.rewards.object_upright = RewTerm(
+            func=mdp.object_upright_while_carried,
+            weight=3.0,
+            params={"minimal_height": lifted_height, **grasp_gate_params},
+        )
+        # Run D: finger가 테이블을 10N 이상으로 때리면 페널티 ("콩 박기" 대응, 가벼운 스침은 무죄)
+        self.rewards.finger_table_impact = RewTerm(
+            func=mdp.finger_table_impact_penalty,
+            weight=-1e-4,
+            params={
+                "finger1_sensor_cfg": SceneEntityCfg("leftfinger_object_contact"),
+                "finger2_sensor_cfg": SceneEntityCfg("rightfinger_object_contact"),
+                "threshold": 10.0,
+            },
+        )
         self.curriculum.contact_penalty = CurrTerm(
             func=modify_reward_weight_on_lifting_learned,
             params={"term_name": "undesired_contact_penalty", "weight": -1.0, "threshold": 10.0},
@@ -386,6 +407,10 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
         self.curriculum.action_l2 = CurrTerm(
             func=modify_reward_weight_on_lifting_learned,
             params={"term_name": "action_l2", "weight": -0.005, "threshold": 10.0},
+        )
+        self.curriculum.finger_table_impact = CurrTerm(
+            func=modify_reward_weight_on_lifting_learned,
+            params={"term_name": "finger_table_impact", "weight": -1.0, "threshold": 10.0},
         )
 
         # ---------- ee frame: right_fr3_link7 + TCP 오프셋 ----------

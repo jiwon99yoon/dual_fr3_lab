@@ -64,7 +64,23 @@ def main():
     env = gym.make(args_cli.task, cfg=env_cfg)
     wrapped = RslRlVecEnvWrapper(env)
 
-    runner = OnPolicyRunner(wrapped, LiftCubePPORunnerCfg().to_dict(), log_dir=None, device="cuda:0")
+    agent_dict = LiftCubePPORunnerCfg().to_dict()
+    # rsl_rl 버전 호환: isaaclab_rl(2.3+) cfg의 미지 키(optimizer 등)를 PPO 시그니처 기준 제거
+    try:
+        import inspect as _inspect
+
+        from rsl_rl.algorithms import PPO as _PPO
+
+        _allowed = set(_inspect.signature(_PPO.__init__).parameters) | {"class_name"}
+        _alg = agent_dict.get("algorithm", {})
+        _dropped = [k for k in list(_alg) if k not in _allowed]
+        for _k in _dropped:
+            _alg.pop(_k)
+        if _dropped:
+            print(f"[compat] rsl_rl PPO가 모르는 cfg 키 제거: {_dropped}")
+    except Exception:
+        pass
+    runner = OnPolicyRunner(wrapped, agent_dict, log_dir=None, device="cuda:0")
     runner.load(args_cli.checkpoint)
     policy = runner.get_inference_policy(device="cuda:0")
 

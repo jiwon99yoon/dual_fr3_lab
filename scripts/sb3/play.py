@@ -78,7 +78,14 @@ from isaaclab.envs import (
     multi_agent_to_single_agent,
 )
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+# IsaacLab 2.3+에서 pretrained_checkpoint 모듈 제거 -> 버전 호환 fallback
+# (--use_pretrained_checkpoint 기능만 비활성화되고 일반 checkpoint 재생은 무관)
+try:
+    from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
+except ImportError:
+
+    def get_published_pretrained_checkpoint(*args, **kwargs):
+        raise RuntimeError("IsaacLab 2.3+에서는 --use_pretrained_checkpoint 미지원 (모듈 제거됨)")
 
 from isaaclab_rl.sb3 import Sb3VecEnvWrapper, process_sb3_cfg
 

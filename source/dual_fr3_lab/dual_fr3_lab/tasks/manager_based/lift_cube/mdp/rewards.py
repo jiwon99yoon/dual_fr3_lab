@@ -31,21 +31,72 @@ def object_grasped(
     finger1_sensor_cfg: SceneEntityCfg,
     finger2_sensor_cfg: SceneEntityCfg,
     threshold: float = 0.5,
+    filter_idx: int = 0,
 ) -> torch.Tensor:
     """Binary gate: 1.0 if both finger pads are in contact with the filtered object.
 
-    Each contact sensor must match a single finger body and set ``filter_prim_paths_expr`` to the
-    object, so ``force_matrix_w`` reports finger-object forces only (table/self contacts excluded).
+    Each contact sensor must match a single finger body and set ``filter_prim_paths_expr`` with the
+    object at index ``filter_idx`` (기본 0), so ``force_matrix_w`` reports finger-object forces only.
     PhysX requires one filter target per sensor body, hence one sensor per finger. Requiring *both*
     pads above the force threshold accepts a true grasp and rejects balancing the object on the
     back of the hand.
+
+    주의 (Run D): finger 센서에 Table filter(index 1)가 추가되었으므로 반드시 filter를 인덱스로
+    선택해야 한다 — 전체 filter에 amax를 취하면 테이블을 누르는 것도 파지로 오인함.
     """
     finger_forces = []
     for cfg in (finger1_sensor_cfg, finger2_sensor_cfg):
         sensor: ContactSensor = env.scene.sensors[cfg.name]
-        # (num_envs, 1, 1, 3) -> per-env force magnitude against the object
-        finger_forces.append(torch.norm(sensor.data.force_matrix_w, dim=-1).amax(dim=(-1, -2)))
+        # (num_envs, 1, num_filters, 3) -> Object filter만 선택 -> per-env force magnitude
+        finger_forces.append(torch.norm(sensor.data.force_matrix_w[:, :, filter_idx, :], dim=-1).amax(dim=-1))
     return (torch.minimum(*finger_forces) > threshold).float()
+
+
+def object_upright_while_carried(
+    env: ManagerBasedRLEnv,
+    minimal_height: float,
+    finger1_sensor_cfg: SceneEntityCfg,
+    finger2_sensor_cfg: SceneEntityCfg,
+    threshold: float = 0.5,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """운반 중 cube 윗면 유지 보상: cube z축과 world z축의 정렬도 [0,1] × (파지 ∧ 들림) gate.
+
+    Run D: 수평 유지 운반은 파지면 비틀림 토크가 작아 슬립 여유가 크고 궤적이 예측 가능
+    -> sim2real 안정성. 스폰이 yaw 회전만이라 시작 시 cube z축은 world z와 정렬 상태이며,
+    이 항은 운반 중 기울임(tilt)만 벌한다 (yaw 회전은 자유 — 대칭 cube라 무의미).
+    """
+    obj: RigidObject = env.scene[object_cfg.name]
+    ez = torch.zeros_like(obj.data.root_pos_w)
+    ez[:, 2] = 1.0
+    from isaaclab.utils.math import quat_apply
+
+    cube_z_w = quat_apply(obj.data.root_quat_w, ez)
+    upright = cube_z_w[:, 2].clamp(min=0.0)
+    gate = object_is_lifted(env, minimal_height, object_cfg) * object_grasped(
+        env, finger1_sensor_cfg, finger2_sensor_cfg, threshold
+    )
+    return upright * gate
+
+
+def finger_table_impact_penalty(
+    env: ManagerBasedRLEnv,
+    finger1_sensor_cfg: SceneEntityCfg,
+    finger2_sensor_cfg: SceneEntityCfg,
+    threshold: float = 10.0,
+    filter_idx: int = 1,
+) -> torch.Tensor:
+    """finger가 테이블을 threshold(N) 이상으로 때리면 finger당 1씩 카운트 (Run D).
+
+    파지를 위해 finger가 상판 근처로 내려가 가볍게 스치는 것은 정당하므로 threshold를 높게
+    (기본 10N) 잡아 "콩 하고 박는" 충격만 벌한다. Table filter는 finger 센서의 index 1.
+    """
+    count = torch.zeros(env.num_envs, device=env.device)
+    for cfg in (finger1_sensor_cfg, finger2_sensor_cfg):
+        sensor: ContactSensor = env.scene.sensors[cfg.name]
+        f = torch.norm(sensor.data.force_matrix_w[:, :, filter_idx, :], dim=-1).amax(dim=-1)
+        count += (f > threshold).float()
+    return count
 
 
 def object_is_lifted_and_grasped(

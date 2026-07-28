@@ -37,6 +37,12 @@ DUAL_FR3_PLATE_EE_CFG.spawn.usd_path = DUAL_FR3_PLATE_EE_USD_PATH
 # finger joint이 없으므로 hands 액추에이터/초기값 제거
 del DUAL_FR3_PLATE_EE_CFG.actuators["hands"]
 del DUAL_FR3_PLATE_EE_CFG.init_state.joint_pos[".*_fr3_finger_joint.*"]
+# 로봇 링크 중력 OFF = 실물 FR3 내장 중력보상 g(q) 모델링 (payload/박스 무게는 그대로 전달됨).
+# Run P6 A/B에서 중력보상 쪽이 전 지표 우세 (reward 140.8 vs 130.6, alignment 3.8배 등)로 기본값 채택.
+# [잠정 결정 — sim 검증 단계 한정] 아직 sim에서만 검증된 선택이므로, sim2real 실로봇 실험 전까지만
+# 기본값으로 사용한다. SR(성공률)과 전체 파이프라인이 어느 정도 안정된 뒤에는 a(중력 ON)/b(중력 OFF)
+# 둘 다 학습해 실로봇 transfer 성능을 비교하고, 실물에서 더 나은 쪽으로 최종 고정할 것.
+DUAL_FR3_PLATE_EE_CFG.spawn.rigid_props.disable_gravity = True
 """Dual FR3 arms with flat-plate end-effectors on a husky base (base fixed)."""
 
 
