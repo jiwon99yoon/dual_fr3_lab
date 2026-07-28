@@ -107,6 +107,11 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
         # ---------- 씬: 바닥 위 로봇 + MJCF 테이블 (얇은 상판 + 양옆 다리) ----------
         self.scene.plane.init_state.pos = (0.0, 0.0, 0.0)  # 바닥을 z=0으로 (franka는 -1.05)
 
+        # PhysX GPU 충돌쌍 버퍼 증설 (베이스 16384 -> 65536): C 3차 it~4533에서 4096 env가
+        # 동시에 파지 상태가 되자 16388~16395개를 요구하며 초과 에러 발생 (miss interactions).
+        # 버퍼 크기만 키우는 것이라 물리/학습 거동에는 영향 없음
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 64 * 1024
+
         def _table_part(name: str, size, pos, color=(0.9, 0.9, 0.9)):
             return AssetBaseCfg(
                 prim_path="{ENV_REGEX_NS}/" + name,
@@ -163,9 +168,14 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
         # 초기화하면 왼팔은 ready pose를 유지하고, 오른팔 target은 매 스텝 action이 덮어쓴다.
         self.events.reset_all.params["reset_joint_targets"] = True
 
-        # ---------- action: 오른팔 7 joint + 오른손 그리퍼 (왼팔은 PD가 ready pose 유지) ----------
-        self.actions.arm_action = mdp.JointPositionActionCfg(
-            asset_name="robot", joint_names=["right_fr3_joint[1-7]"], scale=0.5, use_default_offset=True
+        # ---------- action: 오른팔 7 joint delta + 오른손 그리퍼 (왼팔은 PD가 ready pose 유지) ----------
+        # Run C 3차부터 절대(scale 0.5) -> relative(delta, scale 0.1) 전환 (2026-07-28, plate와 통일).
+        # 근거: "절대 action x obs noise" 조합에서 탐색 노이즈가 ±0.5rad 목표 점프로 증폭되어
+        # noise_std 폭주 (C1: 5.5, C2: 12.8). delta는 스텝당 이동이 ±0.1rad로 구조적으로 캡되어
+        # 탐색이 잔떨림으로 제한됨 — plate P2/P4가 같은 noise에서 안정 학습한 것이 실증.
+        # 문헌: Demystifying Action Space Design(2602.23408, delta 일관 우위), gSDE(저크 탐색 문제)
+        self.actions.arm_action = mdp.RelativeJointPositionActionCfg(
+            asset_name="robot", joint_names=["right_fr3_joint[1-7]"], scale=0.1
         )
         self.actions.gripper_action = mdp.BinaryJointPositionActionCfg(
             asset_name="robot",
@@ -363,9 +373,19 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
             weight=-0.5,
             params={"command_name": "object_pose", "dist_threshold": 0.1, "ang_vel_scale": 0.1},
         )
+        # action_l2 (Run C 4차, delta 전환의 후속): delta 의미론에서 ‖a‖² = "움직임 명령 크기".
+        # 평균 출력을 0으로 끌어당겨 null-space 유영(goal 도달 후 joint1/2 무의미 배회 — delta
+        # 바이어스 적분 + 보상이 cube만 봐서 여유 자유도에 무관심)을 차단. dexsuite가 delta와
+        # 세트로 쓰는 항. 절대 action 시절엔 "ready 편차 페널티"가 되어 태스크와 상충했으므로 부재.
+        # 탐색기(std~3)엔 ‖a‖²가 커서 즉시 -0.005를 걸면 탐색 억압 -> 성능 curriculum에 태움
+        self.rewards.action_l2 = RewTerm(func=mdp.action_l2, weight=-1e-4)
         self.curriculum.contact_penalty = CurrTerm(
             func=modify_reward_weight_on_lifting_learned,
             params={"term_name": "undesired_contact_penalty", "weight": -1.0, "threshold": 10.0},
+        )
+        self.curriculum.action_l2 = CurrTerm(
+            func=modify_reward_weight_on_lifting_learned,
+            params={"term_name": "action_l2", "weight": -0.005, "threshold": 10.0},
         )
 
         # ---------- ee frame: right_fr3_link7 + TCP 오프셋 ----------

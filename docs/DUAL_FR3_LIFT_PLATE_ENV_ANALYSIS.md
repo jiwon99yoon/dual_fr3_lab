@@ -1,10 +1,13 @@
 # Dual FR3 Plate-EE Box Lift — 환경 · Reward 정밀 분석
 
-> 대상: `Isaac-Lift-Box-DualFR3-Plate-v0` (`lift/config/dual_fr3_plate/joint_pos_env_cfg.py` + 베이스 `lift/lift_env_cfg.py`)
-> 알고리즘: PPO (rl_games / rsl_rl 양쪽 등록), 기본 4096 envs
-> 작성 기준: **2026-07-27** — v4(중심 파지 유도)까지 반영. run 이력·결과는 `logs/rsl_rl/log_per_task.txt` 참조
-> (P1=v1 모서리 걸침 → v2/v3 → **P2 성공** (129.6, 모서리 몰림 잔존) → v4 → **P3 실패: 정지 국소해** → **v5 근접 게이팅**)
-> P3 교훈: "제자리에서 딸 수 있는 shaping + 움직임 페널티" 조합은 정지 국소해를 만든다 — 파지 품질 항은 근접 게이팅 필수
+> 대상: `Isaac-Lift-Box-DualFR3-Plate-v0` (`tasks/manager_based/lift_plate/joint_pos_env_cfg.py`, dual_fr3_lab repo)
+> 알고리즘: PPO (rsl_rl), 기본 4096 envs
+> 작성 기준: **2026-07-28** — v6(양팔 정렬 강제 + 박스 수평)까지 반영. run 이력·결과는 `docs/log_per_task.txt` 참조
+> 이력: P1=v1 모서리 걸침 → v2/v3 → **P2 성공**(129.6, 모서리 몰림) → v4 → **P3 실패: 정지 국소해** → v5 근접 게이팅
+> → **P4 성공**(123.6, 잔존: 오른판 정렬 포기 + 기울어진 채 운반) → **P5a/b 실패: "잡고 가만히" 국소해**(+20cm 무보상 절벽
+> + tipping 디딤돌 제거 + 커진 shaping 꿀단지. yaw 박스 파지 실패로 misalignment world-축 버그도 발견) → **P6**
+> 교훈 모음: ① 제자리에서 딸 수 있는 shaping + 움직임 페널티 = 정지 국소해 (P3) ② mean 형태의 양팔 품질 보상은
+> "한쪽 포기"를 허용 — min 형태로 강제할 것 (P4) ③ 파지 품질 항은 근접/접촉 게이팅 필수
 > 자매 문서: `DUAL_FR3_LIFT_ENV_ANALYSIS.md` (오른팔 cube lift — gating/curriculum 교훈의 출처)
 
 ---
@@ -23,7 +26,7 @@
 
 ## 2. MDP 구조 (2026-07-27 기준)
 
-### 2-1. Observation (policy, 총 54 dims, history 없음)
+### 2-1. Observation (policy, 총 58 dims, history 없음)
 
 | Term | 내용 | Dims | 비고 |
 |------|------|------|------|
@@ -33,6 +36,7 @@
 | `target_object_position` | goal pose command (pos 3 + quat 4) | 7 | quat 4 dims는 identity → dead dims (cube task와 동일) |
 | `actions` | 직전 action | 14 | |
 | `plate_forces` | **양 판 접촉력 크기 (L, R)** × scale 0.02 | 2 | cube task와 달리 obs에 포함 — 근거는 §3-2 |
+| `object_orientation` | 박스 quat (root frame, w≥0 고정), noise σ0.02 | 4 | P5 추가 — yaw DR 관측성. 실물은 ArUco 6DoF (§3-2 유사 논리) |
 
 **obs noise (v3, 2026-07-27 추가)**: joint_pos σ0.005 rad / joint_vel σ0.05 / object_position σ0.01 m
 / plate_forces σ0.04 (2N 상당, τ_ext 추정 오차 대응) — cube task Run C와 동일 근거
@@ -68,18 +72,18 @@ right_plate_object_contact = ContactSensorCfg(prim_path=".../right_fr3_link7",
 
 ```
 G      = 𝟙[min(‖F_left‖, ‖F_right‖) > 1.0 N]        # squeeze gate: 양 판이 동시에 박스 접촉
-L      = 𝟙[z_obj > half_env + 0.10]                  # 높이 gate — env별 (안착 중심 + LIFT_DELTA, v3)
+L      = 𝟙[z_obj > half_env + 0.10]                  # 높이 gate — env별. P5의 +0.20은 발견 실패(무보상 절벽) → P6에서 +0.10 원복
+P      = (1−tanh(d_L/0.15))·(1−tanh(d_R/0.15))       # 근접 factor — 양 판 모두 측면 중심점 근처일 때만 1 (v5)
 
 r_total = 2.0  · mean_i(1 − tanh(d_ee_i-face_i / 0.3))    # reaching (양 "측면 중심점"까지, 비gated, v2)
         + 3.0  · mean_i(1 − tanh(d_ee_i-face_i / 0.08))   # reaching_fine (중심 정밀 접근, v4)
-P      = (1−tanh(d_L/0.15))·(1−tanh(d_R/0.15))       # 근접 factor — 양 판 모두 중심점 근처일 때만 1 (v5)
-
-        + 1.0  · P · mean(clamp(−n_i·ŷ_box, 0, 1))        # plate_alignment (면-면 자세, v2, v5 근접 게이팅)
-        − 4.0  · P · (|x_L−x_R| + |z_L−z_R|)              # plates_misalignment (v4 강화, v5 근접 게이팅)
+        + 2.0  · P · min(clamp(−n_L·ŷ_box,0,1), clamp(n_R·ŷ_box,0,1))  # plate_alignment (v6: min — 한쪽 포기 차단)
+        − 4.0  · P · |Δ_pair − Δ_ideal|_{x,z}             # plates_misalignment (P6: 이상 쌍 벡터(박스 회전 반영) 대비 편차 — world 축 버그픽스)
         + 2.0  · G                                        # squeezing (접촉 자체 보상, 발견 가속)
         + 15.0 · L · G                                    # lifting        (squeeze-gated)
         + 16.0 · L · G · (1 − tanh(d_obj-goal / 0.3))     # goal_tracking  (squeeze-gated)
         +  5.0 · L · G · (1 − tanh(d_obj-goal / 0.05))    # fine_grained   (squeeze-gated)
+        − 2.0  · (1 − ẑ_box·ẑ_world)                      # box_upright (수평 유지, v6 — 문헌 |roll|+|pitch| 상당)
         − 1e-4 · N_{link[1-6] 접촉}  (curriculum 발동 후 −1.0)   # undesired_contact_penalty (v3)
         − 1e-4 · ‖a_t − a_{t−1}‖²   (curriculum 발동 후 −0.1)   # action_rate
         − 1e-4 · ‖q̇‖²              (curriculum 발동 후 −0.1)   # joint_vel
@@ -104,14 +108,15 @@ P      = (1−tanh(d_L/0.15))·(1−tanh(d_R/0.15))       # 근접 factor — �
 |---|---|
 | time_out | 5 s (success termination / sparse bonus 없음 — cube task와 동일 약점) |
 | object_dropping | **제거 (None)** — 바닥 위 박스는 낙하 개념이 없음 |
-| curriculum | `modify_reward_weight_on_lifting_learned` 재사용 — lifting > 10/s 시 action_rate/joint_vel −1e-4→−0.1, **contact_penalty −1e-4→−1.0** (latch, 성능 기반) |
+| curriculum | `modify_reward_weight_on_lifting_learned` 재사용 — lifting > 10/s 시 action_rate/joint_vel −1e-4→−0.1, **contact_penalty −1e-4→−1.0** (latch). **P3부터 배치 크기 가중 EMA 판정** (α=min(0.5, 3·batch/N), term별 분리 — plate는 time_out 전체 배치라 "2회 연속 >10"으로 발동) |
 | DR: 박스 크기 | **0.30~0.50 m** (`scale DR 0.75~1.25` × 기준 0.4), `mode="usd"` per-env 고정, `replicate_physics=False` |
 | DR: 박스 밀도 | 기준 밀도 30 kg/m³ + **질량 scale 0.6~1.4** (`randomize_rigid_body_mass`, startup, 관성 재계산) → 실질 질량 0.5~5.3 kg. 스모크 테스트 실측: 8 envs에서 1.2~2.7 kg 분포 확인 |
 | DR: 박스 스폰 | x −0.05~+0.10, y ±0.10, **yaw ±0.3 rad** (기준 world (0.5, 0, 0.26) — 최대 박스 기준 스폰 후 작은 박스는 낙하 안착) |
 | DR: 박스 마찰 | **static 0.4~1.2 / dynamic 0.3~1.0** (v3에서 cube Run C와 같은 폭으로 확대. startup, 64 buckets, make_consistent). 판은 USD에 재질 명시(0.6/0.55) → 유효 static(average) ≈ 0.5~0.9 |
 | DR: joint 물성 | **액추에이터 PD 게인 ±15% scale** (v3, `randomize_actuator_gains`, startup, 양팔 14 joint) |
 | DR: goal | base 기준 x 0.45~0.60, y ±0.10, z **0.15~0.35** (world 0.555~0.755 — 초기값 0.25~0.45는 최대 0.7m 상승이라 과도해 하향, 데모 검증 높이 포함) |
-| 시각화 | DR 존 마커: 파란 판=박스 스폰 범위(바닥), 초록 판 2장=goal 범위 상/하한 (시각 전용, cube task와 동일 방식) |
+| 시각화 | DR 존 마커: 파란 판=박스 스폰 범위(바닥), 초록 판 2장=goal 범위 상/하한 (시각 전용, cube task와 동일 방식. `DR_VIS=0`으로 끄기 가능) |
+| PhysX | `gpu_total_aggregate_pairs_capacity` 64×1024 (P6 — cube의 4096 env 동시 접촉 용량 초과 이슈 예방 이식) |
 | **없는 DR** | obs latency (검토 보류) |
 
 ---
@@ -147,8 +152,9 @@ P      = (1−tanh(d_L/0.15))·(1−tanh(d_R/0.15))       # 근접 factor — �
 ### 3-3. lifting 판정 높이 0.35의 트레이드오프 (→ v3에서 env별 판정으로 해결)
 
 > **2026-07-27 해결**: `_box_half_sizes`(xformOp:scale 캐싱)로 env별 안착 중심을 알 수 있게
-> 되어, 판정을 `z > half_env + 0.10`으로 교체 (`object_is_lifted_perenv_and_squeezed` 등).
-> 아래는 v1 고정값 시절의 논의 기록.
+> 되어, 판정을 `z > half_env + Δ`로 교체 (`object_is_lifted_perenv_and_squeezed` 등).
+> **Δ 이력**: P5에서 0.20(tipping 차단) → **발견 실패로 P6에서 0.10 원복** (tipping은 발견 디딤돌로
+> 허용, 기울임 정제는 box_upright/misalignment/min-alignment 페널티가 담당). 아래는 v1 시절 논의 기록.
 
 - 고정값 0.35는 **최대 박스(안착 중심 0.25) 기준 +10cm**. 큐브가 모서리로 구르는 순간의
   중심 상승(최대 0.25·√2≈0.35)과 겹치지만 G(양판 접촉) 동시 조건이 오탐을 차단
@@ -157,6 +163,44 @@ P      = (1−tanh(d_L/0.15))·(1−tanh(d_R/0.15))       # 근접 factor — �
   배관이 필요해 v1은 고정값. 학습이 작은 박스에서만 정체되면 여기부터 의심할 것
 
 ---
+
+### 3-4. Reference 문헌과의 보상 구조 대조 (2026-07-28)
+
+가장 유사한 태스크의 보상 설계와 대조해 v6 변경의 근거로 삼음:
+**"Sim-to-Real Learning for Humanoid Box Loco-Manipulation" (arXiv:2310.03191)** — 휴머노이드 양팔 박스 들기.
+
+| 그쪽 설계 | 우리 대응 | 상태 |
+|---|---|---|
+| 양손 **각각** 박스 측면 목표점 거리 (합산, w0.15) | reaching/reaching_fine (평균) | v2~v4에서 반영 |
+| 손 orientation 정렬 페널티 (roll, w0.05) | plate_alignment | **v6에서 min으로 강제** |
+| 접촉 타이밍 gate (조기 접촉 방지 indicator) | 근접 게이팅 (v5) | 반영 |
+| **박스 roll+pitch 수평 페널티** (w0.05) | box_upright | **v6 신설** |
+| 손-박스 접촉력 크기 페널티 (부드러운 접촉, w0.05) | 없음 | 보류 카드 (sim 센서만으로 가능, F/T 불필요) |
+
+**추가 대조 (2026-07-28, 본문 정독):**
+
+- **arXiv:2409.15465 (In-the-Wild Ungraspable Picking)** — RL이 아닌 계획 기반 (EE 측면으로 끼우는
+  bimanual bracing + 손목 6축 F/T로 hybrid 위치/힘 제어). 배울 점:
+  ① 파지 품질 = 최악 외란 wrench에 대한 force closure QP (마찰콘 조건) — 우리 보류 카드
+  "gate 접촉력 법선비율"의 문헌 근거 ② **"상호작용 중엔 vision 불신, 고유수용+힘만 사용"**
+  — 우리 가림 대응(EKF+기구학 prior, 손감각 운반)과 동일 철학, 독립 검증
+- **arXiv:2307.06423 (Bi-Touch)** — 양팔 촉각 RL sim2real (TacTip 촉각 이미지 obs, GAN으로
+  real→sim 변환, 물체 pose obs 없음 — 평면 4-DoF 과제라 가능). 배울 점:
+  ① reward에 "TCP 표면 수직" 정렬 항 = 우리 plate_alignment와 수렴 ② **실물 실패 사례
+  "unwanted squeezing"**: sim에선 무해하던 과조임이 실물에서만 발현 → 과접촉 깊이 페널티
+  강화 + 강성 튜닝 + "10-step 자세 유지 후 성공 인정"으로 해결. **→ 우리 과조임(접촉력
+  크기) 페널티를 "보류"에서 "실물 배포 전 필수"로 격상하는 직접 근거** + success 정의(§5-5)에
+  N-step 유지 조건 채택 근거 ③ obs를 저차원(스칼라 힘+pose)으로 유지한 우리 선택은
+  촉각 이미지 GAN 변환 같은 파이프라인을 불필요하게 만듦 (sim2real 단순화)
+
+### 3-5. 양팔 비대칭과 min-form (P4 교훈)
+
+- dual_fr3는 거울 대칭이 아님 (장착 yaw ∓30° 보상해도 FR3 관절 리밋은 비대칭) → 같은 정렬
+  자세라도 팔마다 비용이 다름. 전통 제어라면 팔별 설계가 필요한 지점 — RL이 팔별로 다른
+  관절 전략을 찾게 하는 것이 이 프로젝트의 취지
+- 단, 보상이 mean이면 RL은 "비용 큰 팔은 포기"를 선택함 (P4에서 실증: 왼판 정렬 완벽,
+  오른판 기울임, alignment tail 0.078). **min-form은 "다른 방식으로라도 둘 다 달성"을 강제**
+  — 비대칭 해법은 허용하되 목표 미달성은 불허
 
 ## 4. 남은 구조적 약점 (심각도순)
 
@@ -182,16 +226,21 @@ P      = (1−tanh(d_L/0.15))·(1−tanh(d_R/0.15))       # 근접 factor — �
 - [x] **5-3. 마찰 DR** — 2026-07-27 반영 (박스 static 0.5~1.0 / dynamic 0.4~0.9, 판 USD 재질 0.6/0.55 명시)
 - [x] **5-4. 박스 yaw DR** — 2026-07-27 반영 (±0.3 rad)
 - [x] **5-7. DR 존 시각화** — 2026-07-27 추가 (스폰=파랑, goal 상/하한=초록, cube task와 동일 방식)
-- [x] **5-0. 첫 학습 run (Run P1)**: `logs/rsl_rl/dual_fr3_plate_lift/2026-07-27_16-00-04`
-   (v1 config). 들기는 발견했으나 **판 모서리 걸침 파지 발현** → v2 보상 개편의 근거가 됨
-- [~] **5-8. Run P2 (진행 중)**: `logs/rsl_rl/dual_fr3_plate_lift/2026-07-27_18-38-18`
-   (v2 꼬집기 유도 + v3 강건성/충돌 페널티 전부 반영, 4096 envs, 5000 iter).
-   관찰 포인트 — ① play에서 면-면 꼬집기 발현 ② noise+DR로 인한 수렴 지연 정도
-   ③ `squeezing`→`lifting` 사다리 ④ 커리큘럼 3종(action_rate/joint_vel/contact) 발동 후 생존.
-   run 이력은 `logs/rsl_rl/log_per_task.txt` 참조
-- [ ] **5-5. Success 정의** + sparse bonus / 성공률 지표 (cube task 5-3과 공용 설계 가능)
-- [ ] **5-6. sim2real 대비**: obs noise (특히 plate_forces에 FT급 노이즈), 판 질량 반영,
-   env별 lifting 판정 높이
+- [x] **5-0~5-8. Run P1~P4 완료** — 상세 이력·결과는 `docs/log_per_task.txt`가 원본.
+   요약: P1(모서리 걸침) → P2(성공 129.6, 모서리 몰림) → P3(실패: 정지 국소해) → P4(성공 123.6,
+   역대 최고 속도. 잔존: 오른판 정렬 포기 + 박스 기울어짐)
+- [x] **5-9. obs noise / env별 lifting 판정 / orientation obs** — P2(v3)와 P5에서 반영 완료
+- [x] **5-10. Run P5a/b — 실패**: "잡고 가만히" 국소해 (+20cm 무보상 절벽 + tipping 디딤돌
+   차단 + shaping 꿀단지). 부산물: 접근·정렬·조임 완성도는 역대 최고 확인, misalignment
+   world-축 버그 발견. 상세는 `log_per_task.txt`
+- [~] **5-11. Run P6 (준비 완료, 스모크 통과, obs 58)**: LIFT_DELTA 0.10 원복 + misalignment
+   yaw-aware 버그픽스 + PhysX aggregate 64k. **중력 A/B 재시도** (a=중력 ON, b=disable_gravity
+   override — b 성공 시 이후 b로 고정, 실물 중력보상 정합). 관찰: lifting 재발견(P4 페이스),
+   alignment(min) 상승, box_upright ~0, play에서 "수평 + 회전 박스 파지" 개선
+
+- [ ] **5-5. Success 정의** + sparse bonus / 성공률 지표 (cube task와 공용 설계 가능)
+- [ ] **5-6. sim2real 잔여**: 판 질량(~1.4kg) link7 반영, obs latency, τ_ext 바이어스/드리프트 모델,
+   접촉력 크기 페널티(과조임 방지)
 
 ---
 

@@ -30,7 +30,7 @@ from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.sensors import ContactSensorCfg, FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import combine_frame_transforms, quat_apply
+from isaaclab.utils.math import combine_frame_transforms, quat_apply, subtract_frame_transforms
 from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as Gnoise
 
 from dual_fr3_lab.tasks.manager_based.lift_cube import mdp
@@ -56,7 +56,12 @@ BOX_DENSITY = 30.0  # kg/m^3 (0.4박스 1.9kg 기준). 질량 scale DR가 밀도
 BOX_MASS_SCALE_RANGE = (0.6, 1.4)  # 밀도 18~42 kg/m^3 상당 (0.3박스 0.5kg ~ 0.5박스 5.3kg)
 # 스폰 z는 최대 박스(half 0.25)도 바닥에 안 박히게 잡고, 작은 박스는 리셋 직후 낙하해 안착
 BOX_SPAWN_POS_W = (0.5, 0.0, 0.26)
-LIFT_DELTA = 0.10  # 들기 판정: 박스 중심이 "안착 중심(env별 반너비) + 이 값"을 넘으면 lifted
+# 들기 판정: 박스 중심이 "안착 중심(env별 반너비) + 이 값"을 넘으면 lifted.
+# 이력: P5에서 tipping(기울이기, 최대 중심상승 +10.4cm) 치팅을 막으려 0.20으로 올렸으나
+# "무보상 +20cm 완주"가 탐색 범위 밖이라 lifting 발견 자체가 실패 (P5a/b 둘 다 lifting 0).
+# P6에서 0.10 원복 — tipping은 발견의 디딤돌로 허용하고, "기울어진 채 유지"는
+# box_upright(-2) + misalignment(-4) + min-alignment가 수평 들기로 정제하는 구조
+LIFT_DELTA = 0.10
 
 
 # ---------- 커스텀 MDP 항 ----------
@@ -82,9 +87,9 @@ def _ee_lr_indices(ee_frame) -> tuple[int, int]:
 
 
 def _face_dists(env, object_cfg: SceneEntityCfg, ee_frame_cfg: SceneEntityCfg):
-    """양 판 TCP <-> 담당 측면 중심점 거리와 박스 +y면 법선을 계산 (공용 헬퍼).
+    """양 판 TCP <-> 담당 측면 중심점 거리와 박스 +y면 법선, 면 중심점을 계산 (공용 헬퍼).
 
-    Returns: (li, ri, y_axis_w, d_l, d_r)
+    Returns: (li, ri, y_axis_w, face_l, face_r, d_l, d_r)
     """
     obj = env.scene[object_cfg.name]
     ee_frame = env.scene[ee_frame_cfg.name]
@@ -97,7 +102,7 @@ def _face_dists(env, object_cfg: SceneEntityCfg, ee_frame_cfg: SceneEntityCfg):
     face_r = obj.data.root_pos_w - y_axis_w * half
     d_l = torch.norm(ee_frame.data.target_pos_w[:, li] - face_l, dim=-1)
     d_r = torch.norm(ee_frame.data.target_pos_w[:, ri] - face_r, dim=-1)
-    return li, ri, y_axis_w, d_l, d_r
+    return li, ri, y_axis_w, face_l, face_r, d_l, d_r
 
 
 def _proximity_factor(d_l, d_r, prox_std: float):
@@ -122,7 +127,7 @@ def object_dual_ee_face_distance(
     "양옆에서 마주 보고 꼬집는" 접근을 유도한다. 박스 중심 기준이었던 v1은 위/모서리
     어디로 접근해도 같은 보상이라 모서리 걸침이 나왔음 (Run P1에서 관찰).
     """
-    _, _, _, d_l, d_r = _face_dists(env, object_cfg, ee_frame_cfg)
+    _, _, _, _, _, d_l, d_r = _face_dists(env, object_cfg, ee_frame_cfg)
     return 1 - 0.5 * (torch.tanh(d_l / std) + torch.tanh(d_r / std))
 
 
@@ -137,17 +142,20 @@ def plate_face_alignment(
     왼판(+y면 담당)은 법선이 박스 -y 방향, 오른판은 +y 방향이어야 함. dot을 [0,1]로
     clamp해서 반대 방향 자세엔 gradient만 없고 페널티는 없음.
     v5: 근접 factor 곱 — 박스에서 멀면 0 (제자리 공짜 보상 차단, P3 국소해 원인).
+    v6: mean -> min — P4에서 mean은 왼판만 완벽해도 절반을 받아 오른판 정렬이 포기됨
+    (alignment tail 0.078, play에서 오른판만 기울어짐). min은 못하는 팔이 보상을 결정
+    -> "한쪽 포기" 차단 + 이 값 자체가 "더 못하는 팔" 지표 (arXiv:2310.03191 대조로 근거 확인).
     """
     obj = env.scene[object_cfg.name]
     ee_frame = env.scene[ee_frame_cfg.name]
-    li, ri, y_axis_w, d_l, d_r = _face_dists(env, object_cfg, ee_frame_cfg)
+    li, ri, y_axis_w, _, _, d_l, d_r = _face_dists(env, object_cfg, ee_frame_cfg)
     z_axis = torch.zeros_like(obj.data.root_pos_w)
     z_axis[:, 2] = 1.0
     n_l = quat_apply(ee_frame.data.target_quat_w[:, li], z_axis)  # 왼판 작업면 법선
     n_r = quat_apply(ee_frame.data.target_quat_w[:, ri], z_axis)
     a_l = (-(n_l * y_axis_w).sum(dim=-1)).clamp(0.0, 1.0)
     a_r = ((n_r * y_axis_w).sum(dim=-1)).clamp(0.0, 1.0)
-    return 0.5 * (a_l + a_r) * _proximity_factor(d_l, d_r, prox_std)
+    return torch.minimum(a_l, a_r) * _proximity_factor(d_l, d_r, prox_std)
 
 
 def plates_pair_misalignment(
@@ -160,12 +168,53 @@ def plates_pair_misalignment(
 
     v5: 근접 factor 곱 — 접근/탐색 단계의 비대칭에는 세금을 물리지 않고 (P3 국소해 원인),
     잡는 순간의 품질에만 작동.
+    P6 (yaw-aware 버그픽스): 기존엔 world 축 기준 |x_L-x_R|+|z_L-z_R|이라, yaw 회전한 박스를
+    "올바르게" 잡으면(면 중심점끼리 world x로 2*half*sin(yaw) 차이) 오히려 벌금을 물어
+    reaching_fine과 모순 -> 회전 박스 파지 실패 (P5b play에서 관찰). 이상적인 쌍 벡터
+    (face_L - face_R, 박스와 함께 회전)를 기준으로 한 편차로 교체 — yaw 0이면 기존과 동일.
     """
     ee_frame = env.scene[ee_frame_cfg.name]
-    li, ri, _, d_l, d_r = _face_dists(env, object_cfg, ee_frame_cfg)
+    li, ri, _, face_l, face_r, d_l, d_r = _face_dists(env, object_cfg, ee_frame_cfg)
     p = ee_frame.data.target_pos_w
-    misalign = (p[:, li, 0] - p[:, ri, 0]).abs() + (p[:, li, 2] - p[:, ri, 2]).abs()
+    pair_error = (p[:, li] - p[:, ri]) - (face_l - face_r)
+    misalign = pair_error[:, 0].abs() + pair_error[:, 2].abs()
     return misalign * _proximity_factor(d_l, d_r, prox_std)
+
+
+def object_orientation_in_robot_root_frame(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """박스 orientation (robot root frame 기준 quat, w>=0 부호 고정) (num_envs, 4).
+
+    P5 추가: yaw DR(+-0.3)이 있는데 policy가 박스 회전을 관측할 수 없으면 min-alignment가
+    관측 불가능한 목표가 됨. 실물은 ArUco 마커 6DoF 추정으로 대응 (orientation 오차가
+    위치보다 커서 noise sigma를 크게 걸어둠). w>=0 고정은 q ≡ -q 불연속 제거용.
+    """
+    robot = env.scene[robot_cfg.name]
+    obj = env.scene[object_cfg.name]
+    _, quat = subtract_frame_transforms(
+        robot.data.root_pos_w, robot.data.root_quat_w, obj.data.root_pos_w, obj.data.root_quat_w
+    )
+    sign = torch.where(quat[:, 0:1] >= 0.0, 1.0, -1.0)
+    return quat * sign
+
+
+def box_upright(
+    env,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """박스 기울기 페널티: 1 - z_box·z_world (0=수평 ~ 2=뒤집힘). 페널티 weight로 사용.
+
+    v6: 들고 나르는 중 박스가 회전한 채 운반되는 문제 대응. 문헌(arXiv:2310.03191)의
+    |roll|+|pitch| 수평 유지 항에 해당. 바닥 안착 시 자연히 0이라 gate 불필요, yaw는 자유.
+    """
+    obj = env.scene[object_cfg.name]
+    z_axis = torch.zeros_like(obj.data.root_pos_w)
+    z_axis[:, 2] = 1.0
+    box_z = quat_apply(obj.data.root_quat_w, z_axis)
+    return 1.0 - box_z[:, 2]
 
 
 def _lifted_perenv(env, lift_delta: float, object_cfg: SceneEntityCfg) -> torch.Tensor:
@@ -234,6 +283,10 @@ class DualFR3PlateBoxLiftEnvCfg(LiftEnvCfg):
         # post init of parent
         super().__post_init__()
 
+        # PhysX GPU aggregate pair 버퍼 확대 (cube에서 4096 env 동시 접촉 시 용량 초과로
+        # 접촉 누락이 터진 이슈의 예방 적용 — plate도 양판 squeeze 동시 접촉 구조라 동일 리스크)
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 64 * 1024
+
         # ---------- 로봇 ----------
         self.scene.robot = DUAL_FR3_PLATE_EE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
 
@@ -291,6 +344,11 @@ class DualFR3PlateBoxLiftEnvCfg(LiftEnvCfg):
 
         # ---------- observation: 기본(joint 14개 전부) + 양 판 접촉력 ----------
         self.observations.policy.plate_forces = ObsTerm(func=plate_contact_forces, noise=Gnoise(std=0.04))
+        # 박스 orientation (P5): yaw DR 관측 가능화 + min-alignment 목표의 관측성 확보.
+        # 실물은 ArUco 6DoF 추정 대응 — 각도 오차가 위치보다 커서 noise σ0.02(~2°) 적용
+        self.observations.policy.object_orientation = ObsTerm(
+            func=object_orientation_in_robot_root_frame, noise=Gnoise(std=0.02)
+        )
 
         # ---------- obs noise (v3): 실물 센서/인식 수준 — cube task Run C와 동일 근거 ----------
         # 강건성 진단(cube, 2026-07-27): noise 단독/물성 DR 단독은 drop 0인데 "조합"만 슬립 드랍
@@ -433,12 +491,15 @@ class DualFR3PlateBoxLiftEnvCfg(LiftEnvCfg):
         )
         # 판 법선-박스 면 법선 정렬 (면-면 접촉 자세 유도, v2 핵심 — 모서리 걸침 방지)
         # v5: 근접 게이팅 (prox_std 0.15) — P3에서 제자리 공짜 만점이 "안 움직이는" 국소해를 만듦
-        self.rewards.plate_alignment = RewTerm(func=plate_face_alignment, params={"prox_std": 0.15}, weight=1.0)
+        # v6: min-form + weight 2 — P4에서 mean/w1은 오른판 정렬 포기를 허용 (tail 0.078)
+        self.rewards.plate_alignment = RewTerm(func=plate_face_alignment, params={"prox_std": 0.15}, weight=2.0)
         # 두 판의 높이/전후 어긋남 페널티 (마주 보는 꼬집기 강제, v4에서 -4)
         # v5: 근접 게이팅 — 접근 단계 탐색(순간 비대칭)에 세금을 물리지 않음
         self.rewards.plates_misalignment = RewTerm(
             func=plates_pair_misalignment, params={"prox_std": 0.15}, weight=-4.0
         )
+        # 박스 수평 유지 (v6): 기울어진 채 운반 방지. 문헌의 roll/pitch 페널티 상당, yaw 자유
+        self.rewards.box_upright = RewTerm(func=box_upright, weight=-2.0)
         # 양판 동시 접촉 자체에 보상 (squeeze 발견 가속)
         self.rewards.squeezing_object = RewTerm(func=mdp.object_grasped, params=dict(squeeze_gate_params), weight=2.0)
         # 들기/운반 보상 전부 "양판 접촉 중"일 때만 지급 (밀어서 옮기는 exploit 차단)

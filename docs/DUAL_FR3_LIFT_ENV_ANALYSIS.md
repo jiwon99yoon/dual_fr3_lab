@@ -3,6 +3,8 @@
 > 대상: `Isaac-Lift-Cube-DualFR3-v0` (`lift/config/dual_fr3/joint_pos_env_cfg.py` + 베이스 `lift/lift_env_cfg.py`)
 > 알고리즘: PPO (rsl_rl), 4096 envs
 > 작성 기준: **2026-07-27 14:42** — grasp gating(ContactSensor) 구현·검증 완료 시점.
+> **최종 갱신 2026-07-28 (Run C 3차 준비)**: action 절대→delta 전환 (§2-2 근거 표), Run C 1·2차
+> 실패 분석 (§5-5), 강건성 진단 (§5-6) 반영. 이하 원문 헤더:
 > **갱신 2026-07-27 16시경 (Run B 준비 완료)**: MJCF 테이블(상판 0.75) + 중력보상(disable_gravity)
 > + 충돌 페널티 + 측정 joint 토크 obs(43 dims) 반영. §2는 Run B 기준, Run A까지의 상태는 git 이력 참조.
 > 이력: run 4개 (`logs/rsl_rl/dual_fr3_lift/`) TensorBoard + `params/env.yaml` 대조 분석 포함.
@@ -38,12 +40,28 @@ PLAY cfg는 corruption off(깨끗한 baseline 평가), `Play-Noisy-v0`가 재활
 finger pad 접촉력은 obs에 넣지 않는다 — 실로봇에 F/T·촉각 센서가 없기 때문 (contact은 reward 전용, §3).
 관절 토크는 실물에 있으므로 예외.
 
-### 2-2. Action (8 dims)
+### 2-2. Action (8 dims) — Run C 3차부터 delta 전환 (2026-07-28)
 
 | | 구현 | Scale |
 |---|---|---|
-| arm (7) | `JointPositionActionCfg`, default offset 기준 상대 위치 명령 | 0.5 |
+| arm (7) | `RelativeJointPositionActionCfg` — **현재 자세 기준 delta 명령** (plate와 동일) | 0.1 |
 | gripper (1) | `BinaryJointPositionActionCfg` — open 0.04 / close 0.0 **이진** | — |
+
+**절대(scale 0.5) → delta(0.1) 전환 근거** (Run C 1·2차 실패 분석):
+
+| 조건 | action | obs noise | 결과 |
+|---|---|---|---|
+| franka 원본 / cube v2·A·B | 절대 0.5 | 없음 | 성공 |
+| cube C1 / C2 | 절대 0.5 | 있음 | **noise_std 5.5 / 12.8 폭주** |
+| plate P2 / P4 | delta 0.1 | 있음 | 성공 (std 1.98 피크 후 수축) |
+
+절대 action에서는 탐색 노이즈가 곧 목표 자세 점프(±0.5 rad)라 obs noise로 advantage가 흐려지면
+"entropy 우세 → 더 큰 휘두름 → drop → 더 흐린 신호"의 양성 피드백이 열린다. delta는 스텝당
+이동이 ±0.1 rad로 **구조적으로 캡**되어 이 고리가 못 열림. 문헌 근거: Demystifying Action Space
+Design (arXiv:2602.23408 — delta 일관 우위, joint-space 안정 우위), Benchmarking Action Spaces
+(arXiv:2606.18594 — increment 계열 우위), gSDE (Raffin et al. — 스텝별 Gaussian 탐색의 저크 문제).
+주의: obs `actions` 항의 의미가 바뀌므로 이전 checkpoint와 호환 불가. delta 특성상 zero-action이
+"현 자세 유지"라 리셋 직후 래칫 처짐류 거동은 정상 (plate에서 기확인).
 
 ### 2-3. Sensors (grasp 판정용, 2026-07-27 추가)
 
@@ -181,14 +199,22 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
 2. **그리퍼 인터페이스 갭**: sim은 50Hz 이진 토글이 가능하지만 실물 Franka 그리퍼는
    명령당 수백 ms — 정책이 토글을 남용하면 실물 전이 불가. play에서 토글 빈도 확인 필요,
    심하면 toggle 페널티 또는 명령 latch 도입.
-3. **Cube 자세 — 두 층위로 구분 (2026-07-27 재논의)**:
+3. **Cube 자세 — 두 층위로 구분 (2026-07-27 재논의, 2026-07-28 Run D 확정)**:
    - *goal orientation* (목표 지점에서의 cube 자세): 대칭 cube 위치 이동 태스크라 불필요 — 의도된 미사용.
      obs의 goal quat 4 dims는 죽은 입력, `Metrics/orientation_error`는 무시할 지표.
+     **plate도 동일** — plate의 orientation 항들(plate_alignment 등)은 goal이 아니라 전부 파지 층위.
+     stacking/insertion으로 태스크가 확장될 때만 열 것.
    - *파지 시점 자세 정합* (그리퍼 yaw ↔ cube 면 정렬): **실환경 필수인데 현재 미커버.**
      스폰 yaw DR이 없어(x,y만 랜덤) 항상 축 정렬 스폰 → 정책이 고정 접근 방향만 학습
      → 실물에서 임의 yaw cube에 모서리 파지로 실패할 것. obs에도 cube 자세 정보 없음.
-     **Run D 후보**: 스폰 yaw ±45° DR(정사각 대칭상 전 구성 커버) + obs에 cube yaw 추가
-     (실물 6D pose 인식으로 획득 가능한 신호). obs 차원이 바뀌므로 별도 run으로 분리.
+
+   **→ Run D 계획 확정 (2026-07-28, delta 검증(Run C 3차) 성공 후 실행. plate 검증 레시피 이식):**
+
+   | 단계 | 내용 | plate 대응물 (검증됨) |
+   |---|---|---|
+   | ① 스폰 yaw DR ±45° | `reset_object_position` pose_range에 yaw 추가. 정사각 대칭이라 ±45°로 전 구성 커버 | 스폰 yaw ±0.3 (P1부터) |
+   | ② obs에 cube 자세 추가 | "DR을 넣으면 관측도 줘야 한다" (plate P5 교훈 — 아니면 정합이 관측 불가능한 목표가 됨). 실물은 6D pose 인식으로 획득 가능. obs 차원 변경 → checkpoint 비호환, 별도 run | `object_orientation_in_robot_root_frame` (quat w≥0 부호 고정) 재사용 |
+   | ③ 정합 shaping **보류** | 2-finger가 cube 모서리를 물면 grasp gate는 통과 가능하나 불안정 — **play에서 모서리 파지가 실제 관찰되면** 그때 "그리퍼 yaw ↔ cube 면" 정렬 항 추가 | plate도 P1에서 모서리 걸침 관찰 후 v2에서 alignment 추가. 단 P3 교훈: 정합 shaping은 근접 게이팅 없이 넣으면 "제자리 정렬" 국소해 유발 → 넣게 되면 반드시 근접/접촉 게이팅과 함께 |
 4. **obs latency 미모델링**: 실물 perception은 노이즈뿐 아니라 지연(수십 ms~프레임 단위)도
    있음. Run C 검증 후 1~2 step 지연 랜덤화 검토.
 5. **이진 그리퍼**: 파지력 조절 불가. force 제어가 필요해지면 한계.
@@ -202,6 +228,9 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
 - [x] **5-0. Run A (gating만 재학습)**: `2026-07-27_14-59-58`, 3000 iter — **판정 성공**: reaching tail **0.853** (기준 0.8, v4 0.07), lifting 14.04, tracking 14.29 / fine 3.68 (역대 최고), drop ~0%. 서커스 exploit 소멸
 - [x] **5-4. 충돌 페널티** — Run B에 포함 (right_arm_contact + undesired_contacts, 성능 curriculum). goal y −0.05 복원
 - [x] **Run B 학습 실행 중**: `2026-07-27_15-59-59`, 3000 iter (2026-07-27 16시경 시작). 체크: contact_penalty가 curriculum 발동 후에도 ~0 유지 / reaching ≥ 0.8 / tracking 절대값은 goal 상향 탓에 Run A보다 낮게 시작 가능
+- [ ] **5-7. Run D (파지 자세 정합, 2026-07-28 확정)**: Run C 3차(delta 검증) 성공 후 실행.
+  스폰 yaw ±45° DR + cube 자세 obs 추가 (§4-3의 확정 계획·plate 대응표 참조). 정합 shaping은
+  모서리 파지 관찰 시에만 후속 투입 (근접 게이팅 필수 — plate P3 교훈)
 - [ ] **5-3. Success 정의**: `𝟙[d < 0.05, N step 유지]` sparse bonus(+50) 및/또는 종료 + eval 성공률
 - [x] **5-5. Run C 1차 (`2026-07-27_18-38-13`, 5000 iter) — 실패, 원인 규명 완료**:
   구성 = obs noise + cube 물성 DR + `object_hold_still`(goal 10cm 내 속도² w−0.5).
@@ -213,7 +242,17 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
 - [x] **curriculum EMA 수정 + goal y 원복** (2026-07-27, 스모크 통과): 배치 크기 가중 EMA
   (α = min(0.5, 3·batch/num_envs), term별 분리 저장) — drop 배치는 α~0.001로 무력화,
   timeout 배치도 2회 연속 초과 필요. goal y 상한 −0.05→**−0.15 원복** (중앙선 goal은
-  실익 없이 충돌 위험만 키움). **Run C 2차 from-scratch 재학습 대기**
+  실익 없이 충돌 위험만 키움)
+- [x] **Run C 2차 (`2026-07-27_20-57-10`, 5000 iter) — 실패, 새 모드**: EMA curriculum은
+  오발동 0회로 정상 작동했으나 noise_std가 1.0→**12.8**까지 단조 폭주 (C1의 5.5보다 심함,
+  C1에선 오발동 페널티가 우연히 std를 눌렀던 것). 정책 평균 자체가 붕괴해 play에서 팔 휘두름.
+  hold_still(−0.04/s)은 무죄. → **재해석: plate P2/P4가 같은 noise+DR에서 from-scratch 성공
+  → 진범은 "절대 action(scale 0.5) × obs noise" 조합의 탐색 불안정** (§2-2 ablation 표 참조)
+- [x] **Run C 3차 준비 완료 (2026-07-28, 스모크 통과)**: action을 절대(0.5)→**delta
+  (`RelativeJointPositionActionCfg`, scale 0.1, plate와 통일)**로 전환. 나머지 세팅 동일 —
+  단일 변인 검증 실험. 판정: noise_std ~2 피크 후 수축(1000 iter 내) + reaching ≥ 0.8 +
+  강건성 재평가 drop ≈ 0. 예비 카드: entropy_coef 0.006→0.002, asymmetric critic.
+  **from-scratch 유지 (사용자 결정 — plate 선례로 정당화됨)**
 
 ### 5-6. 강건성 진단 (2026-07-27, Run B 정책 model_4999, 32env×4ep/조건)
 

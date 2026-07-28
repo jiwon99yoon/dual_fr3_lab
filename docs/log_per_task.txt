@@ -65,15 +65,60 @@
   - goal y 상한 -0.05 -> -0.15 재원복 (중앙선 goal은 실익 없이 왼팔 충돌 위험만 키움)
   - 조기 경보: noise_std가 2를 넘어 계속 오르면 entropy_coef 0.006 -> 0.002 낮춰 재시작 검토
 
-2026-07-27_20-57-10 : Run C 2차 (from-scratch, 5000 iter, 진행 중). 판정 기준: 강건성 재평가에서
-                      drop≈0 복귀 + hold_still -> 0 수렴 + reaching >= 0.8 + play에서 흔들림/충돌 없음.
+2026-07-27_20-57-10 : Run C 2차 (from-scratch, 5000 iter 완주). -> 실패 (C1과 다른 모드):
+                      noise_std가 1.0 -> "12.8"까지 단조 폭주 (C1의 5.5보다 심함). 정책 평균 자체가
+                      망가져 play에서 오른팔이 마구 휘두르는 거동. mean reward 42 (B 143), lifting 5.6,
+                      reaching 0.35, fine 0.014, drop 12~28%.
+                      원인 분석: ① obs noise로 advantage 신호가 흐려져 entropy 보너스(coef 0.006)가
+                      우세 -> std 폭주 (C1과 동일 기제). ② EMA 커리큘럼은 "설계대로" 오발동 없이
+                      침묵했지만 (lifting EMA가 10에 도달 못함), 그 결과 C1에서 우연히 std를 눌러주던
+                      action_rate 페널티 폭격조차 없어서 폭주가 무제한 진행. ③ hold_still은 -0.04/s로
+                      무해 (범인 아님 - goal 근처에 거의 못 가서 발동 자체가 드묾).
+                      교훈: from-scratch + obs noise 조합은 entropy 제어 없이는 성립 안 함.
+                      커리큘럼 수정 자체는 정상 작동 (오발동 0회) - 문제는 탐색 쪽.
+
+--- Run C 3차부터 반영: delta action 전환 (2026-07-28, 사용자 결정 - from-scratch 유지) ---
+  C1/C2 실패 재해석: plate P2/P4가 "같은 obs noise + 물성 DR"에서 from-scratch로 성공했으므로
+  "from-scratch + noise 불가" 결론은 기각. 4행 ablation으로 범인 분리:
+    절대 0.5 + noise 없음 = 성공 (franka 원본, v2/A/B) / 절대 0.5 + noise = 폭주 x2 (C1/C2)
+    delta 0.1 + noise = 성공 (P2/P4)
+  -> "절대 action x obs noise" 조합의 탐색 불안정: 탐색 노이즈가 ±0.5rad 목표 점프로 증폭
+     -> drop -> advantage 더 흐려짐 -> entropy 우세의 양성 피드백. delta는 스텝당 ±0.1rad 캡으로
+     고리 차단. 문헌: arXiv 2602.23408 (delta 일관 우위), 2606.18594, gSDE.
+  - 변경: JointPositionActionCfg(0.5, default offset) -> RelativeJointPositionActionCfg(0.1)
+    (plate와 통일). 이전 checkpoint 호환 불가 (obs actions 항 의미 변경). 나머지 세팅 동일.
+  - 예비 카드 (delta로도 폭주 시): entropy_coef 0.006 -> 0.002, critic 특권 obs(asymmetric AC),
+    또는 Run B fine-tune (단 B는 절대 action이라 fine-tune하려면 절대 유지 필요).
+  - 판정: noise_std가 plate처럼 ~2 피크 후 수축하는지 (1000 iter 내 판별) + 기존 기준
+    (reaching>=0.8, 강건성 재평가 drop≈0, play 정상 거동).
+
+2026-07-28_12-26-07 : Run C 3차 (delta action 전환 후 첫 run, from-scratch 5000 iter 완주).
+                      dual_fr3_lab repo에서의 첫 공식 학습 (로그 위치: ~/dual_fr3_lab/logs/).
+                      -> 성공 (delta 가설 적중): noise_std 3.04 피크(it1086) 후 0.65 수축 (C1 5.5,
+                         C2 12.8 폭주와 대비). it3792 시점 mean reward 143.7 (B의 143을 noise+DR
+                         환경에서 추월), reaching 0.851, lifting 13.8, fine 2.83, drop 1.1%,
+                         커리큘럼 it1000~1500 정당 발동 + 생존. pos err 0.215 (B 0.209 동급).
+                         play 확인: 파지/운반 정상. 잔존 문제 = goal 도달 후 joint1/2 무의미 배회.
+                         원인 분석: 보상이 cube만 봐서 7DOF 팔의 여유 자유도(null space)에 무관심
+                         + delta 바이어스 적분(평균 출력이 정확히 0이 아니면 등속 드리프트)
+                         + joint_vel/action_rate 제곱 페널티는 저속에서 ~0.
+                         비고: it~4533에서 PhysX aggregate pairs 16384 초과 에러 (전 env 동시 파지로
+                         충돌쌍 최대치) -> 버퍼 64k 증설 (다음 run부터, plate에도 사용자가 반영).
+
+--- Run C 4차부터 반영: action_l2 (2026-07-28) ---
+  - action_l2 신설 (w -1e-4 -> 커리큘럼 -0.005, dexsuite가 delta와 세트로 쓰는 항):
+    delta 의미론에서 ‖a‖² = 움직임 명령 크기 -> 평균 출력을 0으로 당겨 null-space 유영 차단.
+    절대 action 시절엔 "ready 편차 페널티"가 되어 태스크와 상충했으므로 부재했던 것.
+    탐색기(std~3)엔 ‖a‖²가 커서 즉시 강하게 걸면 탐색 억압 -> 성능 커리큘럼(lifting>10)에 태움.
+  - PhysX gpu_total_aggregate_pairs_capacity 16384 -> 65536
 
 ----------------------------------------------------------------------------------------
 
 # dual_fr3_plate_lift
 
 환경: Isaac-Lift-Box-DualFR3-Plate-v0 (양팔 14 joint delta position(scale 0.1), 그리퍼 없음 - 판 EE 140x140x25mm로 squeeze 파지)
-씬: 바닥 위 로봇(base z=0.405) + 바닥 박스, obs 54 (joint 28 + box pos 3 + goal 7 + action 14 + 양판 접촉력 2) / action 14
+씬: 바닥 위 로봇(base z=0.405) + 바닥 박스 / action 14
+obs: P1~P4는 54 (joint 28 + box pos 3 + goal 7 + action 14 + 양판 접촉력 2), P5부터 58 (+ box orientation quat 4)
 정밀 분석: lift/config/DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md
 
 2026-07-27_16-00-04 : 첫 run (Run P1). 4096 envs, max_iter 5000. 세팅 요약:
@@ -148,9 +193,76 @@
     파지 품질 항은 반드시 파지 맥락(근접/접촉)으로 게이팅할 것
 
 2026-07-27_21-53-08 : Run P4 = v5 (v4 중심 파지 + 근접 게이팅) + 커리큘럼 EMA. 4096 envs, max_iter 5000.
-                      조기 확인 (it500): reaching이 P2처럼 0.4+로 올라오는지 (접근 지형 복구 검증).
-                      이후 관찰: ① lifting 발견 시점 (P2 기준 ~it1500) ② 근접 게이팅된
-                      alignment/misalignment가 접촉 후 작동하는지 (alignment가 접촉 시점부터 상승해야 정상,
-                      P3처럼 초반부터 0.9면 재발) ③ play에서 면 "중심" 파지 여부. 결과 추후 기록.
+                      -> 결과 (5000 완주): 성공 + 역대 최고 학습 속도. it584에 벌써 squeezing 1.71/reaching 1.09
+                         (P2는 같은 시점 0.0/0.14 - v5 게이팅이 P2를 몰래 늦추던 "제자리 alignment 공짜 보상"
+                         경쟁까지 제거한 효과). 최종: mean reward 123.6, lifting 12.3/15, reaching 1.16/2
+                         (P2 0.61의 2배 - 중심 접근 개선), tracking 10.7, fine 1.23, noise_std 0.66.
+                         남은 문제 (play 관찰): 왼판은 면-면 정렬 완벽, "오른판"은 기울어진 채 접촉.
+                         로그 근거: plate_alignment tail 0.078/1.0 (접촉 중인데 바닥 수준).
+                         원인: ① alignment가 mean(a_L, a_R)이라 왼팔만 완벽해도 절반 수급 - 오른팔을
+                         고칠 유인(<=0.5/s)이 이미 안정적인 grasp을 흔드는 위험보다 작음
+                         ② 양팔이 거울 대칭이 아니라(장착 yaw +-30 보상해도 관절 리밋 비대칭)
+                         오른팔의 정렬 자세 비용이 더 큼 -> 비용 큰 쪽이 포기됨.
+                         부차 관찰: 들고 나르는 중 박스가 회전(기울어짐)한 채 운반됨 - 수평 유지 항 부재.
+
+--- Run P5부터 반영: 양팔 정렬 강제 + 박스 수평 유지 v6 (2026-07-28) ---
+  reference: "Sim-to-Real Learning for Humanoid Box Loco-Manipulation" (arXiv:2310.03191) -
+  휴머노이드 양팔 박스 들기의 보상 구조가 우리와 1:1 대응. 대조 결과 우리에게 빠졌던 항 2개를 반영:
+  (그쪽: 양손 각각 측면 목표점 거리 + 손 orientation 페널티 + 박스 roll/pitch 수평 페널티
+   + 접촉 타이밍 gate + 손-박스 접촉력 크기 페널티)
+  - plate_alignment: mean -> min(a_L, a_R) + weight 1 -> 2. 못 맞춘 팔이 보상 전체를 결정
+    -> "한쪽 포기" 구조 제거 (문헌은 양손 각각 합산 - min이 더 강한 형태).
+    min값 자체가 "더 못하는 팔" 지표가 되어 TB에서 오른팔 교정 여부 직독 가능
+  - box_upright 신설 (w-2.0): 1 - z_box·z_world (0=수평 ~ 2=뒤집힘). 문헌의 |roll|+|pitch|
+    페널티에 해당. 바닥 안착 시 자연히 0이라 gate 불필요. yaw는 문헌처럼 자유
+    (yaw까지 잠그면 난이도 급등 - 문제 시 goal orientation tracking으로 확장)
+  - 근접 게이팅(v5)/reaching/reaching_fine/misalignment -4는 불변
+  - LIFT_DELTA 0.10 -> 0.20: tipping(모서리 기울이기) 최대 중심 상승 = 반너비x0.414 (최대 +10.4cm)라
+    +10cm 판정은 기울이기만으로 통과 가능 - P4 play의 "기울어진 채 들기"가 이 exploit이었음.
+    +20cm는 tipping으로 도달 불가 -> 진짜 들어야만 판정 (box_upright 페널티와 이중 방어)
+  - obs에 object_orientation 추가 (quat 4dim, w>=0 부호 고정, robot root frame) -> obs 54 -> 58.
+    근거: yaw DR +-0.3이 있는데 회전 관측 수단이 없으면 min-alignment가 관측 불가능한 목표.
+    실물은 ArUco 마커 6DoF 추정으로 채움 (각도 오차가 위치보다 커서 noise sigma 0.02 ~ 2도).
+    sim2real 조건: 다중 면 마커 + pose 필터(EKF), 가림 대응
+  - 보류 카드 (P5 안정 후): ① 손-박스 접촉력 크기 페널티 (문헌 항 - 과조임 방지, sim 접촉
+    센서만으로 가능, F/T 불필요. 실물 tau_ext 포화/판 진동 예방용) ② gate 접촉력 법선비율
+    ③ goal yaw tracking
+
+2026-07-28_12-23-27 : Run P5a = 위 변경 전부 (min-alignment w2 / box_upright w-2 / orientation obs 58
+                      / LIFT_DELTA 0.20). 로봇 중력 ON (P1~P4와 동일 조건). 4096 envs, 5000 iter.
+2026-07-28_12-24-03 : Run P5b = P5a와 동일 코드 + hydra override
+                      env.scene.robot.spawn.rigid_props.disable_gravity=true
+                      (실물 FR3 중력보상 모델링 - cube Run B에서 검증된 설정의 plate 이식 A/B).
+                      -> 둘 다 실패 (it~4300 중단): lifting 0.000 - "완벽하게 잡고 가만히 있기" 국소해.
+                         접근/정렬/조임은 역대 최고 (reaching 1.66/fine 2.13/min-alignment 1.4/squeezing 1.72,
+                         box_upright -0.02 수평) 인데 들기를 한 번도 발견 못함. noise_std 3.5/2.6 폭주.
+                         원인 3겹: ① LIFT_DELTA +20cm = "무보상 완주" 거리가 탐색 범위 밖
+                         ② P4의 발견 경로였던 tipping 디딤돌을 판정선+upright 페널티가 양쪽에서 차단
+                         ③ v6 shaping이 "잡고 유지"만으로 ~7/s를 줘서 (P4 ~2.5/s) 절벽 앞 꿀단지가 커짐.
+                         + play 관찰: yaw 회전한 박스에서 파지 실패 -> misalignment 항이 world 축 기준이라
+                         회전 박스를 올바르게 잡으면 벌금 (reaching_fine과 모순되는 버그) 확인.
+                         중력 A/B는 동일 원인으로 둘 다 실패라 판정 불가 (P6에서 재시도).
+
+--- Run P6부터 반영 (2026-07-28) ---
+  - LIFT_DELTA 0.20 -> 0.10 원복: 발견 사다리(tipping 디딤돌 포함) 복원.
+    "기울어진 채 유지"의 정제는 P5에서 추가된 페널티 3종이 담당 (tipped-hold는 수평 들기 대비
+    box_upright -0.6 + misalignment -1.1 + min-alignment 손실 = 항상 ~2/s 손해 구조)
+  - plates_misalignment yaw-aware 버그픽스: world 축 |x_L-x_R|+|z_L-z_R| -> 이상 쌍 벡터
+    (face_L-face_R, 박스와 함께 회전) 대비 편차. yaw 0이면 기존과 동일, 회전 박스에서 모순 제거
+  - PhysX gpu_total_aggregate_pairs_capacity 64*1024 (cube에서 4096 env 동시 접촉 시 용량 초과
+    이슈의 예방 이식 - plate도 양판 동시 squeeze 구조라 동일 리스크)
+  - 교훈: 이진 보상의 문턱은 "탐색이 우연히 닿는 높이" 안에 있어야 한다. 치팅 경로를 막을 땐
+    정직한 경로에 대체 사다리(낮은 문턱 or 연속 진행도)를 함께 놓을 것. 양팔 pair 기하 항은
+    반드시 물체 프레임 기준으로 정의할 것 (world 축 고정은 회전 DR과 모순).
+
+2026-07-28_15-47-09 : Run P6a = 위 P6 수정 반영, 로봇 중력 ON (기본값). 4096 envs, 5000 iter.
+2026-07-28_15-47-21 : Run P6b = 동일 코드 + disable_gravity=true override (실물 중력보상 정합).
+                      동시 실행 A/B 재시도 (P5는 공통 원인 실패로 판정 불가였음).
+                      관찰 포인트: ① lifting 재발견 - P4 페이스(it~600에 squeezing, 이후 발견) 회복 여부
+                      ② alignment(min)가 접촉 후 상승 (P4 mean 0.078과 직접 비교는 불가 - min이 더 엄격)
+                      ③ box_upright ~0 유지 + play에서 "수평 들기" (P4의 기울어진 운반 해소 확인)
+                      ④ yaw 큰 박스 파지 개선 (misalignment 버그픽스 효과, play에서 확인)
+                      ⑤ a/b 학습 속도·최종 성능 비교 -> b 성공 시 이후 전부 b(중력보상)로 고정.
+                      결과 추후 기록.
 
 ----------------------------------------------------------------------------------------
