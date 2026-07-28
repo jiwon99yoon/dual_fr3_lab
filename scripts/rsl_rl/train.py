@@ -193,7 +193,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+        agent_dict = agent_cfg.to_dict()
+        # rsl_rl 버전 호환: isaaclab_rl(2.3+) cfg가 rsl_rl(3.0.1)의 PPO가 모르는 필드
+        # (optimizer 등)를 포함할 수 있음 -> PPO 시그니처 기준으로 미지 키 자동 제거.
+        # 2.2.1 스택에서는 전 키가 유효해 no-op (rsl-rl-lib==3.0.1 고정 전제)
+        try:
+            import inspect
+
+            from rsl_rl.algorithms import PPO as _PPO
+
+            _allowed = set(inspect.signature(_PPO.__init__).parameters) | {"class_name"}
+            _alg_cfg = agent_dict.get("algorithm", {})
+            _dropped = [k for k in list(_alg_cfg) if k not in _allowed]
+            for _k in _dropped:
+                _alg_cfg.pop(_k)
+            if _dropped:
+                print(f"[compat] rsl_rl PPO가 모르는 cfg 키 제거: {_dropped}")
+        except Exception:
+            pass
+        runner = OnPolicyRunner(env, agent_dict, log_dir=log_dir, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     else:
