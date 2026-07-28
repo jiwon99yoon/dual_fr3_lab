@@ -7,6 +7,22 @@ DYROS dual-FR3 (Husky 베이스 + 양팔 Franka FR3) 로봇의 RL 태스크 모�
 > **버전 고정: Isaac Lab 2.2.1 / Isaac Sim 5.0.0** (conda env `env_isaaclab`, Python 3.11, Ubuntu 24.04)
 > Isaac Lab 3.0(beta)/Isaac Sim 6.0은 Python 3.12 + 물리 백엔드 변경이 있으므로 마이그레이션 시 이 기준 코드임을 참고.
 
+## Multi-PC 셋업 (2026-07-28 검증)
+
+| | PC1 (주력) | PC2 |
+|---|---|---|
+| Isaac Lab / Isaac Sim | 2.2.1 / 5.0.0 (conda pip 설치) | 2.3.2 / 5.1.0 (바이너리 설치, `~/Isaac/IsaacLab`) |
+| 실행 방법 | `conda activate env_isaaclab` 후 맨 `python` | **반드시 `~/Isaac/IsaacLab/isaaclab.sh -p` 래퍼** (맨 python은 X/omni 환경 문제로 크래시) |
+| **rsl-rl-lib** | **3.0.1 (양쪽 필수 고정)** | 5.0.1이 기본 설치되어 있었음 → `isaaclab.sh -p -m pip install rsl-rl-lib==3.0.1`로 다운그레이드 |
+
+버전 차이 흡수 장치 (scripts에 내장, 양쪽 무해):
+- `dump_pickle` fallback — Isaac Lab 2.3에서 `isaaclab.utils.io`로부터 제거됨
+- PPO cfg 키 자동 필터 — isaaclab_rl 2.3이 만드는 신형 필드(`optimizer`, `share_cnn_encoders`)를
+  rsl_rl 3.0.1 PPO 시그니처 기준으로 제거 (`[compat]` 로그로 확인 가능)
+
+주의: 물리 엔진이 다르므로(5.0 vs 5.1) **엄밀한 run 비교는 같은 PC끼리**. `docs/log_per_task.txt`에
+run 기록 시 PC 표기(`[2.2.1/5.0]` / `[2.3.2/5.1]`)를 붙일 것.
+
 ## Tasks
 
 | Gym ID | 내용 |
