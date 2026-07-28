@@ -91,7 +91,20 @@ from isaaclab.envs import (
     multi_agent_to_single_agent,
 )
 from isaaclab.utils.dict import print_dict
-from isaaclab.utils.io import dump_pickle, dump_yaml
+# IsaacLab 2.3+에서 dump_pickle이 utils.io에서 제거됨 -> 버전 호환 fallback (2.2/2.3 양쪽 지원)
+try:
+    from isaaclab.utils.io import dump_pickle, dump_yaml
+except ImportError:
+    import pickle
+
+    from isaaclab.utils.io import dump_yaml
+
+    def dump_pickle(filename: str, data):
+        import os as _os
+
+        _os.makedirs(_os.path.dirname(filename), exist_ok=True)
+        with open(filename, "wb") as f:
+            pickle.dump(data, f)
 
 from isaaclab_rl.sb3 import Sb3VecEnvWrapper, process_sb3_cfg
 
