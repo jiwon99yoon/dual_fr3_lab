@@ -140,6 +140,55 @@
         누르기가 파지로 오인됨. plate는 filter 1개라 무영향 **
   판정: upright >= 2.5/3 + finger_impact -> 0 + C4 지표 유지 (reaching>=0.85, fine>=2.8)
 
+2026-07-28_18-55-30 : Run D [PC2: 2.3.2/5.1] (from-scratch 5000 iter 완주, 로그 PC1 이관).
+                      -> 성공 (전 판정 기준 통과 + 보너스):
+                      - object_upright 2.70/3.0 (기준 2.5 통과, it2500부터 안착) = 수평 운반 학습
+                      - finger_table_impact 0.000 (커리큘럼 it872 발동, 발동 시점부터 이미 0)
+                        = ">10N 콩 박기" 완전 소멸
+                      - 핵심 지표 전부 C4 이상: reward 167.7(C4 147.2; upright 항 +2.7/s 감안해도
+                        실질 우위), lifting 14.05, tracking 14.26, fine 3.53(역대 최고),
+                        pos err 0.212, noise_std 2.63 피크(it870) -> 0.53
+                      - 보너스: drop 0.2% (C4 1.2%의 1/6) — 수평 운반이 파지면 비틀림을 줄여
+                        슬립 드랍까지 감소시킨 것으로 해석 (upright의 sim2real 가설을 sim 안에서 선검증)
+                      - lifting 발견도 it~870으로 역대 최속 (C4 1154) — 보상 지형 개선 누적 효과
+                      -> 강건성 재평가 (D checkpoint, 32env x 4ep/조건) — Run C~D 시리즈 최종 관문 통과:
+                         baseline: hold 0.953 / precise 0.924 / err 1.1cm / drop 0
+                         noisy   : hold 0.950 / precise 0.923 / err 1.2cm / drop 0
+                         비교 (B 정책 진단): drop 468~750 -> "0" (시리즈 목적 달성),
+                         precise 0.62~0.69 -> 0.92, goal err 4.2cm -> 1.1cm (4배 정밀).
+                         baseline과 noisy가 사실상 동일 = 정책이 noise에 무감각해짐 (DR 학습의 이상적 결과).
+                      남은 판정: play 육안 (사용자 확인 중). DR_VIS=0 토글도 cube cfg에 이식됨 (plate 기능).
+
+--- eval 확장 + yaw 민감도 sweep (2026-07-28 밤, D checkpoint, 재학습 없는 진단) ---
+  eval 스크립트에 추가: 에피소드 성공률 (파지∧들림∧goal eps 이내 50step=1초 연속 유지 시 latch,
+  eps=5cm 표준 + 2.5cm strict 병기 — Fetch/Meta-World/ManiSkill2 문헌 기준) + time-to-success
+  + --yaw_deg (평가 env에만 스폰 yaw 주입). Play-Noisy(=실전 근사) x 128ep/조건:
+
+    yaw     SR(5cm)  SR(2.5cm)  time-to-success   drop
+    ±0°     0.992    0.992      1.35s             250*
+    ±3°     1.000    1.000      1.36s             0
+    ±5°     0.992    0.992      1.36s             250*
+    ±10°    1.000    1.000      1.37s             0
+
+  판정: ① 성공률이 0~10°에서 평평 (99~100%) -> "가지런히 놓기" 실로봇 프로토콜에 재학습 불필요
+  확정, ±10° 배치 오차까지 커버. Run E(±45°+orientation obs)는 실로봇 1차 검증 후로 연기 (사용자 결정).
+  ② D 정책 공식 성공률 = 99.2~100% (strict 2.5cm 동일), 완료 시간 ~1.4s.
+  ③ *drop 카운트가 run마다 0/250으로 널뜀 — yaw와 무상관, startup 물성 추첨 분산 (32env 소표본).
+     성공은 1.4s에 latch되고 drop은 잔여 시간에 발생하는 패턴 = "성공 후 장시간 유지" 안정성은
+     소수 최악 물성 env에서 흔들림. 개선 카드: 평가 seed 고정 + env 128 또는 3-seed 평균 (ICROS식).
+
+--- v1 태스크 신설: tau_ext obs ablation (2026-07-29) ---
+  Isaac-Lift-Cube-DualFR3-v1 (+Play/Play-Noisy-v1) = v0(Run D)에서 joint_torques obs만 제거
+  (obs 43 -> 36). 로그는 dual_fr3_lift_v1/로 분리 (plate_v1 패턴). v0는 그대로 보존
+  (D checkpoint 재생/비교 호환 유지).
+  근거 (ICROS FT/NoFT ablation 구도): ① 토크 obs 기여가 B~D 내내 미검증 ② 이 태스크에서
+  역할 부족 (충돌~0은 페널티가 해결, 파지 상태는 finger width, payload 토크 SNR 낮음)
+  ③ sim 충실도 최저 채널 (실물 tau_ext는 마찰·모델 오차 낀 추정치, Gaussian noise로는
+  bias 못 흉내냄) -> 정책이 기대면 sim2real 부채.
+  판정: v1 vs D(v0)를 같은 eval(성공률/강건성/yaw sweep)로 비교 —
+    동등하면 토크 obs 제거 확정 -> 실물 인터페이스에서 tau_ext 스트리밍 배선 생략 (단순화)
+    v1이 나쁘면 토크가 실제로 기여 중 -> 유지 + 실물 tau_ext 분포 검증을 배포 체크리스트에 추가
+
 --- Run E 예약 (yaw 축, Run D 성공 후): ---
   - 스폰 yaw ±45° DR + cube orientation obs (quat w>=0, obs 43->47, checkpoint 비호환)
     함수는 mdp에 구현 완료 (object_orientation_in_robot_root_frame), cfg 배선만 하면 됨.
@@ -339,6 +388,104 @@ obs: P1~P4는 54 (joint 28 + box pos 3 + goal 7 + action 14 + 양판 접촉력 2
                       ② box_upright -0.30(P6b) -> -0.1 이하로 개선되는지 (w 상향 + success 압력 이중 효과)
                       ③ excessive_squeeze ~0 유지 (60N 초과 조임이 애초에 드문지 확인 - 크면 실물 위험 신호)
                       ④ P6b 대비 lifting/tracking 회귀 없는지 (페널티 추가의 부작용 감시)
-                      ⑤ 완료 후 강건성 재평가로 upright hold 0.20 -> 0.7+ 확인. 결과 추후 기록.
+                      ⑤ 완료 후 강건성 재평가로 upright hold 0.20 -> 0.7+ 확인.
+                      -> 결과 (5000 완주): 실패 - P5형 "곱게 잡고 안 들기" 국소해 재발. lifting 0.000,
+                         success 발동 0 (들어야 조건 성립), noise_std 1.64 방황. 접근/정렬/조임 지표는
+                         역대 최고 (reaching 1.64/fine 2.00/alignment 1.31)인데 들기 시도 자체가 소멸.
+                         원인 (설계 실수 - 기존 교훈 위반): 신설 페널티 2종을 커리큘럼 없이 상시 적용
+                         ① excessive_squeeze -0.05 상시: 들기 발견에 필요한 "힘찬 조임"의 접촉력
+                         스파이크를 즉시 벌금 -> 1N 접촉으로 squeezing만 채우는 정책으로 수렴
+                         ② upright -3 상시: tipping 발견 사다리 비용 증가. 꿀단지(~6.6/s)는 커진 상태.
+                         cube v1/plate P3/P5에서 이미 배운 "발견 전 페널티 강화 = 정지 국소해" 재현.
+
+--- Run P8부터 반영 (2026-07-28) ---
+  - P7의 상시 페널티 2종을 성능 기반 커리큘럼(EMA, lifting>10 latch)으로 이동. 그 외 변경 없음:
+    box_upright: 시작 -2 (P6b 검증값) -> 발동 후 -3
+    excessive_squeeze: 시작 -1e-4 (명목) -> 발동 후 -0.05
+  - 발견 단계 보상 지형 = P6b와 동일 복원, 들기 습득 후에만 품질 압력 활성화
+  - 교훈 (3번째 확인, 이제 규칙): "새 페널티 항은 무조건 -1e-4 시작 + 성능 커리큘럼" - 예외 없음
+
+2026-07-28_19-57-34 : Run P8 = P7에서 페널티 2종만 커리큘럼화 (upright 시작-2->발동후-3,
+                      excessive_squeeze 시작-1e-4->발동후-0.05). 그 외 P7과 동일. 4096 envs, 5000 iter.
+                      관찰 포인트: ① lifting 재발견이 P6b 페이스(it~500)로 복귀하는지
+                      ② 커리큘럼 발동 시 페널티 5종 동시 강화 후 생존 ③ Episode_Reward/success가
+                      최초로 0에서 상승 (/6 = 성공률, 목표 4.2+ = 70%) ④ 발동 후 box_upright가
+                      P6b(-0.30)보다 개선되는지 (-3 압력 + success 기울기 조건)
+                      ⑤ 완료 후 강건성 재평가: upright hold 0.20 -> 0.7+ / drop 0 유지.
+                      -> 결과 (5000 완주): 절반 성공. lifting 재발견 it672 + 커리큘럼(5종) 생존 +
+                         success 최초 발동, 최종 4.0/6 = 성공률 ~67% (목표 70% 근접), upright -0.14 개선.
+                         그러나 파지 형태가 이상 수렴: play/스크린샷에서 왼판은 면-면인데 "오른판이
+                         박스 윗모서리를 눌러 받치는 쐐기 파지" + 박스 기울어짐.
+                         로그 근거: alignment 0.008 붕괴, reaching_fine 0.27, excessive_squeeze -1.3
+                         고착, noise_std 1.25 미수렴.
+                         원인 (임계값 계산 실수): 60N은 최악 케이스 정당 파지의 힘 norm(정적 ~58N,
+                         법선 52 + 수직마찰 26 합력; 가감속 시 75-87N+)보다 낮음 -> 제대로 들 때마다
+                         벌금 -> 정책이 벌금 회피용 쐐기 파지 발명, 정렬 비용 큰 오른팔부터 희생
+                         (P4 비대칭 패턴 재현). P7 대조: 안 들면 1N로 충분해서 alignment 1.31이었음
+                         - "드는 순간"에만 60N 벽이 존재했던 것.
+
+--- Run P9부터 반영 (2026-07-28) ---
+  - excessive_squeeze force_threshold 60 -> 100N (변경은 이것 하나).
+    근거: 센서값 = 법선 + 수직마찰의 합력 norm. 최악 DR(5.3kg, 유효 마찰 0.5) 정적 ~58N,
+    과도상태 ~87N+ -> 100N이면 정당 파지 무벌, 습관성 과조임만 벌금. 상세는 cfg docstring.
+  - 판정: alignment 회복 여부가 원인 확증 (한 개 변경이므로 인과 분리 가능)
+
+2026-07-28_22-16-28 : Run P9 = force_threshold 60 -> 100N 단일 변경. 4096 envs, 5000 iter.
+                      관찰 포인트: ① alignment 0.008 -> 0.5+ 회복 (원인 확증의 핵심)
+                      ② 커리큘럼 발동 후에도 excessive_squeeze ~0 (정당 파지 무벌 확인)
+                      ③ success >= 4.2 (70%+) ④ noise_std 0.6대 수렴 (P8은 1.25 미수렴)
+                      ⑤ play: 오른판 면-면 복귀 + 수평 운반. 완료 후 강건성 재평가
+                      (upright hold 0.7+, drop 0).
+                      -> 결과 (5000 완주): 가설 확증 + 목표 대부분 달성. 커리큘럼 발동 it496.
+                         alignment 0.008 -> 0.319 회복 (60N 임계 = 쐐기 파지 범인 확증),
+                         excessive_squeeze -1.35 -> -0.50 (1/3), success 4.61/6 = 성공률 77% (목표 초과),
+                         upright -0.10 (역대 최고 수평), reaching_fine 0.27 -> 0.58.
+                         강건성 재평가 (noise+DR): hold 0.818 / precise 0.731 / drop 0 /
+                         upright hold 0.615 (P6b 0.202의 3배, 목표 0.7 근접) / 유지 중 기울기
+                         0.033(~15도, P6b 0.174~34도의 1/5).
+                         잔여 격차 (P6b 대비): alignment 0.32<0.78, fine 0.65<1.80, noise_std 1.17
+                         미수렴 - P8의 나쁜 습관에서 재구성이 5000 iter 안에 덜 끝난 것으로 해석.
+                         reward 변경이 없으므로 resume 추가 학습이 자연스러운 다음 수.
+
+--- v1 태스크 신설 (2026-07-29, 구현·스모크 완료 - 학습 대기) ---
+  배경: 실물 1차 검증 대상 박스가 확정됨 (475 x 555 x 275mm, 4kg). humanoid 논문(2310.03191)
+  정독 결과 그쪽은 "넓은 범위(20~45cm, 1~10kg) + 크기/질량 conditioning + 오차 DR" 구조로
+  여러 박스를 단일 정책으로 처리 (외삽 22.9kg까지). 우리는 단계적으로:
+  v0(블라인드 범용) 유지 -> v1(특정 박스) -> (이후) v1-B(범위 conditioning)/재질·무게 다양화.
+  - Isaac-Lift-Box-DualFR3-Plate-v1: 직육면체 (x 555, y 475=잡는 방향, z 275), 축별 DR ±15mm,
+    질량 4.0±0.5kg 절대값. 단일 종이므로 크기/질량 obs 추가 안 함 (상수 입력 = 정보량 0 -
+    "안다" = 좁은 DR로 구현). 마찰 DR 0.4~1.2 넓게 유지 (재질 미확정, 사용자 결정).
+  - obs 58 -> 56: plate_forces 제거. 근거 = 질량을 아니 필요 조임력 예측 가능 ->
+    excessive_squeeze reward로 힘 습관만 sim에서 형성, 실행 open-loop (humanoid 방식).
+    실물 tau_ext 파이프라인(payload 등록/노이즈 모델) 의존 통째로 제거, tau_ext는 안전 reflex 전용.
+  - phase indicator 미도입 (안무식 타임라인은 재시도/회복 능력과 상충 - 우리 강점 보존)
+  - 리팩토링: 반너비 계산을 축별 분리 (_box_halves -> half_y 잡는방향/half_z 들기판정,
+    기준 크기는 cfg의 spawn.size에서 읽어 v0/v1 공용. v0 동작 불변)
+  - 등록 4종: -v1(학습) / -Play-v1 / -Play-Noisy-v1(강건성 평가) /
+    -ZeroShot-v1(P9 정책용: 물리 v1 + obs v0 58 유지. 주의 - V1 상속으로 만들면 plate_forces
+    재부착 시 obs 순서가 바뀌어 정책 입력이 뒤섞임 -> 반드시 v0 PLAY_NOISY 상속 + 물리만 교체)
+  - 계획: v1 학습 -> P9 zero-shot 대조 (v1 박스는 v0 분포 밖: 비정방 비율 + 높이 275 < v0 최소
+    300이라 "너무 쉬운가"는 실측으로 판정) -> 결과 보고 v1-B/다양화 논의
+  - 로그 분리: v1 계열(-v1/-Play-v1/-Play-Noisy-v1)은 experiment_name dual_fr3_plate_lift_v1
+    -> logs/rsl_rl/dual_fr3_plate_lift_v1/에 기록 (v0 이력과 분리, play.py 자동 탐색도 v1 폴더).
+    ZeroShot-v1은 v0 정책 평가용이라 v0 experiment 유지. v1 run 기록은 아래 "# dual_fr3_plate_lift_v1"
+    섹션에 이어서 작성할 것.
+
+----------------------------------------------------------------------------------------
+
+# dual_fr3_plate_lift_v1
+
+환경: Isaac-Lift-Box-DualFR3-Plate-v1 (실물 박스 특화: 직육면체 x555/y475(잡는방향)/z275mm ±15mm,
+4.0±0.5kg, obs 56 = v0 - plate_forces) / action 14 delta
+정밀 분석: v0와 공유 (DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md) + 신설 배경은 위 v0 섹션 v1 블록 참조
+
+2026-07-29_11-51-33 : Run P10 = v1 첫 학습 (P9와 같은 보상/커리큘럼, 박스만 실물 스펙 + obs 56).
+                      4096 envs, 5000 iter. 관찰 포인트:
+                      ① 좁은 분포라 수렴 속도/최종 성공률이 P9(77%)보다 높은지 (예상: success 5+/6 = 85%+)
+                      ② 납작 박스(높이 275, 안착 중심 ~137mm) 적응 - 낮은 접근 자세에서
+                        바닥 충돌(arms_contact) 증가 여부
+                      ③ plate_forces 없이도 P9급 파지 유지되는지 (질량 고정이라 예측 가능해야 정상)
+                      ④ 완료 후 3종 비교: v1 정책 강건성(Play-Noisy-v1) vs P9 zero-shot(ZeroShot-v1)
+                        - "학습이 필요했나" 데이터 판정. 결과 추후 기록.
 
 ----------------------------------------------------------------------------------------

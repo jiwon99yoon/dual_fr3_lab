@@ -237,11 +237,21 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
 - [x] **5-0. Run A (gating만 재학습)**: `2026-07-27_14-59-58`, 3000 iter — **판정 성공**: reaching tail **0.853** (기준 0.8, v4 0.07), lifting 14.04, tracking 14.29 / fine 3.68 (역대 최고), drop ~0%. 서커스 exploit 소멸
 - [x] **5-4. 충돌 페널티** — Run B에 포함 (right_arm_contact + undesired_contacts, 성능 curriculum). goal y −0.05 복원
 - [x] **Run B 학습 실행 중**: `2026-07-27_15-59-59`, 3000 iter (2026-07-27 16시경 시작). 체크: contact_penalty가 curriculum 발동 후에도 ~0 유지 / reaching ≥ 0.8 / tracking 절대값은 goal 상향 탓에 Run A보다 낮게 시작 가능
-- [x] **5-7. Run D 환경 구현 완료 (2026-07-28 저녁, 스모크 통과 — 학습 대기, obs 43 유지)**:
+- [x] **5-7. Run D (`2026-07-28_18-55-30` [PC2]) — 성공, Run A~D 아크 완결**: upright 2.70/3,
+  finger_impact 0, fine 3.53 최고, drop 0.2%. 강건성 재평가: baseline≈noisy (hold 0.95,
+  precise 0.92, err 1.1cm, drop 0) — B 정책의 468~750 drop이 0으로 (시리즈 목적 달성).
+  **yaw 민감도 sweep: 성공률 0~±10° 평평 99~100%, tts 1.4s → "가지런히 놓기" 실로봇에
+  재학습 불필요 확정** (수치·발견은 log_per_task 해당 섹션 참조). 원래 구현 기록:
   ① object_upright 보상 (w3.0, C4 play의 운반 중 기울어짐 대응) ② finger_table_impact 페널티
   (>10N, "콩 박기" 대응; finger 센서 filter [Object, Table] 확장 — **object_grasped는 filter_idx=0
   필수**, 아니면 테이블 누르기가 파지로 오인). 판정: upright ≥ 2.5/3, finger_impact → 0, C4 지표 유지
-- [ ] **5-8. Run E 예약 (Run D 성공 후)**: 스폰 yaw ±45° DR + orientation obs (43→47) 세트.
+- [ ] **5-9. 실로봇 inference 준비 (현재 최우선, 2026-07-28 결정)**: ① perception — 실물에서
+  `object_position`(±1cm noise로 학습됨) 생성 파이프라인 (ArUco/6D pose, 최대 갭)
+  ② 그리퍼 toggle 빈도 점검 (play 로그 — 실물 그리퍼는 명령당 수백 ms) ③ 50Hz delta joint
+  명령 스트리밍 인터페이스 (FR3, τ_ext obs 포함) ④ (선택) eval에 drop 후 회복률 지표 추가
+- [ ] **5-10. 평가 방법론 강화 (논문 수치용)**: 평가 seed 고정 + env 128 (또는 3-seed 평균,
+  ICROS식) — drop 카운트 run간 0/250 분산(startup 물성 추첨 소표본) 해소
+- [ ] **5-8. Run E 예약 (실로봇 1차 검증 후로 연기, 2026-07-28 사용자 결정)**: 스폰 yaw ±45° DR + orientation obs (43→47) 세트.
   mdp 함수 구현 완료, cfg 배선만 남음. 난이도 카드: 심하게 늦으면 yaw ±20°부터.
   정합 shaping은 모서리 파지 관찰 시에만 (근접 게이팅 필수 — P3 교훈)
 - [ ] **5-3. Success 정의**: `𝟙[d < 0.05, N step 유지]` sparse bonus(+50) 및/또는 종료 + eval 성공률
@@ -297,3 +307,23 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
 | obs noise | pos/vel/FT 전부 | **pos/vel/obj_pos/토크 Gaussian (Run C)** | 완료 |
 | history | ×5 stack (175 dims) | 없음 (47 dims) | 정적 태스크라 당장 불필요 |
 | 성공 판정 | 4cm threshold, eval 3 seeds×100ep | 없음 | §5-3 |
+
+---
+
+## 7. TODO (TL;DR — 지금 해야 할 것만, 우선순위순)
+
+> 갱신: 2026-07-28 밤. 상세 근거는 위 §5 해당 항목 참조. **완료되면 여기서 지우고 §5에 [x]로 기록.**
+
+**현 상태 요약: Run A~D 완결. D 정책(`2026-07-28_18-55-30/model_4999.pt`) = 성공률 99~100%
+(yaw ±10°까지), tts 1.4s, noise 무감각. → 실로봇 투입 후보 확정.**
+
+- [ ] **1. 그리퍼 toggle 빈도 점검** — D 정책 play에서 open/close 명령 전환 빈도 측정.
+      실물 그리퍼는 명령당 수백 ms라 파닥거리면 배포 불가. sim에서 10분. (§4-2)
+- [ ] **2. perception 파이프라인 설계** — 실물 `object_position` 소스 결정 (ArUco vs 6D pose).
+      요구 정확도: 학습 noise 허용치 ±1cm 이내. 실험실 카메라 셋업 확인부터. (§5-9, 최대 갭)
+- [ ] **3. 50Hz delta joint 스트리밍 인터페이스** — FR3 실물 명령 전송 + τ_ext 읽기. (§5-9)
+- [ ] **4. (선택) eval에 drop 후 회복률 지표** — 재파지 능력 정량 확인. (2026-07-28 논의)
+- [ ] **5. (논문 시점) 평가 seed 고정 + env 128 / 3-seed** — drop 카운트 분산 해소. (§5-10)
+- [ ] **6. (실로봇 1차 후) Run E**: yaw ±45° DR + orientation obs 43→47. 배선만 남음. (§5-8)
+- [ ] **7. (보류 카드)** success sparse bonus(불필요 판정 유력), obs latency DR, 정합 shaping
+      (모서리 파지 관찰 시에만), IsaacLab fork 정리 (dual_fr3 잔재 삭제)

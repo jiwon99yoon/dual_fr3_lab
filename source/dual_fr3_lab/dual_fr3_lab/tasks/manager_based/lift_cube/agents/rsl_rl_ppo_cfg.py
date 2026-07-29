@@ -36,3 +36,10 @@ class LiftCubePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class LiftCubePPORunnerCfgV1(LiftCubePPORunnerCfg):
+    """v1 (tau_ext obs ablation) — 로그 분리를 위해 experiment_name만 변경."""
+
+    experiment_name = "dual_fr3_lift_v1"

@@ -14,6 +14,8 @@
 - ee body는 merge-joints로 hand가 병합된 right_fr3_link7 + TCP 오프셋(z+0.2104, yaw -45도)
 """
 
+import os
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets import AssetBaseCfg, RigidObjectCfg
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
@@ -132,6 +134,9 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
 
         # ---------- DR 범위 시각화 (시각 전용, 충돌체 없음 -> 물리/학습 영향 없음) ----------
         # 주의: RTX Real-Time 렌더러는 opacity<0.5를 cutout으로 잘라 아예 안 보이므로 불투명 판으로 표시
+        # 토글: `DR_VIS=0 python ... play.py ...` 로 실행하면 시각화 판을 생성하지 않음 (기본 표시)
+        # (plate cfg의 동일 기능 이식, 2026-07-28)
+        dr_vis = os.environ.get("DR_VIS", "1") != "0"
         # 파란 판: 큐브 스폰 범위 (CUBE_POS_W "중심" 기준 x ±0.08, y ±0.12), 상판 바로 위
         # 판 크기는 큐브 몸체까지 포함하도록 최대 큐브(5.5cm)의 반변 2.75cm를 양쪽에 더함 (+0.055)
         self.scene.dr_spawn_zone = AssetBaseCfg(
@@ -161,6 +166,11 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.8, 0.3)),
             ),
         )
+        if not dr_vis:
+            # DR_VIS=0: 시각화 판 3종을 스폰 목록에서 제거 (물리/학습 무관, 순수 시각 요소)
+            del self.scene.dr_spawn_zone
+            del self.scene.dr_target_zone_bottom
+            del self.scene.dr_target_zone_top
 
         # ---------- 왼팔 고정 ----------
         # action이 없는 joint는 position target이 0으로 초기화돼 PD가 0도 자세로 끌고 간다
@@ -453,6 +463,44 @@ class DualFR3CubeLiftEnvCfg_PLAY_NOISY(DualFR3CubeLiftEnvCfg_PLAY):
     평가 도구: scripts/tools/eval_dual_fr3_lift_robustness.py
     """
 
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+##
+# v1: joint_torques(tau_ext) obs 제거 ablation (2026-07-29)
+##
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgV1(DualFR3CubeLiftEnvCfg):
+    """v1 = v0(Run D)에서 joint_torques obs만 제거 (obs 43 -> 36). 나머지 전부 동일.
+
+    목적: tau_ext obs의 기여 ablation (ICROS FT/NoFT 구도). 근거 (2026-07-29 논의):
+    ① B~D 내내 달고 학습해 기여가 미검증 ② 이 태스크에서 역할 부족 (충돌~0은 페널티가 해결,
+    파지 상태는 finger width가 더 깨끗, cube가 가벼워 payload 토크 SNR 낮음) ③ sim 충실도가
+    obs 채널 중 최저 (실물 tau_ext는 관절 마찰·모델 오차 낀 추정치 — Gaussian noise로는
+    bias/동역학 불일치를 못 흉내냄) -> 정책이 기대면 전이 부채.
+    동등 성능이면 제거 확정 -> 실물 인터페이스에서 tau_ext 스트리밍 배선 생략 가능.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        del self.observations.policy.joint_torques
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgV1_PLAY(DualFR3CubeLiftEnvCfgV1):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgV1_PLAY_NOISY(DualFR3CubeLiftEnvCfgV1_PLAY):
     def __post_init__(self):
         super().__post_init__()
         self.observations.policy.enable_corruption = True

@@ -79,10 +79,29 @@ source/dual_fr3_lab/dual_fr3_lab/
     └── lift_plate/  # plate box lift (lift_cube의 mdp·EMA curriculum을 import)
 scripts/
 ├── rsl_rl | rl_games | skrl | sb3   # 학습/재생 (Isaac Lab 템플릿 제공)
-└── tools/           # 강건성 평가, 배치 preview, rule-based 데모
+└── tools/           # 강건성 평가, 배치 preview, rule-based 데모 (아래 표)
 content/             # URDF 원본 + USD 생성 파이프라인 문서(make_usd.md) + plate EE CAD 스크립트
 docs/                # 환경 정밀 분석 2편 + run별 실험 로그(log_per_task.txt)
 ```
+
+## scripts/tools 목록
+
+RL 학습과 별개로 로봇·환경을 검증/평가하는 도구들. 전부 `dual_fr3_lab.robots`에서 로봇 cfg를
+가져오므로 Isaac Lab 본체 수정 없이 동작한다. 실행: `python scripts/tools/<이름>.py [옵션]`
+(PC2는 `isaaclab.sh -p` 래퍼로).
+
+| 스크립트 | 용도 | 주요 옵션 |
+|---|---|---|
+| `preview_dual_fr3_table.py` | 테이블/스폰존/goal존 배치 미리보기 + 수치 마진 체크 (학습 전 배치 검증) | `--mjcf` (0.75 테이블), `--table_x` |
+| `run_dual_fr3_diff_ik.py` | differential IK 추종 데모 — TCP 오프셋/워크스페이스 검증 (HIGH_PD cfg 사용) | — |
+| `run_dual_fr3_pick.py` | 단일팔(오른팔) rule-based pick — cube 파지 파이프라인 검증 | — |
+| `run_dual_fr3_pick_handover.py` | 양팔 handover 데모 (직교 grip) — 양팔 협조·TCP 정합 검증 | — |
+| `run_dual_fr3_plate_lift.py` | 판 EE squeeze 파지 rule-based 데모 — plate task의 기준 궤적 | — |
+| `eval_dual_fr3_lift_robustness.py` | **cube 정책 강건성 정량 평가**: hold/precise-hold/drop 측정. Play vs Play-Noisy 비교로 sim2real 취약점 진단 | `--checkpoint` (필수), `--task`, `--no_obs_noise`, `--no_physics_dr` (축 분리) |
+| `eval_dual_fr3_plate_robustness.py` | plate 정책 강건성 평가 (위의 plate 버전) | 동일 패턴 |
+
+주의: rule-based 데모들은 GUI 확인용 (headless 무의미). eval 계열은 `--headless` 권장이며,
+종료 시 Isaac Sim `close()`가 행에 걸릴 수 있으니 배치 실행 시 `timeout -s KILL`로 감쌀 것.
 
 ## Notes
 
