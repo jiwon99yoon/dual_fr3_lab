@@ -97,8 +97,11 @@ RL 학습과 별개로 로봇·환경을 검증/평가하는 도구들. 전부 `
 | `run_dual_fr3_pick.py` | 단일팔(오른팔) rule-based pick — cube 파지 파이프라인 검증 | — |
 | `run_dual_fr3_pick_handover.py` | 양팔 handover 데모 (직교 grip) — 양팔 협조·TCP 정합 검증 | — |
 | `run_dual_fr3_plate_lift.py` | 판 EE squeeze 파지 rule-based 데모 — plate task의 기준 궤적 | — |
-| `eval_dual_fr3_lift_robustness.py` | **cube 정책 강건성 정량 평가**: hold/precise-hold/drop 측정. Play vs Play-Noisy 비교로 sim2real 취약점 진단 | `--checkpoint` (필수), `--task`, `--no_obs_noise`, `--no_physics_dr` (축 분리) |
+| `eval_dual_fr3_lift_robustness.py` | **cube 정책 강건성 + 에피소드 성공률 평가**: hold/precise-hold/drop + 성공률(5cm/2.5cm)/time-to-success. Play vs Play-Noisy 비교로 sim2real 취약점 진단, yaw 민감도 sweep | `--checkpoint`(필수), `--task`, `--no_obs_noise`, `--no_physics_dr`(축 분리), `--yaw_deg`, `--success_eps`, `--success_hold_steps` |
 | `eval_dual_fr3_plate_robustness.py` | plate 정책 강건성 평가 (위의 plate 버전) | 동일 패턴 |
+| `eval_gripper_toggle.py` | **그리퍼 이진 명령 toggle 빈도 측정** (sim2real 배포 진단) — 채터링 유무·히스테리시스 N 결정. env별 명령 시퀀스 덤프 | `--checkpoint`(필수), `--task`, `--num_envs`, `--episodes` |
+| `dump_obs_layout.py` | **obs 벡터 구성·관절 순서 실측** — 실물 배포 시 obs 조립 배선 검증. 결과는 `/tmp/obslayout_result.txt`에 기록 | `--task` |
+| `compute_dual_fr3_workspace.py` | 양팔 도달영역(workspace) 몬테카를로 FK 추정 — plate 파지 영역·goal 범위 설계용 | (plate 세션 도구) |
 
 주의: rule-based 데모들은 GUI 확인용 (headless 무의미). eval 계열은 `--headless` 권장이며,
 종료 시 Isaac Sim `close()`가 행에 걸릴 수 있으니 배치 실행 시 `timeout -s KILL`로 감쌀 것.

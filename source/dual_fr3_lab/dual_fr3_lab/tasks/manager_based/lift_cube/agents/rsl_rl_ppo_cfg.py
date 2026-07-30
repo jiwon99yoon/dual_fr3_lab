@@ -43,3 +43,10 @@ class LiftCubePPORunnerCfgV1(LiftCubePPORunnerCfg):
     """v1 (tau_ext obs ablation) — 로그 분리를 위해 experiment_name만 변경."""
 
     experiment_name = "dual_fr3_lift_v1"
+
+
+@configclass
+class LiftCubePPORunnerCfgV2(LiftCubePPORunnerCfg):
+    """v2 (decimation 5 재학습) — 로그 분리를 위해 experiment_name만 변경."""
+
+    experiment_name = "dual_fr3_lift_v2"

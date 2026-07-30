@@ -504,3 +504,45 @@ class DualFR3CubeLiftEnvCfgV1_PLAY_NOISY(DualFR3CubeLiftEnvCfgV1_PLAY):
     def __post_init__(self):
         super().__post_init__()
         self.observations.policy.enable_corruption = True
+
+
+##
+# v2: decimation 재학습 (정책 주기 50Hz -> 20Hz, episode 5s -> 8s). obs/reward/DR은 v1 동일 (2026-07-30)
+##
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgV2(DualFR3CubeLiftEnvCfgV1):
+    """v2 = v1(obs 36)과 완전 동일하되 제어 주기만 변경. from-scratch 재학습 필수.
+
+    변경점 2개:
+    - decimation 2 -> 5 : 정책 50Hz -> 20Hz (물리 100Hz 불변). "action 너무 빠름" 완화 +
+      실물 perception 주기(~10~30Hz, 팀원 실측중)와 정합. FR3 zero-shot 문헌은 정책 10~15Hz
+      수렴이므로 dec5(20Hz)로 시작 -> 되면 dec10(10Hz, 표준 하한).
+    - episode_length_s 5 -> 8 : 20Hz x 8s = 160 step (현 250의 64%). 파지+운반+유지 예산 확보.
+    근거·계획 상세: docs/dual_fr3_lift_v1.md §9, §9-1. latency DR은 v2 성공 후 별도 축(변인 분리).
+    ⚠ decimation은 정책이 학습 중 그 시간구조에 맞춰 최적화한 값 -> v1 checkpoint 이어받기 불가.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.decimation = 5
+        self.episode_length_s = 8.0
+        # render_interval을 decimation에 맞춰 갱신 (기본은 decimation과 동기)
+        self.sim.render_interval = self.decimation
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgV2_PLAY(DualFR3CubeLiftEnvCfgV2):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgV2_PLAY_NOISY(DualFR3CubeLiftEnvCfgV2_PLAY):
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True

@@ -24,7 +24,7 @@
 
 ## 2. MDP 구조 (2026-07-27 14:42 기준)
 
-### 2-1. Observation (policy, 총 43 dims, history 없음)
+### 2-1. Observation (v1 기준 총 36 dims — v0는 43, history 없음)
 
 | Term | 내용 | Dims | 비고 |
 |------|------|------|------|
@@ -33,7 +33,7 @@
 | `object_position` | cube 위치, **robot root frame** | 3 | |
 | `target_object_position` | goal pose command (pos 3 + quat 4) | 7 | **quat 4 dims는 항상 identity → dead dims** (orientation 명령 미사용) |
 | `actions` | 직전 action | 8 | arm 7 + gripper 1 |
-| `joint_torques` | 오른팔 측정 joint 토크 (`get_dof_projected_joint_forces`) | 7 | **FR3 내장 토크센서(tau_ext) 대응 → 실배포 가능**. disable_gravity 덕에 링크 자중이 빠져 실물 tau_ext와 성격 일치 |
+| ~~`joint_torques`~~ | 오른팔 측정 joint 토크 | ~~7~~ | **v1 ablation으로 제거 확정 (2026-07-29, §5-11)** — 이 태스크에선 순수 잡음 주입이었음 (critic loss 절반 감소로 실증). v0(-v0 태스크)에만 잔존. 접촉 의존 태스크로 확장 시 재고려 |
 | ~~`object_orientation`~~ (Run E 예약) | cube 자세 quat (root frame, w≥0) | (4) | **yaw DR과 세트로 연기** — yaw 없는 동안 cube 기울기=그리퍼 기울기라 joint_pos로 추론 가능. mdp 함수는 구현 완료 |
 
 **obs noise (Run C부터 학습에 포함)**: joint_pos σ0.005 rad, joint_vel σ0.05, object_position σ0.01 m
@@ -245,6 +245,13 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
   ① object_upright 보상 (w3.0, C4 play의 운반 중 기울어짐 대응) ② finger_table_impact 페널티
   (>10N, "콩 박기" 대응; finger 센서 filter [Object, Table] 확장 — **object_grasped는 filter_idx=0
   필수**, 아니면 테이블 누르기가 파지로 오인). 판정: upright ≥ 2.5/3, finger_impact → 0, C4 지표 유지
+- [x] **5-11. v1 = tau_ext obs ablation — 판정: 제거 확정 (2026-07-29, `2026-07-29_12-38-27` [PC2])**:
+  토크 제거(obs 36)가 **전면 우세** — reward 172.5(D 167.7), fine 3.84 신기록, lifting 발견 2배
+  빠름(it76), critic loss 절반(0.40 vs 0.90 — σ0.5Nm 7dim 토크 채널이 순수 잡음 주입이었다는
+  결정적 증거). eval: yaw 0/5/10° 전부 SUCCESS 1.000(strict 동일), drop 0×3, tts 1.33s.
+  → **배포 후보 = v1 checkpoint**, 실물 인터페이스에서 tau_ext 스트리밍 생략 (§5-9 ③ 단순화).
+  교훈: 토크/힘 obs는 태스크의 접촉 의존도에 비례해서만 (contact-rich인 remove_hook/plate와 달리
+  cube lift엔 잉여). 유일 열세 upright 2.43(기준 2.5 미달)은 drop 0.1%라 실질 무해 — 관찰 카드
 - [ ] **5-9. 실로봇 inference 준비 (현재 최우선, 2026-07-28 결정)**: ① perception — 실물에서
   `object_position`(±1cm noise로 학습됨) 생성 파이프라인 (ArUco/6D pose, 최대 갭)
   ② 그리퍼 toggle 빈도 점검 (play 로그 — 실물 그리퍼는 명령당 수백 ms) ③ 50Hz delta joint
@@ -312,16 +319,19 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
 
 ## 7. TODO (TL;DR — 지금 해야 할 것만, 우선순위순)
 
-> 갱신: 2026-07-28 밤. 상세 근거는 위 §5 해당 항목 참조. **완료되면 여기서 지우고 §5에 [x]로 기록.**
+> 갱신: 2026-07-29. 상세 근거는 위 §5 해당 항목 참조. **완료되면 여기서 지우고 §5에 [x]로 기록.**
+> **배포(v1) 관련 스펙·TODO는 `dual_fr3_lift_v1.md`가 원본** — 여기는 환경 설계 관점 항목만 유지.
 
-**현 상태 요약: Run A~D 완결. D 정책(`2026-07-28_18-55-30/model_4999.pt`) = 성공률 99~100%
-(yaw ±10°까지), tts 1.4s, noise 무감각. → 실로봇 투입 후보 확정.**
+**현 상태 요약: Run A~D + v1 ablation 완결. 배포 후보 = v1 정책
+(`dual_fr3_lift_v1/2026-07-29_12-38-27/model_4999.pt`, obs 36) — 성공률 100% (yaw ±10°까지,
+strict 2.5cm 포함), tts 1.33s, drop 0. 토크 obs 제거 확정 (§5-11).**
 
 - [ ] **1. 그리퍼 toggle 빈도 점검** — D 정책 play에서 open/close 명령 전환 빈도 측정.
       실물 그리퍼는 명령당 수백 ms라 파닥거리면 배포 불가. sim에서 10분. (§4-2)
 - [ ] **2. perception 파이프라인 설계** — 실물 `object_position` 소스 결정 (ArUco vs 6D pose).
       요구 정확도: 학습 noise 허용치 ±1cm 이내. 실험실 카메라 셋업 확인부터. (§5-9, 최대 갭)
-- [ ] **3. 50Hz delta joint 스트리밍 인터페이스** — FR3 실물 명령 전송 + τ_ext 읽기. (§5-9)
+- [ ] **3. 50Hz delta joint 스트리밍 인터페이스** — FR3 실물 명령 전송. **τ_ext 읽기 불필요
+      (v1 ablation 결과)** → obs 36 전부가 joint state + perception + goal로 구성. (§5-9)
 - [ ] **4. (선택) eval에 drop 후 회복률 지표** — 재파지 능력 정량 확인. (2026-07-28 논의)
 - [ ] **5. (논문 시점) 평가 seed 고정 + env 128 / 3-seed** — drop 카운트 분산 해소. (§5-10)
 - [ ] **6. (실로봇 1차 후) Run E**: yaw ±45° DR + orientation obs 43→47. 배선만 남음. (§5-8)

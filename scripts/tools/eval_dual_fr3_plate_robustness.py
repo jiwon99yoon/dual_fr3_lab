@@ -49,7 +49,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.math import combine_frame_transforms, quat_apply
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 from dual_fr3_lab.tasks.manager_based.lift_cube import mdp
-from dual_fr3_lab.tasks.manager_based.lift_plate.joint_pos_env_cfg import LIFT_DELTA, _box_half_sizes
+from dual_fr3_lab.tasks.manager_based.lift_plate.joint_pos_env_cfg import LIFT_DELTA, _box_halves
 from dual_fr3_lab.tasks.manager_based.lift_plate.agents.rsl_rl_ppo_cfg import LiftCubePPORunnerCfg
 from isaaclab_tasks.utils import parse_env_cfg
 
@@ -113,8 +113,8 @@ def main():
         goal_w, _ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, cmd)
         err = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
         # env별 판정 높이 (안착 중심 + LIFT_DELTA)
-        half = _box_half_sizes(uenv)
-        lifted = (obj.data.root_pos_w[:, 2] > half + LIFT_DELTA).float()
+        half_z = _box_halves(uenv)[1]
+        lifted = (obj.data.root_pos_w[:, 2] > half_z + LIFT_DELTA).float()
         grasped = mdp.object_grasped(uenv, f1, f2, threshold=1.0)
         hold = lifted * grasped
         # 박스 기울기 (1 - z_box·z_world)
