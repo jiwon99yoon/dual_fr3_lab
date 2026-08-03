@@ -251,12 +251,16 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
         )
 
         # ---------- object: DexCube (테이블 위) ----------
+        # object = primitive 직육면체 (2026-08-03): DexCube instanceable USD는 크기 DR(scale)이
+        # 공유 mesh라 per-env 적용이 안 됐음(측정으로 확정: v0~v3 전부 4.80cm 고정). MeshCuboidCfg는
+        # env마다 독립 mesh라 크기 DR이 실제로 먹음. size는 base=정육면체 5cm (v3에서 z만 override).
+        # 질량은 density 기반(실물 무게 미확정 → 합리적 기본값, mass DR로 커버). 마찰 DR용 physics_material 필수.
+        CUBE_BASE = (0.05, 0.05, 0.05)  # m — v0~v2 정육면체, v3에서 z=0.10으로 override
         self.scene.object = RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Object",
             init_state=RigidObjectCfg.InitialStateCfg(pos=CUBE_POS_W, rot=[1, 0, 0, 0]),
-            spawn=UsdFileCfg(
-                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
-                scale=(0.8, 0.8, 0.8),
+            spawn=sim_utils.MeshCuboidCfg(
+                size=CUBE_BASE,
                 rigid_props=RigidBodyPropertiesCfg(
                     solver_position_iteration_count=16,
                     solver_velocity_iteration_count=1,
@@ -265,6 +269,10 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
                     max_depenetration_velocity=5.0,
                     disable_gravity=False,
                 ),
+                mass_props=sim_utils.MassPropertiesCfg(density=1000.0),  # 5cm cube ≈ 0.125kg (mass DR ×0.7~1.3)
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                physics_material=sim_utils.RigidBodyMaterialCfg(static_friction=0.8, dynamic_friction=0.6),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.3, 0.85)),
             ),
         )
         # 리셋 시 물체 위치 랜덤화: 오른팔 workspace를 벗어나지 않게 franka(y ±0.25)보다 좁힘
@@ -275,13 +283,17 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
             "y": (-0.12, 0.12),
             "z": (0.0, 0.0),
         }
-        # 큐브 크기 랜덤화: 한 변 4.5~5.5cm (원본 DexCube 6.5cm 기준 절대 scale로 덮어씀)
-        # mode="usd": 시뮬 시작 전 1회 적용 -> env마다 다른 크기가 학습 내내 유지 (4096개 분포로 커버)
+        # 큐브 크기 랜덤화: primitive base 5cm 기준 scale -> 한 변 4.5~5.5cm (±10%).
+        # ⚠ mode는 반드시 "prestartup" (2026-08-03 발견): 기존 mode="usd"는 IsaacLab 2.2.1에서
+        # 아무도 호출하지 않는 모드 — 이벤트가 등록만 되고 영원히 실행 안 됨 (에러도 없이 침묵).
+        # -> v0~v3 전 run에서 크기 DR이 허상이었던 원인 (측정: 전 env 4.80cm 균일).
+        # dexsuite는 같은 함수를 mode="prestartup"으로 써서 작동 (env는 prestartup만 호출,
+        # manager_based_env.py:155-156). 전제: replicate_physics=False (아래 유지).
         self.events.randomize_cube_size = EventTerm(
             func=mdp.randomize_rigid_body_scale,
-            mode="usd",
+            mode="prestartup",
             params={
-                "scale_range": (4.5 / 6.5, 5.5 / 6.5),  # (0.692, 0.846)
+                "scale_range": (0.9, 1.1),  # base 5cm × 0.9~1.1 = 4.5~5.5cm
                 "asset_cfg": SceneEntityCfg("object"),
             },
         )
@@ -530,6 +542,9 @@ class DualFR3CubeLiftEnvCfgV2(DualFR3CubeLiftEnvCfgV1):
         self.episode_length_s = 8.0
         # render_interval을 decimation에 맞춰 갱신 (기본은 decimation과 동기)
         self.sim.render_interval = self.decimation
+        # goal 재샘플링을 episode 길이에 맞춤: 베이스는 5초 고정이라 8초 에피소드에서 goal이
+        # 5초 시점에 한 번 더 뽑혀 "에피소드당 goal 2개"가 됨. episode=goal 1개로 유지 (2026-07-31)
+        self.commands.object_pose.resampling_time_range = (8.0, 8.0)
 
 
 @configclass
@@ -543,6 +558,81 @@ class DualFR3CubeLiftEnvCfgV2_PLAY(DualFR3CubeLiftEnvCfgV2):
 
 @configclass
 class DualFR3CubeLiftEnvCfgV2_PLAY_NOISY(DualFR3CubeLiftEnvCfgV2_PLAY):
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+##
+# v2 검증용: 실물 cube가 5x5x10 (높이 2배)일 때 v2 정책이 zero-shot으로 되는지 평가 전용 (2026-08-03)
+# 재학습 아님 — 평가 환경에만 cube를 세로로 길게 만들어 v2 checkpoint를 굴린다.
+##
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgV2_PLAY_TALL(DualFR3CubeLiftEnvCfgV2_PLAY_NOISY):
+    """v2 정책을 5x5x10cm(높이 2배) cube로 검증. Play-Noisy-v2 기반(noise+물성 DR 유지)에
+    cube 크기 DR만 '단면 5cm 고정 + 높이 2배'로 교체. 파지 성공률/기울기 슬립 여부 확인용.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        # 등방 크기 DR -> 축별 DR로 교체: x,y=5cm 근방 고정, z=10cm 근방 (원본 DexCube 6.5cm 기준 scale)
+        # primitive base 5cm 기준 scale: x,y=4.5~5.5cm(±10%), z=9.5~10.5cm(높이 2배 ±5%)
+        self.events.randomize_cube_size.params["scale_range"] = {
+            "x": (0.9, 1.1),
+            "y": (0.9, 1.1),
+            "z": (1.9, 2.1),
+        }
+        # 세로로 길어진 만큼 스폰 높이도 올려 테이블 관통 방지 (중심이 상판 위 5cm)
+        self.events.reset_object_position.params["pose_range"]["z"] = (0.02, 0.02)
+
+
+##
+# v3: 세로로 긴 cube 재학습 (실물 50x50x100). v2와 동일 + cube 크기 DR을 축별로 (2026-08-03)
+##
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgV3(DualFR3CubeLiftEnvCfgV2):
+    """v3 = v2(20Hz)와 동일하되 cube 크기 DR만 축별(직육면체)로. from-scratch 재학습.
+
+    실물 cube가 50x50x100 (단면 5cm 정사각, 높이 10cm)로 확정 -> 정육면체 학습 정책(v2)은
+    10cm zero-shot 검증(Play-Tall-v2)에서 파지는 되나 유지 중 drop 160/128ep (CoM 높아 기울어짐).
+    -> 세로 물체를 학습 분포에 넣어 재학습.
+
+    변경점 1개 (A안, 축 독립 DR):
+      cube 크기 DR: 등방 4.5~5.5 -> {x:4.5~5.5, y:4.5~5.5, z:9.5~10.5} cm.
+      독립 DR인 이유: 실물 제작 오차(정확히 50이 아닌 경우)까지 흡수 + 단면 살짝 직사각 케이스도
+      봐서 파지 강건성 향상. 실물 실측=50x50x100(정확).
+    upright 강화(현 w3.0)는 v3 결과 보고 필요시 v3.1로 (변인 분리 — drop이 DR만으로 잡히는지 먼저).
+    스폰 z는 세로 물체가 테이블 관통 안 하게 상향.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        # primitive base 5cm 기준 scale: x,y=4.5~5.5cm(단면 ±10%), z=9.5~10.5cm(높이 ~2배)
+        # 실물 50x50x100 정합. primitive라 scale이 per-env 실제 적용됨 (measure 검증 완료 후 학습)
+        self.events.randomize_cube_size.params["scale_range"] = {
+            "x": (0.9, 1.1),
+            "y": (0.9, 1.1),
+            "z": (1.9, 2.1),
+        }
+        # 세로로 길어진 만큼 스폰 높이 상향 (중심이 상판 위 ~5cm, 최대 높이 10.5cm도 관통 안 함)
+        self.events.reset_object_position.params["pose_range"]["z"] = (0.02, 0.02)
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgV3_PLAY(DualFR3CubeLiftEnvCfgV3):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgV3_PLAY_NOISY(DualFR3CubeLiftEnvCfgV3_PLAY):
     def __post_init__(self):
         super().__post_init__()
         self.observations.policy.enable_corruption = True

@@ -1,5 +1,11 @@
 # Dual FR3 Cube Lift — 환경 · Reward 정밀 분석
 
+> **이 문서 = 설계 서사 + 근거 (v0~Run D 아크가 왜 이렇게 됐나).** 계속 최신화됨.
+> **배포용 완성 스펙(현재 후보 정책)은 별도 문서**: `dual_fr3_lift_v1.md`(50Hz),
+> `dual_fr3_lift_v2.md`(20Hz 정육면체), `dual_fr3_lift_v3.md`(20Hz 세로 50×50×100 — **실물 배포 후보**).
+> "실물에 뭘 올리나"는 그쪽을 볼 것. 최신 파생: **v1**=v0에서 tau_ext obs 제거(§5-11),
+> **v2**=v1에서 decimation 5·20Hz(§5-12), **v3**=v2에서 세로 cube + 크기 DR 버그 수정(§5-13).
+
 > 대상: `Isaac-Lift-Cube-DualFR3-v0` (`lift/config/dual_fr3/joint_pos_env_cfg.py` + 베이스 `lift/lift_env_cfg.py`)
 > 알고리즘: PPO (rsl_rl), 4096 envs
 > 작성 기준: **2026-07-27 14:42** — grasp gating(ContactSensor) 구현·검증 완료 시점.
@@ -202,9 +208,13 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
 > (goal y −0.05 복원 후에도 contact ~0 확인). ~~obs noise / 물성 DR 부재~~ → Run C 학습 cfg에 포함
 > (§2-1, §2-5; 근거는 §5-6 상호작용 진단).
 
-1. **Success 개념 부재**: sparse bonus도, success termination도, 성공률 지표도 없다.
-   "goal 근처에서 얼쩡거리기"와 "정확히 유지"의 구분이 tanh gradient에만 의존.
-   (eval 스크립트의 precise-hold가 임시 대용, §5-6)
+1. **Success 개념 — 학습엔 없음(의도), 평가엔 구현됨 (2026-07-28~)**: reward에는 여전히 sparse
+   bonus·success termination이 없다 (grasp-gated tracking 연속값만으로 학습 — 의도된 설계).
+   단 **평가용 에피소드 성공률 지표는 eval 스크립트에 구현 완료**: 파지∧들림∧goal ε 이내를 N step
+   연속 유지 시 성공 latch (ε=5cm 표준/2.5cm strict 병기, N=success_hold_steps 기본 50).
+   D/v1/v2 모두 성공률 99~100% 확인. sparse bonus 추가는 불필요로 판정 (이미 정밀도 충분).
+   ⚠ 주의: N step 고정이라 정책 주기가 다르면 유지 "시간"이 달라짐 (50Hz의 50step=1s ≠ 20Hz의 2.5s).
+   주기 다른 정책 비교 시 --success_hold_steps로 실시간 맞출 것.
 2. **그리퍼 인터페이스 갭**: sim은 50Hz 이진 토글이 가능하지만 실물 Franka 그리퍼는
    명령당 수백 ms — 정책이 토글을 남용하면 실물 전이 불가. play에서 토글 빈도 확인 필요,
    심하면 toggle 페널티 또는 명령 latch 도입.
@@ -252,6 +262,25 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
   → **배포 후보 = v1 checkpoint**, 실물 인터페이스에서 tau_ext 스트리밍 생략 (§5-9 ③ 단순화).
   교훈: 토크/힘 obs는 태스크의 접촉 의존도에 비례해서만 (contact-rich인 remove_hook/plate와 달리
   cube lift엔 잉여). 유일 열세 upright 2.43(기준 2.5 미달)은 drop 0.1%라 실질 무해 — 관찰 카드
+- [x] **5-12. v2 = decimation 재학습 (정책 50→20Hz) — 판정: 성공 (2026-07-31, `2026-07-31_14-33-32` [PC1])**:
+  v1(obs 36) 동일 + 변경 3개: decimation 2→5(정책 20Hz), episode 5→8s(160 step),
+  resampling 5→8s(goal 1개/ep 유지 — 8초 에피소드에서 goal 5초 재샘플로 2개 되는 버그 수정).
+  목적: "action 너무 빠름"(사용자 관찰) + perception 느림(~10~30Hz) 동시 해결 (§9). 근거: FR3
+  zero-shot 문헌 정책주기 10~15Hz 수렴. 결과: 20Hz로 **성능 손실 없음** — reaching 0.861, lifting
+  14.44, upright **2.75**(v1 2.43보다 우위!), drop 0.3%, lifting 발견 it55(v1 it76보다 빠름 —
+  느린 주기가 탐색 안정화). 미세 열세 fine 3.50(v1 3.84)이나 pos err 0.213 동급. play: 1~2s에
+  파지·운반·유지 완료(8s는 여유). eval 3종 진행 중. → **20Hz 배포 후보** (실물 perception 정합).
+  다음 카드: 되면 dec 10(10Hz), latency DR은 별도 축. 상세 스펙: `dual_fr3_lift_v2.md`.
+- [x] **5-13. v3 = 세로 cube 50×50×100 재학습 + ⚠크기 DR 버그 수정 (2026-08-03, `2026-08-03_16-52-40` [PC1])**:
+  실물 cube가 50×50×100mm 확정 → v2(정육면체) 10cm zero-shot에서 drop 160(CoM 높아 슬립) → 세로
+  물체 재학습. **개발 중 크기 DR이 v0~v3 내내 무효였음을 발견**: `randomize_cube_size`가 mode="usd"
+  였는데 env는 "prestartup"만 호출(manager_based_env.py:155) → 이벤트 침묵, 실제 4.80cm 고정 학습.
+  (play에서 사용자가 "세로 아닌 것 같다"로 포착 → sim 실측 전 env 균일.) 물성 DR(마찰·질량)은
+  startup이라 정상이었음. 수정: object를 primitive(MeshCuboidCfg)로 + mode="prestartup" + scale
+  재계산 → 실측 검증 per-env 랜덤. 결과: **drop 0**(eval yaw 0/5/10° SR 1.0/1.0/0.984), 세로 cube
+  안정 파지 달성. 잔여: upright 2.38 낮음(숙인 CoM 파지 — drop 0을 만든 적응이나 운반 기울 여지) →
+  v3.1(upright 3→5) 선택 카드, 실물 1차 후 판단. finger_table_impact는 static Table의 GPU filter
+  미지원으로 무효(no-op) — 콩 박기 관찰 시 locomotion식 net-force로 대응. 상세: `dual_fr3_lift_v3.md`.
 - [ ] **5-9. 실로봇 inference 준비 (현재 최우선, 2026-07-28 결정)**: ① perception — 실물에서
   `object_position`(±1cm noise로 학습됨) 생성 파이프라인 (ArUco/6D pose, 최대 갭)
   ② 그리퍼 toggle 빈도 점검 (play 로그 — 실물 그리퍼는 명령당 수백 ms) ③ 50Hz delta joint

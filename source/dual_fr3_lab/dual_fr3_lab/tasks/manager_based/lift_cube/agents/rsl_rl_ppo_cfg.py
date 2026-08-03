@@ -50,3 +50,10 @@ class LiftCubePPORunnerCfgV2(LiftCubePPORunnerCfg):
     """v2 (decimation 5 재학습) — 로그 분리를 위해 experiment_name만 변경."""
 
     experiment_name = "dual_fr3_lift_v2"
+
+
+@configclass
+class LiftCubePPORunnerCfgV3(LiftCubePPORunnerCfg):
+    """v3 (세로 cube 50x50x100 재학습) — 로그 분리."""
+
+    experiment_name = "dual_fr3_lift_v3"

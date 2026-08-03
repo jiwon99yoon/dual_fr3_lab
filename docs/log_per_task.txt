@@ -208,15 +208,93 @@
                       — "토크 obs는 태스크의 접촉 의존도에 따라 넣어라"가 일반 교훈.
 
 --- v2 태스크 신설: decimation 재학습 (2026-07-30, sim2real 주기 정합) ---
-  Isaac-Lift-Cube-DualFR3-v2 (+Play/Play-Noisy-v2) = v1(obs 36)과 완전 동일 + 변경 2개만:
+  Isaac-Lift-Cube-DualFR3-v2 (+Play/Play-Noisy-v2) = v1(obs 36)과 완전 동일 + 변경 3개:
     · decimation 2->5 : 정책 50Hz -> 20Hz (물리 100Hz 불변)
     · episode_length_s 5->8 : 20Hz x 8s = 160 step
+    · resampling_time_range 5->8 : goal 재샘플링을 episode에 맞춤 (베이스 5초 고정이라 8초
+      에피소드면 5초 시점에 goal이 한 번 더 뽑혀 "goal 2개/ep"가 됨 -> episode=goal 1개로 유지.
+      최초 v2 run(13-25-03, it3000)에서 play로 goal 2개 발견해 중단·수정, 2026-07-31)
   from-scratch (decimation은 학습 시간구조라 v1 ckpt 이어받기 불가), 로그 dual_fr3_lift_v2/.
   목적: "action 너무 빠름"(사용자 관찰) + perception 느림(팀원 실측중 ~10-30Hz) 동시 해결.
   근거: FR3 zero-shot 문헌 정책주기 10~15Hz 수렴(perception 정합). 물리 100Hz -> dec5=20Hz(예산
   안전, 시작), dec10=10Hz(표준 하한, 되면 낮춤). latency DR은 v2 성공 후 별도 축(변인 분리).
   판정: 160 step 예산으로 파지+운반+유지 학습되는지 (모자라면 episode 10s or dec 재검토).
   스펙 상세: docs/dual_fr3_lift_v1.md §9/§9-1. v0/v1 전부 보존.
+
+2026-07-31_13-25-03 : v2 최초 run [PC1] — goal 2개 버그(resampling 5초 미수정)로 it3000 중단·폐기.
+                      단 중간점검(it2968)에서 20Hz가 v1 동급 이상 확인: reaching 0.874, lifting 14.3,
+                      upright 2.68(v1 2.43보다 우위), lifting 발견 it69(v1 it76보다 빠름), noise_std
+                      피크 1.09 → "160 step 예산 부족·20Hz 성능저하" 우려는 기우로 판명. 로그는 삭제됨.
+2026-07-31_14-33-32 : v2 정식 run [PC1: 2.2.1/5.0] (from-scratch 5000 iter 완주).
+                      resampling 8초 수정본 = goal 1개/ep. decimation 5(20Hz) + episode 8s.
+                      -> 성공 (20Hz 배포 후보 확정): 학습 tail reaching 0.861/lifting 14.44/
+                      upright 2.75(v1 2.43 우위)/fine 3.50, lifting 발견 it55(v1 it76보다 빠름).
+                      eval (Play-Noisy-v2, 128ep, yaw 0/5/10°): SUCCESS 1.000 전부(strict 2.5cm 동일),
+                      precise-hold 0.94(v1 0.92), hold 0.96, drop 0x3. play: 1~2s 완료·유지, 8s 여유.
+                      => 20Hz로 성능 손실 없음 + 실물 perception 정합. 배포 스펙: dual_fr3_lift_v2.md.
+                      주의: eval tts 표시버그(50Hz 하드코딩→v2 실제 2.9s를 1.16s로 표기, 나머지 지표 정확).
+
+--- v3 태스크 신설: 세로 cube 50x50x100 재학습 (2026-08-03) ---
+  Isaac-Lift-Cube-DualFR3-v3 (+Play/Play-Noisy-v3) = v2(20Hz)와 동일 + cube 크기 DR만 축별로:
+    등방 4.5~5.5 -> {x:4.5~5.5, y:4.5~5.5, z:9.5~10.5} cm (A안, 축 독립). 스폰 z 상향(관통 방지).
+  동기: 실물 cube가 50x50x100 확정(자로 실측). v2(정육면체) 정책 10cm zero-shot 검증
+  (Play-Tall-v2, eval_..._robustness): 파지는 됨(hold 0.97, SR 0.99)이나 유지 중 drop 160/128ep
+  (CoM 높아 기울어짐) -> 세로 물체를 학습 분포에 넣어 재학습.
+  from-scratch, 로그 dual_fr3_lift_v3/. 판정: drop이 v2 수준(0 근처)으로 잡히는지 + SR 유지.
+  upright 강화(현 w3.0)는 v3 결과 보고 필요시 v3.1(변인 분리 — drop이 DR만으로 잡히는지 먼저).
+  스펙: dual_fr3_lift_v2.md 기반(주기·obs 동일), 크기 DR만 다름.
+
+2026-08-03_13-01-13 : v3 무효 run — 크기 DR 버그(아래 섹션)로 실제론 4.8cm 정육면체 학습
+                      (사실상 v2 복제품). 사용자가 로그 삭제. 지표는 v2와 동급이었음(당연).
+2026-08-03_16-52-40 : v3 정식 run [PC1: 2.2.1/5.0] (from-scratch 5000 iter, 진행 중, 16:52 시작).
+                      버그 수정본: primitive cube + mode="prestartup" — 실측 검증된
+                      진짜 세로 cube {단면 4.5~5.5 x 높이 9.5~10.5cm, per-env 랜덤}. 20Hz, 8s, obs 36.
+                      -> 성공 (세로 cube 배포 후보 확정): drop 완전 해결.
+                      학습 tail: reaching 0.824, lifting 13.89, upright 2.38(v2 2.75보다 낮음 — 숙인 파지),
+                      drop 0.1%, lifting 발견 it61.
+                      eval (Play-Noisy-v3, 128ep, yaw 0/5/10°): SR 1.000/1.000/0.984(strict 동일),
+                      **drop 0 x3** (v2 zero-shot의 160을 학습으로 완전 해결 = v3 존재이유 달성),
+                      hold 0.94, precise 0.91(v2 0.94보다 약간 낮음 — 세로 정밀도), tts 1.25s.
+                      거동(play): finger가 cube 옆면 중간(CoM 5cm)을 "숙여서" 물어 드는 새 전략
+                      (drop 0을 만든 적응). 콩 박기는 거의 안 보임(사용자). upright 낮음이 유일 관찰점.
+
+--- v3.1 예약 (수평 운반 개선, 선택 카드): ---
+  동기: upright 2.38(v2 2.75)로 낮음 + play에서 숙인 파지 -> 운반 중 cube 기울 여지.
+  실물 전이엔 위쪽 파지+수평 운반이 더 안정적. v3는 이미 eval 통과라 v3.1은 필수 아닌 개선.
+  방법: v3 동일 + upright weight 3 -> 5 (온건하게; 6은 과함 — 숙임은 drop 0을 만든 적응이라
+  너무 세게 누르면 놓칠 위험). 판정: 위쪽 파지로 전환 + drop 0 유지 + upright 2.7+.
+  대안(콩 박기 실물서 관찰 시): finger에 net-force 센서(locomotion식 undesired_contacts,
+  filter 없는 net_forces_w -> static Table 문제 원천 회피, 팔 충돌 페널티와 동일 방식) +
+  들어올림 게이팅. Table을 kinematic으로 바꾸는 것(성능비용)보다 이 방식이 우리 스타일과 정합.
+
+--- ⚠ 크기 DR 버그 발견·수정: mode="usd" -> "prestartup" (2026-08-03, 전 run 소급) ---
+  발견 경위: v3 play에서 "cube가 세로가 아닌 것 같다"(사용자) -> sim 실측: 전 env 4.80cm 균일
+  정육면체 (크기 DR 완전 무효). primitive(MeshCuboidCfg) 전환으로도 동일 -> 사용자 지시로
+  타 태스크 조사 -> dexsuite 8종이 같은 함수를 mode="prestartup"으로 사용.
+  원인: env는 시뮬 시작 전 "prestartup" 모드만 호출 (manager_based_env.py:155). 우리가 쓴
+  mode="usd"는 IsaacLab 2.2.1에서 아무도 호출하지 않는 모드 -> 이벤트 등록만 되고 침묵
+  (함수 docstring이 "usd"라고 잘못 안내 — 버전 네이밍 잔재에 낚임).
+  영향 (소급 정정): v0~v2의 "크기 DR 4.5~5.5cm"는 전부 허상 — 실제 4.80cm(DexCube 6cm x 0.8)
+  단일 크기 학습이었음. 성공률 100% 등 성과는 "4.8cm 고정 정책"으로서 유효하나 크기 강건성
+  주장은 무효. v3 run 13-01-13도 4.8cm 정육면체로 학습된 무효 run (폐기).
+  물성 DR(마찰·질량)은 startup 모드라 정상 작동했음 (실측: 16env 전부 상이한 값 확인).
+  수정: ① object를 primitive(MeshCuboidCfg, base 5cm 명시)로 전환 (크기 투명성)
+       ② mode="prestartup" ③ scale primitive 기준 재계산 (v2 등방 0.9~1.1, v3 축별 z 1.9~2.1)
+  검증 (실측): v2 = 4.5~5.5cm 정육면체 per-env 랜덤 / v3 = 단면 4.5~5.5 x 높이 9.5~10.5
+  직육면체 per-env 랜덤 — 프로젝트 최초로 크기 DR 실작동.
+  ⚠ plate의 randomize_box_size도 mode="usd" 동일 버그 (박스 30~50cm DR 허상, 40cm 고정 추정)
+    -> plate 세션에 전달 필요.
+
+--- ⚠ finger-table contact filter도 무효 의심 (2026-08-03, 관찰 카드로만) ---
+  4096env 기동 시 "GPU contact filter for collider .../Table is not supported" 경고 (Run D부터
+  존재, static collider에 대한 GPU filter 미지원). finger 센서 filter[1]=Table이 항상 0으로
+  읽혔을 가능성 -> finger_table_impact 페널티는 Run D 이후 no-op였을 수 있음 (발동 시점부터
+  0.000이었던 것이 증상 — 크기 DR과 같은 "조용한 무효" 패턴).
+  피해 범위: 없음 — obs 무관(접촉력은 reward 전용), grasp gate는 filter[0]=Object(dynamic)라
+  정상(Run A replay 검증), 페널티는 0이라 no-op. play 육안(사용자): 콩 박기 안 보임 = 다른
+  보상들(action_l2/rate/upright)이 간접적으로 눌러준 것으로 추정.
+  처리: 수정하지 않음 (잘 되는 환경에 변인 추가 지양). 관찰 카드 — 실물에서 finger 테이블
+  타격 관찰 시 Table을 kinematic rigid body로 전환해 filter 실작동시킬 것.
 
 --- Run E 예약 (yaw 축, Run D 성공 후): ---
   - 스폰 yaw ±45° DR + cube orientation obs (quat w>=0, obs 43->47, checkpoint 비호환)
@@ -806,6 +884,214 @@ obs: P1~P4는 54 (joint 28 + box pos 3 + goal 7 + action 14 + 양판 접촉력 2
   - 코드: 07302019 주석 + 원복용 이전 3항 주석 보존. 리스크: 곱셈이라 초기 탐색 어려울 수
     있음(접근+평행 동시) -> 발견 늦으면 완충곱(0.5+0.5·align)이 첫 조정 카드.
   - 판정: 접근+정렬 동시 달성(허공 정렬 소멸) + lifting 발견 정상 + success 회복 + play 평행 접근-파지.
+
+--- [07302119 수정] 접촉 품질 q (면-면 파지 유도, 옵션 Y) ---
+  P17 관찰(스샷 2141): 접근+평행은 되는데 접촉 순간 판이 박스 모서리를 1N으로 걸치고 놓음.
+  근본 = G(1N 이진)가 너무 얕아 모서리 걸침도 파지 인정 -> downstream(lifting15/tracking16/
+  success30)이 압도해 면-면 정렬을 놓음. 정밀제어 필요한 파지가 안 됨.
+  - q = min_i[|F_i·n̂_face|/|F_i|] ∈[0,1] 신설 (_contact_normal_ratio): 접촉힘이 면 법선과
+    나란한 정도 = "면으로 눌렀나(1) vs 모서리 걸침(낮음)"의 물리 척도. nan_to_num+clamp 방어.
+  - 옵션 Y (하드 gate 아닌 연속 곱): G는 1N 이진 유지(발견 안 막음), q를 high-value 보상에 곱:
+    lifting=15·L·G·q, tracking/fine=·G·q, squeezing=2·G·q. 비스듬 파지는 보상 깎임(급락 없이 유도).
+  - lift_progress(w8)엔 q 미적용 = 발견 안전밸브 (q 낮아도 발견은 계속 진행). success 항도 미적용
+    (G+tilt 조건 유지, lifting/tracking q가 간접적으로 품질 파지 유도).
+  - 코드: 07302119 주석 + squeezing 원복(func=mdp.object_grasped) 주석. 단일 성격 변경.
+  - 판정: play에서 면-면 접촉(모서리 걸침 소멸) + q 관련 지표 상승 + success 유지(>=75%).
+  - ⚠ fallback: 안 되면 curriculum으로 G에 하드 q 조건(옵션 X, lifting>10 후 q>0.7 필수) 추가.
+
+2026-07-30_22-21-40 : Run P18 = 접촉 품질 q를 lifting/tracking/fine/squeezing에 연속 곱 (옵션 Y).
+                      from-scratch, seed 42, v1 박스. 관찰 포인트:
+                      ① play: 판이 박스 면에 면-면으로 붙는지 (P17 스샷 2141 모서리 걸침 소멸이 핵심)
+                      ② squeezing이 q 반영이라 "잘 붙을수록" 값 상승 / lifting·tracking 회복
+                      ③ success >= 75% 유지 (q 곱으로 초반 lifting 깎여 발견 살짝 느릴 수 있으나
+                        lift_progress가 받쳐 붕괴 없어야 정상)
+                      ④ value loss 유한 유지 (q 계산에 힘 벡터 - nan_to_num 방어 확인). 결과 추후 기록.
+                      -> 결과 (5000 완주): 애매 - q 작동은 하나 success 지표 저하. success 0.69(12%,
+                         P17 60%/P15v2 75%보다 낮음), 단 it3500부터 0.07->0.74 계속 상승세(수렴 미완).
+                         lifting 11.0/squeezing 1.56/tracking 7.9는 P17급, value loss 6.3 최저(안정).
+                         play(사용자): 면으로 최대한 잡으려 하나 박스 왼/오른면 "중심"이 아니라
+                         윗 가장자리를 잡으며 들 때 기울어지기 시작. 진단: reaching 목표(face_l/r=박스
+                         회전 반영한 실제 면 정중앙)는 정확, 문제는 판이 z로 위에 치우쳐 윗가장자리 잡음.
+                         + 커리큘럼 발동 후 페널티만 강해지고 reaching은 그대로라 success에 필사적->
+                         파지 정밀도 희생(사용자 지적).
+
+--- [07311 수정] 커리큘럼에 reaching 강화 추가 (다음 run부터) ---
+  - self.curriculum.reaching: reaching_object weight 6 -> 12 (lifting>10 발동, EMA).
+    발견 후 "제대로 잡기"에 집중 (positive shaping 커리큘럼 - P7 페널티 커리큘럼의 positive 버전).
+  - 근거: P18 커리큘럼 후 페널티만 강화(box_upright/action_rate)되고 reaching 정체 -> success
+    필사적 + 파지 정밀도 희생 = 판 윗가장자리 잡고 들 때 기울어짐. reaching(거리+정렬 3D)을
+    올리면 판이 면 중심에 z까지 정확히 가도록 압력 (윗가장자리 밀림 직격).
+  - 단일 변경. q는 각도만 봐서 위치(중심성) 못 잡음 -> reaching 강화가 위치 문제 직격.
+  - 판정: play에서 면 "중심" 파지(윗가장자리 밀림 소멸) + success 회복 + 들 때 안 기울어짐.
+
+--- P19 결과 (07-31_16-09-04, reaching 6->12) ---
+  - 커리큘럼 정상 발동(it~1500 w6->12, reach kernel 0.27->0.55 파지품질↑), value loss 6.3->2.5 안정.
+  - BUT reaching 과잉 지배: reaching(reward 6+)이 goal_tracking(1.6~4.5) 압도 -> 정책이 reaching
+    따먹기로 쏠림. success peak 0.44(it4523) 후 막판 붕괴 0(it4999), track 동반 붕괴.
+    최종 model_4999 열화 -> best는 it4500 부근.
+  - 결론: 6->12 과함. 파지품질은 올랐으나 goal 옮기기 못 함 + 막판 정책 붕괴.
+
+--- [07311b 수정] reaching 커리큘럼 12 -> 9 완화 (다음 run) ---
+  - P19 과잉 지배 대응. 중간값 9로 파지 품질↑ 유지 + goal_tracking 여지 확보.
+  - 판정: success 붕괴 없이(끝까지 유지) + play에서 면 중심 파지 개선.
+
+--- P20 결과 (07-31_17-44-11, reaching 6->9) = 역대 최고 ---
+  - success 0(P19)->4.16(~69%), 막판 붕괴 없이 끝까지 상승(last5 3.83~4.16). 12->9 완화 정확.
+  - reach kernel 0.38(P18 0.27↑), track 8.72(최고), lift 11.6. value loss 15.6은 return 증가 정상반응.
+  - success가 it4999에도 상승중 -> 확장 여지. play: 왼팔 판-박스 평행 굿, 오른팔 조금 덜 평행(비대칭).
+
+--- P21 = P20 이어서(resume) 5000 추가 = 총 10000 (08-02_14-33-00) ---
+  - model_4999에서 resume, --max_iterations 5000. 비대칭(오른팔) 추가 학습으로 개선되는지 확인.
+  - 커리큘럼 성능기반이라 resume 즉시 lifting>10 -> w9 재발동 예상.
+  - 결과 (tail-50): success 5.20(~87%), reach 1.87(kernel 0.207), sq 1.54, track 9.08, lift 11.13, mis -0.29.
+    success max 5.74(it7301). success는 P20 대비 크게↑ but reach kernel 0.33->0.21 침식.
+
+--- P22 = 처음부터 max_iterations 10000 새 학습 (08-02_14-41-52) ---
+  - resume 아닌 scratch. P21(resume)과 비교해 "긴 지평선 처음부터"가 비대칭/최종성능에 유리한지 대조군.
+  - 결과 (tail-50): success 4.99(~83%), reach 0.30(kernel 0.034!), sq 1.56, track 9.33, lift 11.34, mis -0.60.
+    success max 5.63(it9015). success 높으나 reach kernel 0.03으로 파지 품질 거의 붕괴, mis도 -0.60 악화.
+
+*** P20/P21/P22 종합 해석 (중요) ***
+  - 긴 학습 = success↑(64->87%) 대신 파지 품질(중심·평행)↓ (reach kernel 0.33->0.21->0.03). 트레이드오프 재현.
+  - P21(resume) vs P22(scratch): 알고리즘·리워드·시드(42) 전부 동일, resume 유무만 차이. n=1씩이라
+    "resume이 낫다"는 근거 부족(초기값 basin 운). 진짜 교훈 = 같은 리워드가 sloppy 파지 해(P22 kernel 0.03,
+    success 83%)를 허용 -> reaching(w9)이 수렴점에서 구속력 없음. 리워드가 나쁜 파지를 용인.
+  - cube task 비교: cube는 그리퍼가 파지 기구적 보장 -> 품질을 task 보상과 분리 -> 충돌 없음. plate는
+    마찰파지라 품질이 물리 필수인데 q를 lifting/tracking에 곱셈으로 섞음 = 품질↔성공 트레이드오프 뿌리.
+  - 실물 후보 checkpoint: P20(파지 최고, kernel 0.33) 또는 P15-v2.
+
+--- [예정] 오른팔 "덜 평행"(비대칭) 대응안 - P21/P22 결과 후 결정 ---
+  원인: align_i가 raw cos(내적)이라 평행 근처(각도 0) 기울기 평평 -> 마지막 몇 도 짜낼 유인 약함.
+        min으로 양팔 강제는 하나 정책이 한쪽을 "대충 평행(0.9~0.95)"에서 멈춤.
+  순서: (1) [결론: 실패] 추가 학습(P21/P22)은 비대칭/품질 개선 못함 - 오히려 reach kernel 0.33->0.03 침식.
+            더 학습은 해결책 아님이 확정 -> 리워드 수정 필요.
+        (2) A: squeezing(q) weight 2 -> 3~4. q=면-법선 비율 min이라 나쁜 팔 직접 개선. 단일 weight, 안전.
+            단 주의: P20~P22 데이터상 q(squeezing) 자체는 안정(~1.55)이고 문제는 reaching(중심 d+평행 align)
+            침식이라, A가 핵심을 못 건드릴 수 있음. align_i가 raw cos라 A로도 평행 마지막 몇 도는 약함.
+        (3) B: align_i를 날카롭게 (align_i**2 또는 tanh 커널) - 평행 근처 기울기↑. 데이터상 A보다 on-target.
+        (4) 구조 변경 (cube 비교 결론, 유력): q를 lifting/tracking 곱셈에서 빼고 G gate에 평행/중심 조건
+            통합 (binary "제대로 잡았나" gate). 품질↔성공 트레이드오프의 뿌리(곱셈 혼합) 제거.
+            cube가 잘 되는 이유 = 품질을 task와 분리(그리퍼가 파지 보장). 커리큘럼 점진 도입으로 발견 차단 회피.
+  제외: C(plates_misalignment -4->-6)는 위치 정렬이지 법선 정렬 아니라 평행과 무관 -> 안 함.
+  판정: 오른팔 판-박스 평행이 왼팔 수준(play) + success 유지 + reach kernel 침식 없음.
+
+=== [v2 신설] 외란(disturbance) 버전 - 파지 안정성을 물리로 강제 (2026-08-03) ===
+  gym: Isaac-Lift-Box-DualFR3-Plate-v2 (+Play-v2/Play-Noisy-v2). 로그 dual_fr3_plate_lift_v2/ (v1과 동시 실행).
+  구조: v1(실물 박스, obs 56, reward/DR 전부) 그대로 상속 + 박스에 외란 wrench 이벤트만 추가.
+  철학: "좋은 파지"를 reward로 명세하지 말고, 외란으로 나쁜 파지(모서리/비스듬/비대칭)를 물리적으로
+        미끄러뜨려 success 실패시킴 -> success 자체가 안정 파지 요구 -> 품질↔성공 트레이드오프 소멸.
+        (근거: humanoid box는 물리가 정렬 강제, 우리 sim은 마찰 관대해 그게 없었음. 외란=force closure 물리테스트.)
+  구현: apply_disturbance_wrench(박스에 랜덤 힘±10N/토크±2Nm, interval 0.4~0.8s 재샘플),
+        env._disturb_scale로 세기 0->1. 커리큘럼 ramp_disturbance_on_lifting_learned: lifting EMA>10
+        후에만 scale=1 (발견 안전, 기존 EMA 인프라 재사용). 발견 단계는 scale=0이라 v1과 동일 거동.
+  하이퍼파라미터: DISTURB_FORCE/TORQUE/INTERVAL 상수. 너무 크면 발견 실패 -> 커리큘럼이 안전판.
+  판정: play에서 나쁜 파지가 실제로 미끄러지나 + 정책이 면-중심/평행 파지로 수렴 + success 유지 + reach kernel 회복.
+  다음(v2 성공 시): q 곱셈 제거 + reward 단순화 (외란이 품질 강제하니 인위적 곱셈 불필요) - 별도 실험.
+
+--- v2 첫 run (08-03_12-29-50) = P23 ---
+  Isaac-Lift-Box-DualFR3-Plate-v2, from-scratch, seed 42. 외란 force±10N/torque±2Nm, interval 0.4~0.8s,
+  lifting EMA>10 후 커리큘럼으로 외란 ON. reaching 커리큘럼 6->9([07311b])는 v1과 동일 상속.
+  관찰 포인트: ① lifting 발견되는지(외란 scale=0 구간이라 v1 페이스 예상) ② Curriculum/disturbance가
+  0->1 언제 뜨는지 ③ 외란 ON 후 success/reach kernel 거동 (나쁜 파지 도태되며 reach kernel 회복 기대)
+  ④ 외란 세기 적정성(발견 막히면 DISTURB 낮추고, 너무 쉬우면 높임).
+
+--- P23 결과 + play (08-03) ---
+  지표: reach kernel 0.49(역대최고!) lift 11.8 track 10.6 이나 success = 0 (내내). 외란 it444에 즉시 full ON.
+  play: 한 팔은 면에 잘 닿는데 다른 팔은 면에 못 닿음(비대칭). 받치는 팔은 아래, 다른 팔은 위 접촉
+        -> '쐐기 브레이싱'. 박스 기울어짐(수평 유지 안 됨). 판-판 평행/box upright 반영 부족.
+  진단: ① reach kernel 0.49는 착시 - reaching std 0.3이 느슨해 '대충 가까이+평행'도 고득점.
+        ② 외란은 '안정'을 요구하는데 비대칭 쐐기도 안정적 -> 외란이 평행을 유일해로 못 만듦
+           (force closure는 평행의 필요조건이지 충분조건 아님). §4-8 '판 높이차 모멘트 회전' 실패.
+        ③ 외란이 success 나오기 전(it444) 즉시 full로 켜져 쐐기 국소해에 갇힘(success 끝까지 0).
+
+=== [08031b 수정] v2에 B+A 적용 (P23 대응, 다음 run) ===
+  A(외란 스케줄): DISTURB_FORCE 10->5, TORQUE 2->1. 커리큘럼을 lifting 기준 즉시latch ->
+    ramp_disturbance_on_success (success EMA lo1.0~hi3.0로 scale 0->1 점진, 비감소). 깨끗한 성공
+    먼저 배우고 -> 점진 단련 -> 재안정. success<1이면 외란 OFF(=v1, 안전 저하).
+  B(대칭 페널티 신설): plate_height_symmetry = G·|z_L - z_R|. 쐐기 브레이싱(한 판 위/한 판 아래)
+    직접 차단 -> 모멘트 소멸 -> 박스 수평. -1e-4 시작 + lifting>10 후 커리큘럼 -6.0 (P7 규칙).
+  (C 보류): reaching std 0.3->0.15 조이기는 지표 신뢰도용, 필요시 다음.
+
+*** [DR 실측 정정 08-03] plate 크기 DR 작동 안 함 확정 ***
+  /tmp/measure_plate_v2.py로 v2 8env 실측:
+  - 크기 DR: 8env 전부 555×475×275mm 동일 (±15mm 변동 0) -> randomize_rigid_body_scale mode="usd" 무효.
+    ⚠ 원인은 instanceable USD 아님 (plate는 MeshCuboid인데도 안 됨) -> mode="usd" scale 이벤트 자체 문제.
+    primitive 전환은 해결책 아님(이미 primitive). 크기 강건성 필요 시 별도 수정 필요.
+  - 질량 DR: 3.50~4.40kg env별 다름 (목표 4.0±0.5 부합) -> ✅ 정상.
+  - 마찰 DR: static 0.41~1.12 env별 다름 (목표 0.4~1.2 부합) -> ✅ 정상.
+  함의: v1/v2는 실물 특정 박스라 크기 고정이 오히려 맞음(영향 경미), 질량·마찰 강건성은 실재.
+        v0(30~50cm 범용) 크기 DR은 허상이었음(현재 미사용). 문서 §2-5/§2-6 정정 완료.
+  스모크 통과(reward 14항/curriculum 8항). 판정: play에서 양 판 같은 높이·평행 파지 + 박스 수평 + success 회복.
+
+--- v2 두번째 run (08-03_14-46-01) = P24 (B+A 적용) ---
+  Isaac-Lift-Box-DualFR3-Plate-v2, from-scratch, seed 42. 외란 5N/1Nm + success 기준 점진 ramp(lo1~hi3)
+  + plate_height_symmetry 페널티(-1e-4 -> lifting>10 후 -6.0). reaching 6->9는 v1 상속.
+  관찰 포인트: ① success가 (외란 켜지기 전) v1처럼 오르는지 ② Curriculum/disturbance가 success>1 이후
+  서서히 0->1 뜨는지(P23은 it444 즉시 full이었음) ③ Episode_Reward/plate_height_symmetry가 0에 수렴하는지
+  (쐐기 사라지면 |z_L-z_R|->0) ④ play: 양 판 같은 높이·평행 + 박스 수평 + reach kernel 유지 + success.
+  -> 결과 (5000 완주): ⭐ B+A 성공. success 4.43(~74%, last5 4.4~4.6) - 외란 full(5N/1Nm) 속에서 달성
+     (P23은 0). reach kernel 0.44 유지 (P21 0.21/P22 0.03 침식과 달리 품질+성공 동시 달성 - 트레이드오프
+     첫 해소). 커리큘럼 시퀀스 설계대로: 외란 it925 시작 -> it1027 full (success 배운 뒤 점진, P23 즉시full
+     문제 해결). symmetry -6 발동 it415, sym -0.65 (양판 높이차 평균 ~10cm 잔존 - 완전 대칭은 미달).
+     value loss 11~14 (외란 속 정상). 판정은 play: 쐐기 소멸 + 박스 수평 + 면 중심 파지 확인 필요.
+  play(사용자): 잘 들긴 하나 판이 박스 면에 "딱 붙지(flush)" 않음. 판끼리는 평행(대칭/쐐기 해결)인데
+     그 세트 전체가 박스 면 기준 틀어짐 = P11~P12 "기울인 세트-그립"의 깨끗한 재발.
+  진단: 외란=안정 강제(성공), symmetry=쌍 일관성 강제(성공), but q는 접촉힘 "방향"만 봐서 판이
+     기울어 모서리로 닿아도 만점 -> flush를 재는 신호가 덧셈 reaching_aligned(w9)뿐이라 침식됨.
+
+*** [reward weight 지형 논의, 08-03] ***
+  실효(/s, P24 tail): 사다리 sq1.6/prog5.6/lift11.4/track9.0/fine0.4 | reaching 4.0 | 페널티 합 -3.3 | succ 4.4.
+  판정: ① 사다리 내부 격차(2->8->15->16) = 단조증가 필수(발견) ② success 1500은 실효 6/s 착시
+  ③ 페널티 -1e-4 시작 = P7 검증 ④ 진짜 불균형 = 품질(1~9) vs 사다리(36) 하나.
+  weight 재조정 축은 기각(데이터): 품질↑ = 2 무시(P15-v2)/9 부분(P20)/12 붕괴(P19), 사다리↓ = 발견절벽 위험.
+  -> 해법 = 곱셈: 품질이 사다리 스케일(36)을 "빌림", 경쟁이 아닌 조건이 됨. (q 생존/reaching 침식이 실증)
+  부수 발견: fine_grained(w5) 실효 0.4/s 거의 죽음(단순화 후보), 기하 페널티 3종(sym/mis/upright) 역할 중복.
+
+=== [08032 수정] q' = q x align (soft ramp) - v2 전용, 다음 run ===
+  변경: _contact_normal_ratio에 blend 추가: q_eff = q·(1-s+s·align), align=min(양판 법선 vs 면 법선),
+    s=env._qprime_scale. 커리큘럼 ramp_qprime_on_success(success EMA lo1~hi3, 비감소, 외란과 동일 패턴).
+    s=1 도달 시 q_eff=q·align -> lifting/tracking(36)이 "면에 딱 붙은 파지"만 만점.
+  v1/v0 무영향: _qprime_scale 속성이 없으면 s=0 -> q 그대로 (동시 실행 유지).
+  P12 vanishing 리스크: soft ramp(성공 배운 뒤 점진)로 완화. 스모크 통과(curriculum 9항, qprime 태그).
+  판정: play에서 판-면 flush(세트 기울임 소멸) + success 유지 + Curriculum/qprime 0->1 타이밍.
+
+=== [08033 버그픽스] 크기 DR mode="usd" -> "prestartup" (plate, cube 세션 발견 이식) ===
+  진범: randomize_rigid_body_scale의 mode="usd"는 아무도 호출 안 하는 모드 -> v0~P24 전 run 크기 DR 무효.
+  dexsuite가 mode="prestartup" 사용 (이 버전 지원, replicate_physics=False 요건은 기존 충족).
+  검증(실측, /tmp/plate_v2_dr.txt): 8env 크기 전부 다름 - x 54.9~57.0 / y 46.2~49.0 / z 26.0~29.0cm
+  = v1 박스 ±15mm 정확. 질량 3.53~4.44 / 마찰 0.57~1.12도 계속 정상. 프로젝트 최초 크기 DR 실작동.
+  주의: P24까지의 모든 run은 크기 고정(55.5/47.5/27.5) 상태로 학습된 것 - v1/v2는 실물 고정 크기라
+  영향 경미(오히려 의도 부합), ±15mm는 P25부터 진짜 적용.
+
+--- v2 세번째 run (08-03_17-34-22) = P25 (q' + 크기DR 첫 적용) ---
+  Isaac-Lift-Box-DualFR3-Plate-v2, from-scratch, seed 42. P24 대비 신규 2개:
+  ① q' = q·(1-s+s·align) soft ramp (success EMA lo1~hi3, _qprime_scale) - 판 자세를 지배보상에 곱
+  ② 크기 DR ±15mm 첫 실작동 (mode=prestartup 픽스). 나머지(외란 5N/1Nm, symmetry, reaching 6->9)는 P24 동일.
+  관찰 포인트: ① success가 P24 수준(~74%) 유지되는지 (q' 도입이 성공 안 깎는지)
+  ② Curriculum/qprime 0->1 타이밍(success>1 이후) ③ reach kernel/reaching_object 거동 (flush 유도로 상승 기대)
+  ④ play 결정적: 판이 박스 면에 딱 붙는지(flush) - "세트째 기울임" 소멸 여부. P15 A안(파지 중 파트너
+     소멸로 붕괴)과 달리 q'는 곱셈 파트너(q/lifting/tracking)가 파지 중 살아있어 그 함정 회피 설계.
+  -> 결과 (5000): ❌ 실패 + q' 미검증. success 0 내내 -> success-gated인 q'/disturbance 둘 다 끝까지 OFF
+     (qprime 0, disturb 0). 즉 q'는 한 번도 작동 안 함(s=0이면 q_eff=q = P24 동일) -> q'에 대해 배운 것 없음.
+     실패 양상: lift 정상(11.3)인데 track 3.6 정체(P24는 9.0) + success 0 = "들지만 안 나른다" 발견 실패.
+  진단(방법론 실수): P24 vs P25 같은 시드(42) + q' s=0 무효 -> 실효 차이는 "크기 DR" 하나. prestartup으로
+     크기 DR 켜지며 step0부터 물리 갈라짐(나비효과) -> 이 시드가 carry 발견 못하는 basin에 빠짐.
+     ±15mm가 74%->0%로 만들 난이도는 아님 -> "바뀐 궤적이 우연히 나쁜 basin" 유력. 어느 쪽이든 q'+크기DR
+     동시 변경(단일변수 위반)으로 confound + q' 미작동.
+  처방: 크기 DR 끄고(scale_range=(1,1)) q'만 격리 재학습 -> P24 basin 재현 -> success 발생 -> q' 램프 관측.
+     크기 DR은 q' 검증 후 별도 run으로 얹음 (flush와 직교).
+
+=== [08033b] q' 격리: v2 크기 DR OFF (scale_range=(1,1)) ===
+  P25 confound 대응. v2만 크기 고정(555×475×275, 실측 재확인 - 8env 동일)으로 P24 basin 복귀.
+  이제 v2 = P24 설정 + q'만 차이 (단일 변수). 논의: ±15mm는 품질에 무의미(기울임은 크기-불변 국소해라
+  큰 DR로도 안 깨짐, 원인은 q가 자세 못 봄=reward 문제). 크기 강건성은 별개 관심사(v0/큰 DR 별도 실험).
+  prestartup 픽스 자체는 유효(코드 유지) - 여기선 range만 (1,1)로 무효화.
+
+--- v2 네번째 run (08-03_20-27-34) = P26 (q' 격리, 크기 DR OFF) ---
+  Isaac-Lift-Box-DualFR3-Plate-v2, from-scratch, seed 42. P24 설정 + q'만 차이(단일 변수). 크기 DR OFF.
+  관찰: ① success P24 수준(~74%) 재현되는지(basin 복귀 확인) ② Curriculum/qprime 0->1 램프(이번엔 진짜 켜져야 함,
+  success>1 이후) ③ q' 켜진 뒤 reaching_object/reach kernel 상승(flush 유도) ④ play 결정적: 판-면 flush,
+  세트째 기울임 소멸. P25(크기DR confound로 success 0, q' 미작동)와 달리 이번엔 q'가 실제로 작동해야 함.
 
 2026-07-30_20-36-14 : Run P17 = 접근×정렬 통합(reaching_aligned w6, 곱셈), reaching_fine 제거.
                       from-scratch, seed 42, v1 박스. 관찰 포인트:

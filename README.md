@@ -25,16 +25,25 @@ run 기록 시 PC 표기(`[2.2.1/5.0]` / `[2.3.2/5.1]`)를 붙일 것.
 
 ## Tasks
 
+Cube lift는 sim2real 목표로 v0→v3까지 진화했다. **각 버전은 한 축씩만 바꿔 ablation으로 검증** (v0 보존, 로그 분리).
+
 | Gym ID | 내용 |
 |---|---|
-| `Isaac-Lift-Cube-DualFR3-v0` | 오른팔로 테이블(상판 0.75m) 위 DexCube 파지·목표 이동. grasp gating(양 finger pad 접촉) + 충돌 페널티 + 측정 joint 토크 obs + obs noise/물성 DR |
-| `Isaac-Lift-Cube-DualFR3-Play-v0` | 위 태스크 play용 (obs corruption off) |
-| `Isaac-Lift-Cube-DualFR3-Play-Noisy-v0` | 강건성 평가용 (noise 활성) — `scripts/tools/eval_dual_fr3_lift_robustness.py`와 세트 |
-| `Isaac-Lift-Box-DualFR3-Plate-v0` | 양팔 판형 EE(140×140mm)로 바닥 박스 squeeze 파지·들기 |
-| `Isaac-Lift-Box-DualFR3-Plate-Play-v0` | 위 태스크 play용 |
+| `Isaac-Lift-Cube-DualFR3-v0` | 원형. grasp gating(양 finger pad 접촉) + 충돌 페널티 + 측정 joint 토크(τ_ext) obs + obs noise/물성 DR. 테이블 상판 world 0.75m(base 위 0.345m) |
+| `Isaac-Lift-Cube-DualFR3-v1` | v0 − τ_ext obs (ablation: 기여 없음·오히려 잡음 → 제거 확정). **obs 43→36** |
+| `Isaac-Lift-Cube-DualFR3-v2` | v1 + decimation 5(정책 50→**20Hz**) + episode 8s. 실물 perception 주기 정합 |
+| `Isaac-Lift-Cube-DualFR3-v3` | v2 + cube **50×50×100mm 세로 직육면체** (실물 정합). **← 현재 실물 배포 후보** |
+| `...-Play-v{N}` / `...-Play-Noisy-v{N}` | 각 버전 play용(corruption off) / 강건성·성공률 평가용(noise on) — `eval_dual_fr3_lift_robustness.py`와 세트 |
+| `Isaac-Lift-Box-DualFR3-Plate-v0` | (plate 세션) 양팔 판형 EE(140×140mm)로 바닥 박스 squeeze 파지·들기 |
 
-설계 이력·판단 근거는 `docs/DUAL_FR3_LIFT_ENV_ANALYSIS.md`(cube), `docs/DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md`(plate),
-run별 실험 기록은 `docs/log_per_task.txt` 참조.
+각 버전의 **배포 스펙**(obs 순서·ready pose·action 규약·배포 루프·TODO)은 `docs/dual_fr3_lift_v{1,2,3}.md`.
+**현재 배포 후보 = v3** (`docs/dual_fr3_lift_v3.md`). 설계 이력·판단 근거는
+`docs/DUAL_FR3_LIFT_ENV_ANALYSIS.md`(cube), run별 실험 기록은 `docs/log_per_task.txt`.
+
+> **⚠ 크기 DR 교훈 (2026-08-03)**: `randomize_rigid_body_scale`은 `mode="prestartup"`으로 써야 한다.
+> `mode="usd"`는 IsaacLab 2.2.1에서 아무도 호출하지 않아 **에러 없이 침묵** — v0~v2에서 cube 크기 DR이
+> 내내 무효(실제 4.8cm 고정)였다. instanceable USD보다 `MeshCuboidCfg` primitive가 크기 검증에 유리.
+> **새 크기/scale DR은 반드시 sim 실측(env별 AABB)으로 per-env 랜덤 여부를 확인할 것.**
 
 ## Installation
 

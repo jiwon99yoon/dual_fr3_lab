@@ -66,7 +66,7 @@
 
 | 축 | 학습 범위 | 실물 해석 |
 |---|---|---|
-| cube 크기 | 4.5~5.5 cm | 이 범위의 정육면체 OK |
+| ~~cube 크기~~ | ~~4.5~5.5 cm~~ **버그로 미작동 — 실제 4.8cm 고정** (mode="usd" 무효, 2026-08-03 발견·소급 정정. v3부터 prestartup으로 실작동) | 4.8cm 근방 정육면체만 검증됨 |
 | cube 질량 | 기본 ×0.7~1.3 | 가벼운 목재~플라스틱 블록 수준 |
 | 마찰 | static 0.4~1.2 / dyn 0.3~1.0 | 매끈한 플라스틱~고무까지 |
 | 스폰 위치 | x ±8cm, y ±12cm (중심 world 0.45, −0.25) | 파란 존 안에 놓기 |
@@ -151,12 +151,15 @@ FR3 zero-shot transfer 문헌의 **3층 주기 구조** (여러 논문·IsaacLab
 v1(50Hz)이 "action 너무 빠름 + perception 정합 안 됨" 갭 → **decimation 재학습으로 정면 대응** (②트랙).
 비동기 hold(①)는 건너뜀 (사용자: from-scratch 재학습으로 감).
 
-**v2 스펙** (= v1과 완전 동일, 변경점 2개만):
+**v2 스펙** (= v1과 완전 동일, 변경점 3개):
 - `decimation 2 → 5` : 정책 50Hz → **20Hz** (물리 100Hz 불변). perception 20~30Hz 예상과 정합,
   문헌 표준(10~15Hz)보단 약간 빠르나 예산 여유 확보. perception 실측(팀원 작업 중) 후 10Hz(dec 10)로
   더 낮추는 카드 유지.
 - `episode_length_s 5 → 8` : 20Hz × 8s = **160 step** (현 250의 64%). dec 10이었으면 80 step이라
   빡빡 → dec 5 + 8s가 균형점.
+- `resampling_time_range 5 → 8` : goal 재샘플링을 episode에 맞춤. 베이스가 5초 고정이라 8초
+  에피소드면 goal이 5초에 한 번 더 뽑혀 "에피소드당 goal 2개"가 됨(최초 v2 run에서 play로 발견,
+  중단·수정). episode = goal 1개로 유지 (실물 프로토콜=goal 하나 지정과 정합).
 - 나머지(obs 36, delta 0.1, reward/DR/curriculum) 전부 v1 동일. from-scratch, 로그 `dual_fr3_lift_v2/`.
 - **decimation 값 근거**: 문헌은 "정책 주기 Hz"로 보고(decimation은 물리Hz 종속). 매니퓰레이션
   zero-shot은 10~15Hz 수렴(perception 정합). 우리 물리 100Hz → 20Hz=dec5, 14Hz=dec7, 10Hz=dec10.
