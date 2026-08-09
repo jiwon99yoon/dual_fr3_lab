@@ -1,130 +1,230 @@
-# Sim2Real Transfer 전략 — dual_fr3 (plate box-lift / cube lift)
+# Dual FR3 Sim2Real — 공통 원칙과 문서 허브
 
-> 작성: 2026-07-28. 대상: `~/dual_fr3_lab`의 두 태스크 (plate가 주 대상, cube는 공용 항목만)
-> 전제: 실물 = 양팔 FR3 + husky(고정 베이스), **FT 센서 없음**, **외부 고정 카메라** (결정 사항),
-> 박스 인지는 1단계 ArUco → 2단계 vision policy
-> 관련 문서: `DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md` (§3-2 힘 추정, §4 남은 약점), `log_per_task.txt`
+> 대상 저장소: `~/dual_fr3_lab`
+>
+> 갱신: **2026-08-08**
+>
+> 역할: cube-lift와 plate box-lift가 공유하는 **calibration, 시간구조, 평가, 안전 원칙**만 관리한다.
+> 태스크별 observation/action/DR/reward/roadmap은 아래 전용 문서를 기준으로 한다.
 
 ---
 
-## 0. 갭의 분류와 현재 상태
+## 0. 문서 라우팅
 
-sim2real 갭을 4축으로 나누고, 축별로 "이미 학습에 반영된 것 / 남은 것"을 관리한다.
+| 궁금한 내용 | 기준 문서 |
+|---|---|
+| Plate-EE box-lift P38 기준 sim2real, 관련 문헌, P39 이후 실험 | [`DUAL_FR3_LIFT_PLATE_SIM2REAL.md`](DUAL_FR3_LIFT_PLATE_SIM2REAL.md) |
+| Plate reward와 P1~P38 설계·실험 이력 | [`DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md`](DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md) |
+| Cube-v3 기준 sim2real와 실물 inference | [`DUAL_FR3_LIFT_CUBE_SIM2REAL.md`](DUAL_FR3_LIFT_CUBE_SIM2REAL.md) |
+| Cube reward/환경 설계 이력 | [`DUAL_FR3_LIFT_ENV_ANALYSIS.md`](DUAL_FR3_LIFT_ENV_ANALYSIS.md) |
+| Cube v1/v2/v3의 고정 스펙과 checkpoint | [`dual_fr3_lift_v1.md`](dual_fr3_lift_v1.md), [`dual_fr3_lift_v2.md`](dual_fr3_lift_v2.md), [`dual_fr3_lift_v3.md`](dual_fr3_lift_v3.md) |
+| 모든 run·평가·실측 결과 | [`log_per_task.txt`](log_per_task.txt) |
 
-| 축 | 이미 반영 (P5 기준) | 남은 것 |
+이 파일의 2026-07-28 버전은 P5 plate 정책과 cube 항목을 한 문서에 섞고 있었다. 당시 내용은 git 이력에
+남아 있지만 현재 기준으로는 plate force actor 관측, P5 gravity A/B, 50 Hz 공통 가정 등이 오래됐다.
+
+---
+
+## 1. 두 태스크를 분리해서 봐야 하는 이유
+
+| 축 | Cube lift v3 | Plate box-lift v2/P38 |
 |---|---|---|
-| **Perception** | obs noise (pos σ1cm, ori σ2°) | ArUco 파이프라인, 가림, latency, vision policy |
-| **Dynamics** | 물성 DR (마찰 0.4~1.2, 질량 0.6~1.4×, 크기 30~50cm), 액추에이터 게인 ±15% | 판 질량 미반영, obs/action latency, 실물 마찰 실측 |
-| **Actuation** | delta action (스텝당 0.1rad = rate limit 내장), 중력보상 모델링 (P5b A/B 중) | FR3 제어 인터페이스 매핑, payload 등록 |
-| **힘 감각** | plate_forces obs + noise σ2N | τ_ext 기반 추정 파이프라인, bias/drift 모델 |
+| 물체 | 50×50×100 mm 세로 cube | 555×475×275 mm, 4 kg 박스 |
+| 조작 | 오른팔 7 joint + binary gripper | 양팔 14 joint + flat plates |
+| 파지 | gripper cage | 양 plate의 normal force × friction |
+| actor object 관측 | center position 3D | position 3D + orientation quaternion |
+| actor force 관측 | 없음 | 없음(V1/V2 56D) |
+| policy rate | 20 Hz | 50 Hz |
+| 핵심 gap | gripper timing, pose hold/latency, orientation 미관측 | 양팔 timing skew, pose latency, contact/TCP/CoM, compliance |
+| 배포 안전 | gripper fault·drop·table contact | squeeze/collision·one-side contact·drop/yaw |
 
-원칙 (cube 강건성 진단에서 실증): **noise와 물성 DR은 단독으론 무해해도 "조합"이 드랍을 유발**
-→ 축별 방안은 반드시 조합 상태로 sim 평가를 통과시킨 뒤 실물로 간다.
-
----
-
-## 1. Perception — 박스 pose
-
-### 1-1. 1단계: ArUco (state 정책 그대로 배포)
-
-- 외부 고정 카메라 → ArUco 6DoF → obs의 `object_position`(3) + `object_orientation`(quat 4, w≥0)
-- **다중 마커**: 판이 측면을 덮으므로 윗면 포함 여러 면에 부착, 보이는 마커로 pose 융합
-- **필터링**: EKF/저역필터로 마커 소실 구간(가림) 유지 — 잡은 뒤에는 pose 변화가 EE 기구학과
-  일치하므로 kinematics prior로 보간 가능
-- **캘리브레이션**: 카메라-로봇 base 외부 캘리브레이션 오차가 곧 obs bias → sim의 noise DR은
-  zero-mean이라, 캘리브레이션 잔차(수 mm~1cm)가 크면 bias 항 DR 추가 검토
-- **각도 오차가 위치보다 큼** (2~5°) → 이미 orientation noise σ2° 반영, 실측 후 필요시 상향
-
-### 1-2. 2단계: Vision policy (마커 제거) — Teacher-Student Distillation
-
-- **Teacher** = P5 계열 state 정책 (정확한 box pose를 보는 특권 정책)
-- **Student** = 외부 고정 카메라 이미지 + 고유수용 obs(관절 28, action 14, 접촉력 2) + goal command
-  → teacher action을 DAgger 방식으로 모방 (student가 행동, teacher가 매 스텝 라벨)
-- **Depth 우선**: 텍스처/조명 sim2real 갭이 RGB보다 작음. RealSense 등 RGB-D 전제.
-  RGB로 확장 시 텍스처/조명/재질 DR 필수
-- **메모리 필수**: 잡는 순간 판+팔이 박스를 가림 → frame stack 또는 LSTM으로 "가려지기 직전
-  pose" 유지. 접촉 후엔 접촉력+기구학 obs로 "손 감각 운반"이 가능한 obs 구성이 이미 갖춰짐
-- **카메라 DR**: 외부 고정이지만 재설치 오차 대비 pose ±수 cm/±수 deg DR
-- **VRAM**: tiled depth camera × 512~1024 envs — 32GB의 주 용도
-- 백업 옵션: perception 분리 (이미지→pose 추정 신경망 + state 정책 유지) — distillation이
-  가림에서 고전하면 이 하이브리드로 후퇴
-- 참고: DeXtreme(arXiv 2210.13702), Learning by Cheating, 휴머노이드 box loco-mani(2310.03191)
+공통 robot과 PPO를 사용하더라도 동일한 DR와 배포 전략을 복사하지 않는다. 특히 plate의 외란·접촉
+품질 reward를 cube에 넣거나, cube의 binary grasp 가정을 plate에 적용하지 않는다.
 
 ---
 
-## 2. 힘 감각 — plate_forces (FT 센서 없음)
+## 2. 공통 sim2real 원칙
 
-- **소스**: libfranka `tau_ext_hat_filtered` → `O_F_ext_hat_K` (EE 외력 추정, 가상 F/T). norm을
-  obs `plate_forces`에 매핑
-- **Payload 등록 필수**: 판+볼트(~1.4kg) 질량·무게중심을 FR3 payload로 등록해야 판 무게가
-  외력으로 잡히지 않음 (FT tare에 해당)
-- **오차 특성**: 모델 오차·관절 마찰로 수 N급 bias/drift — sim의 σ2N zero-mean noise에 더해
-  **bias DR**(에피소드별 상수 오프셋 ±2~3N) 추가 검토
-- **joint7 축-정렬 관측성 문제 (2026-07-28 논의)**: 판 법선력(조임력)의 방향 = TCP z = 정확히
-  joint7 회전축 → joint7 토크는 조임력에 기여 정보가 거의 없음. 조임력 추정은 사실상
-  joint 1~6이 담당 (어깨/팔꿈치는 레버암 0.4~0.6m라 20~40N 조임 시 10~20Nm — SNR 양호).
-  norm만 쓰고 판 법선축 모멘트를 안 쓰는 우리 구성은 유리한 조건.
-  남는 리스크: ① 자세 의존 관측성 (손목 폄/특이자세 근처에서 특정 성분 추정 저하 —
-  task 자세 범위에서 J^T 조건수 확인) ② 관절 마찰/히스테리시스 ~0.1-0.3Nm/관절 → EE 힘
-  오차 수 N (sim의 σ2N 가정과 대략 일치하나 실측 필요)
-- **실측 캘리브레이션 계획**: 판을 고정된 힘 게이지(저울)에 task 대표 자세 수 개로 눌러
-  τ_ext 추정치 vs 실측 대조 → 오차 크기/자세 의존성을 얻어 sim noise/bias DR 파라미터 보정
-- 보험: 추정 품질이 낮으면 obs에서 제거하고 재학습해도 task 성립 (delta action + joint_pos가
-  "명령 대비 미동 = 접촉"이라는 암묵 신호 제공 — 분석 md §3-2)
+### 2-1. Calibration before randomization
 
----
+1. 실물 nominal dynamics와 timing을 먼저 측정한다.
+2. simulator nominal을 그 측정에 맞춘다.
+3. 측정 오차와 환경 변화 범위만큼 distribution을 만든다.
+4. zero-shot 실패 뒤 필요할 때만 real rollout으로 posterior를 갱신한다.
 
-## 3. Dynamics / Actuation
+넓은 uniform DR는 gap을 자동으로 해결하지 않으며 학습을 느리게 하고 지나치게 보수적인 policy를 만들 수
+있다. 다른 robot 논문의 mass/friction/delay 숫자를 Dual FR3에 그대로 복사하지 않는다.
 
-- **판 질량 반영** (§4-7): sim link7에 판 1.4kg가 없음. 두 갈래 중 택1로 정합:
-  ① sim USD에 판 질량 추가 + 실물 payload 미등록 (둘 다 "무거운 손목")
-  ② sim 무반영 + 실물 payload 등록 (둘 다 "보상된 손목") ← **P5b(disable_gravity)와 정합, 권장**
-- **중력보상**: P5a(중력 ON) vs P5b(disable_gravity) A/B 진행 중 — 실물 FR3는 항상 g(q) 보상
-  하므로 원리상 P5b가 정합. A/B 결과로 확정
-- **제어 인터페이스**: policy 50Hz delta joint position → FR3 측 1kHz 보간 스트리밍.
-  delta scale 0.1rad가 자체 rate limit 역할 (스텝당 최대 5rad/s 상당). 실물 조인트
-  속도/가속 리밋과 대조해 필요시 scale 하향
-- **Latency**: obs(카메라 30Hz + 추정 지연 ~수십 ms)와 action 전송 지연 — sim에 obs latency
-  DR(1~2 스텝 지연 랜덤)을 넣는 것이 다음 강건화 카드 (cube와 공용)
-- **마찰 실측 보정**: 실물 판(알루미늄)-박스(골판지 등) 마찰을 간단 경사 실험으로 실측해서
-  sim DR 범위(0.4~1.2)의 중심이 실물을 포함하는지 확인. 벗어나면 판 USD 재질값 조정
+### 2-2. Deployable actor, privileged training signal
 
----
+- Actor 입력은 실물 runtime에서 같은 의미·단위·주기로 생성할 수 있어야 한다.
+- Exact contact, object velocity, mass/friction, sampled delay 같은 sim truth는 reward 또는 critic에만 둔다.
+- Asymmetric critic은 value learning을 돕지만 memoryless actor에 online adaptation 능력을 자동으로 주지 않는다.
+- `tau_ext`를 actor에서 빼더라도 독립 safety supervisor와 calibration log에는 사용할 수 있다.
 
-## 4. 안전 (실물 전용)
+### 2-3. Timing is part of the dynamics
 
-- **조임력 상한 → P7에서 반영 완료 (2026-07-28)**: `excessive_squeeze` 페널티 (판당 60N 초과분,
-  w−0.05) 학습에 포함. 실물에서는 τ_ext 상한 reflex 병행. 근거: Bi-Touch(arXiv:2307.06423)의
-  실물 "unwanted squeezing" 사례 — 전형적 sim 무해/실물 발현 갭
-- **점진 투입**: ① 접근만 (박스 없이 자세 재현) → ② 정지 squeeze (들지 않음) → ③ 낮은 lift
-  (판정선 수준 +20cm) → ④ full goal tracking. 각 단계에서 τ_ext·거동 확인 후 진행
-- 가벼운 박스(<1kg)부터, workspace 소프트 리밋 + E-stop 상시
-- 양팔 충돌: sim에서 contact penalty로 억제 학습됨 + 실물 FR3 자체 reflex가 최후 방어선
+White noise만으로 다음 gap을 대신할 수 없다.
 
----
+- camera capture→pose publish→policy consume delay.
+- stale frame, sample-and-hold, dropout/occlusion.
+- policy inference jitter와 command transport delay.
+- 저수준 controller의 interpolation/hold와 actuator tracking bandwidth.
+- 다관절·양팔·gripper channel 사이의 differential skew.
 
-## 5. 평가 프로토콜
+현재 두 task의 Isaac Lab `RelativeJointPositionAction`은 policy tick에서 delta를 처리한 뒤, 같은 delta를
+각 **physics substep마다 최신 joint position에 다시 더해** target을 만든다. 따라서 policy rate만 보고
+20/50 Hz absolute target hold로 구현하면 다른 controller가 된다. Physics-substep target trace를 기준으로
+실물 adapter를 재현하거나, snapshot-target action term으로 sim을 바꾸고 재학습해야 한다.
 
-1. **Sim 강건성 평가** (배포 전 관문): noise+DR "조합" 조건에서 drop률·성공률 측정
-   (cube의 `eval_dual_fr3_lift_robustness.py` 패턴을 plate로 이식 — hold/precise/drop 지표)
-2. **실물 단계 평가**: §4의 점진 투입 각 단계에서 성공률 (예: 10회 중 성공 수), 실패 모드
-   기록 (미끄러짐/기울어짐/충돌/미도달 분류 — sim의 실패 모드 분류와 대응시켜 갭 원인 추적)
-3. **갭 원인 분리 원칙**: ArUco+state 정책을 먼저 배포해 "정책 갭"을 확정한 뒤 vision으로 —
-   vision student가 실패하면 원인은 인지 쪽이라고 바로 확정 가능
+Delay를 넣은 뒤에는 actor가 stale 상태를 구분할 `frame_age/dt` 또는 측정된 최대 지연을 덮는 history를
+검토한다. History 길이는 관습적으로 정하지 않고 실측 delay로 정한다.
 
----
+### 2-4. Bias, drift, white noise를 분리
 
-## 6. 로드맵 (의존 순서)
+- camera-to-base calibration residual은 episode-persistent SE(3) bias다.
+- encoder/pose frame jitter는 per-step noise다.
+- 온도·조명·mechanical settling은 느린 drift일 수 있다.
+- dropout은 값에 큰 Gaussian noise를 더하는 것이 아니라 invalid/stale observation이다.
 
-```
-0. P5 state 정책 완성 (진행 중: P5a/P5b A/B)
-   └─ 판정 후: 접촉력 크기 페널티 + obs latency DR 추가 run (실물 안전 준비)
-1. 실물 ArUco + state 정책 zero-shot
-   ├─ 사전: payload 등록, 카메라-base 캘리브레이션, τ_ext→plate_forces 파이프라인, 점진 투입(§4)
-   └─ 산출: 정책 갭 확정, 실측 noise/마찰/latency 값 → sim DR 파라미터 보정
-2. sim: tiled depth camera + DAgger distillation (student 학습, VRAM 본격 사용)
-   └─ 가림 대응: frame stack/LSTM, 카메라 pose DR
-3. 실물 vision zero-shot → 갭 크면 perception 분리 하이브리드로 후퇴
+Quaternion에는 componentwise Gaussian을 직접 더하기보다 tangent-space(axis-angle) perturbation 후
+normalize하는 방식이 실제 orientation error와 맞는다.
+
+### 2-5. 한 실험에 한 축
+
+Reward, reset, latency, history, critic, physical DR를 동시에 바꾸지 않는다. 최소 순서는:
+
+```text
+baseline -> one-factor ablation -> one-factor ablation -> combined stress test
 ```
 
-각 단계의 실측값(오차·성공률)은 `log_per_task.txt`에 run 기록과 같은 형식으로 남길 것.
+학습 도중 environment semantics를 바꾸지 않으며, fine-tuning 시 custom curriculum state가 checkpoint와
+함께 저장되는지 확인한다.
+
+---
+
+## 3. 공통 calibration 데이터 계약
+
+### 3-1. Robot/control log
+
+```text
+t_state, t_policy_start, t_policy_end, t_command
+q_des, q, dq, tau, tau_ext
+controller mode, command result, saturation/fault/watchdog
+```
+
+얻어야 할 값:
+
+- command→motion delay와 jitter.
+- joint별 tracking bandwidth와 steady-state residual.
+- velocity/acceleration/jerk limit과 reject 조건.
+- policy rate 사이 저수준 interpolation/hold 방식.
+- plate task는 left/right differential skew, cube task는 gripper timing을 추가.
+
+### 3-2. Perception log
+
+```text
+camera capture timestamp, pose publish timestamp, policy consume timestamp
+pose, frame_id, covariance/quality, visible marker IDs, valid/stale flag
+```
+
+정지/이동/가림 조건을 분리해 frame rate, bias, jitter, dropout length, recovery를 측정한다. Position과
+orientation은 동일한 source timestamp와 validity를 사용해야 한다.
+
+### 3-3. Object/contact log
+
+- 실제 크기, 질량, CoM/inertia 근사.
+- surface material과 static/dynamic friction 시험.
+- representative contact에서 command, tracking residual, `tau_ext`, object motion.
+- sim startup 후 실제 env별 mass/material/scale dump.
+
+Config에 DR event가 등록됐다는 사실만으로 적용을 믿지 않는다. Cube size DR가 오랫동안 잘못된 event mode로
+미작동했던 이력을 공통 회귀시험으로 삼는다.
+
+---
+
+## 4. 공통 개발·평가 파이프라인
+
+### Stage 0 — Reproducible simulation baseline
+
+- checkpoint가 학습될 때의 resolved env/agent cfg와 code revision을 복원한다.
+- checkpoint sweep과 fixed held-out seeds를 사용한다.
+- nominal, observation-only, physics-only, combined 조건을 분리한다.
+
+`scripts/rsl_rl/play.py`는 현재 등록된 task cfg로 env를 만들 수 있으므로, 최신 코드로 과거 checkpoint를
+재생한 결과를 historical policy 성능으로 오해하지 않는다.
+
+### Stage 1 — Real-to-sim calibration
+
+- object 없는 safe trajectory로 actuation/frame/timestamp를 확인한다.
+- 저하중 contact와 static object로 contact/perception을 확인한다.
+- 측정값과 불확실성을 nominal + distribution으로 문서화한다.
+
+### Stage 2 — Matched simulation robustness
+
+- action timing, perception timing, physical posterior를 one-factor로 검증한다.
+- 마지막에 factor combination과 distribution corners를 평가한다.
+- 평균 return보다 task stage, pose error, drop/slip, tracking/safety metric을 본다.
+
+### Stage 3 — Real safety ladder
+
+```text
+no object/free-space
+  -> approach only
+  -> contact/grasp only
+  -> low lift
+  -> nominal lift/hold
+  -> initial-condition and disturbance robustness
+```
+
+각 단계가 실패하면 이후 단계를 진행하지 않는다. 실물에서 관찰한 gap만 다음 training branch의 변경 근거로
+사용한다.
+
+### Stage 4 — Posterior update
+
+Zero-shot가 실패한 뒤에만 소수 real rollout으로 sim/real trajectory를 비교한다. SimOpt/BayesSim류의
+parameter posterior나 task-driven adaptation을 쓸 수 있지만, 추정 parameter를 물리적 진실로 단정하지
+않고 real task performance와 held-out trajectory match로 판정한다.
+
+---
+
+## 5. 공통 평가·재현성 규칙
+
+- 마지막 checkpoint만 평가하지 않고 저장 checkpoint 전체 또는 대표 sweep을 평가한다.
+- random seed, initial pose, physics draw, perception corruption을 고정 가능한 suite로 만든다.
+- startup-only DR는 episode 수가 아니라 **서로 다른 env/dynamics draw 수**를 센다.
+- success는 task별 full condition과 hold duration을 포함해 구현한다.
+- time-to-success는 하드코딩한 Hz가 아니라 `step_dt`로 초를 계산한다.
+- 결과에는 mean뿐 아니라 median, p95/worst tail, confidence interval을 남긴다.
+- run마다 command, git revision/diff, env/agent cfg, checkpoint, evaluation cfg를 함께 기록한다.
+- 모든 실행·실측 결과는 `log_per_task.txt`에 남긴다.
+
+---
+
+## 6. 공통 safety supervisor
+
+Safety는 policy reward나 robot 내부 reflex 하나에 맡기지 않는다.
+
+- command heartbeat와 controller fault.
+- joint position/velocity/acceleration/jerk hard limit.
+- workspace, self/inter-arm/table collision.
+- perception stale/invalid timeout.
+- object drop/out-of-workspace abort.
+- task별 `tau_ext`/gripper force·width threshold.
+- physical E-stop과 저속·저하중 초기 시험.
+
+Actor에 force observation이 없는 것과 force safety를 사용하지 않는 것은 다른 결정이다.
+
+---
+
+## 7. 공통 참고 문헌
+
+- [Lin et al., Sim-to-Real Reinforcement Learning for Vision-Based Dexterous Manipulation on Humanoids](https://proceedings.mlr.press/v305/lin25c.html)
+- [Kataoka et al., Bi-Manual Block Assembly via Sim-to-Real Reinforcement Learning](https://arxiv.org/abs/2303.14870)
+- [Dao et al., Sim-to-Real Learning for Humanoid Box Loco-Manipulation](https://arxiv.org/abs/2310.03191)
+- [DeXtreme: Transfer of Agile In-Hand Manipulation from Simulation to Reality](https://arxiv.org/html/2210.13702)
+- [DemoStart](https://arxiv.org/html/2409.06613)
+- [SimOpt](https://arxiv.org/abs/1810.05687)
+- [AdaptSim](https://proceedings.mlr.press/v229/ren23b.html)
+
+Plate contact/reward 문헌과 각 논문의 직접 적용점은 plate 전용 문서 §3에서 관리한다.

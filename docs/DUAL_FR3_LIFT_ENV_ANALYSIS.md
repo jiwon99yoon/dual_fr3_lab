@@ -3,6 +3,7 @@
 > **이 문서 = 설계 서사 + 근거 (v0~Run D 아크가 왜 이렇게 됐나).** 계속 최신화됨.
 > **배포용 완성 스펙(현재 후보 정책)은 별도 문서**: `dual_fr3_lift_v1.md`(50Hz),
 > `dual_fr3_lift_v2.md`(20Hz 정육면체), `dual_fr3_lift_v3.md`(20Hz 세로 50×50×100 — **실물 배포 후보**).
+> Cube-v3 실물 전이 계약·calibration·검증 계획: [`DUAL_FR3_LIFT_CUBE_SIM2REAL.md`](DUAL_FR3_LIFT_CUBE_SIM2REAL.md)
 > "실물에 뭘 올리나"는 그쪽을 볼 것. 최신 파생: **v1**=v0에서 tau_ext obs 제거(§5-11),
 > **v2**=v1에서 decimation 5·20Hz(§5-12), **v3**=v2에서 세로 cube + 크기 DR 버그 수정(§5-13).
 

@@ -36,3 +36,26 @@ class LiftCubePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class LiftPlateV1PPORunnerCfg(LiftCubePPORunnerCfg):
+    """v1(특정 박스) 전용 - 로그를 dual_fr3_plate_lift_v1/로 분리 (v0과 run 이력 혼합 방지)."""
+
+    experiment_name = "dual_fr3_plate_lift_v1"
+
+
+@configclass
+class LiftPlateV2PPORunnerCfg(LiftCubePPORunnerCfg):
+    """v2(v1 + 외란) 전용 - 로그를 dual_fr3_plate_lift_v2/로 분리 (v1/v2 동시 실행·비교)."""
+
+    experiment_name = "dual_fr3_plate_lift_v2"
+
+
+@configclass
+class LiftPlateP39PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P39 scratch training: P38 PPO/seed preserved, with a dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p39"

@@ -1,5 +1,10 @@
 # dual_fr3_lift_v1 — 배포 후보 환경 스펙 & sim2real 가이드
 
+> **2026-08-08 정정:** 실물 I/O와 action adapter의 현재 기준은
+> [`DUAL_FR3_LIFT_CUBE_SIM2REAL.md`](DUAL_FR3_LIFT_CUBE_SIM2REAL.md)다. 아래의 “policy rate마다
+> `q_current+0.1a` target 생성·hold” 설명은 실제 Isaac Lab 동작과 다르다. Sim에서는 같은 delta를
+> 100 Hz physics substep마다 최신 q에 다시 더하며, gripper total width→두 finger 관측 매핑도 별도 검증한다.
+
 > **이 문서의 역할**: `Isaac-Lift-Cube-DualFR3-v1` 환경과 그 학습 정책(배포 후보)의 **현재 스펙 요약서**.
 > 설계 이력·근거는 `DUAL_FR3_LIFT_ENV_ANALYSIS.md`(왜 이렇게 됐나), run 기록은 `log_per_task.txt`.
 > 여기는 "실로봇에 옮기려면 뭘 알아야 하나"에 답하는 문서다.
@@ -50,7 +55,8 @@
   **right_joint1, 2, 3, 4, 5, 6, 7, right_finger1, right_finger2** (joint_vel도 동일).
   주의: IsaacLab 전체 관절은 좌우 인터리브+깊이순(left_j1,right_j1,left_j2,...)으로 정렬되지만,
   cfg가 오른팔(`right_fr3_joint[1-7]` + finger)만 필터링해 결과적으로 joint1~7 순서가 됨.
-  → **실물에서 libfranka가 주는 q[0:7](joint1~7) + 그리퍼 폭 그대로 넣으면 일치.** finger 2개는 맨 뒤.
+  → Arm은 libfranka의 `q[0:7]`(joint1~7) 순서와 맞는다. Gripper total width/velocity를 맨 뒤의
+  finger 2개 position/velocity로 바꾸는 매핑은 cube Sim2Real 기준 문서대로 별도 unit test한다.
 
 ## 4. Action (8 dims, 50 Hz)
 

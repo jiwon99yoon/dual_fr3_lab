@@ -1,5 +1,8 @@
 # dual_fr3_lift_v3 — 세로 cube(50×50×100) 배포 후보 환경 스펙 & sim2real 가이드
 
+> **2026-08-08 현재 배포 기준:** [`DUAL_FR3_LIFT_CUBE_SIM2REAL.md`](DUAL_FR3_LIFT_CUBE_SIM2REAL.md).
+> 이 문서의 v3 실험 결과는 유지하지만, inherited action loop와 `tts` 초 환산은 새 문서의 정정을 따른다.
+
 > **v2(20Hz)의 후속 — 실물 cube 형상(50×50×100mm)에 맞춘 버전.** v2.md와 대부분 동일하며,
 > **차이점(cube 크기 DR)만** 여기 명시하고 나머지(주기·obs·action·배포 절차)는 v2.md/v1.md 참조.
 > 설계 근거: `DUAL_FR3_LIFT_ENV_ANALYSIS.md` §5-12·§9. run 기록: `log_per_task.txt`.

@@ -1,5 +1,9 @@
 # dual_fr3_lift_v2 — 20Hz 배포 후보 환경 스펙 & sim2real 가이드
 
+> **2026-08-08 정정:** 실물 action/observation 계약은
+> [`DUAL_FR3_LIFT_CUBE_SIM2REAL.md`](DUAL_FR3_LIFT_CUBE_SIM2REAL.md)를 우선한다. 아래 20 Hz target-hold
+> 초안과 v1의 배포 loop는 실제 100 Hz physics-substep current-q rebase를 생략한 historical 설명이다.
+
 > **v1(50Hz)의 후속 — 정책 주기를 실물 perception에 맞춘 버전.** v1.md와 대부분 동일하며,
 > **차이점(제어 주기·에피소드)만** 여기 명시하고 나머지는 v1.md를 참조한다.
 > 설계 근거: `DUAL_FR3_LIFT_ENV_ANALYSIS.md` §5-12, §9, §9-1. run 기록: `log_per_task.txt`.

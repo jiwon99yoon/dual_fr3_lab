@@ -1092,13 +1092,379 @@ obs: P1~P4는 54 (joint 28 + box pos 3 + goal 7 + action 14 + 양판 접촉력 2
   관찰: ① success P24 수준(~74%) 재현되는지(basin 복귀 확인) ② Curriculum/qprime 0->1 램프(이번엔 진짜 켜져야 함,
   success>1 이후) ③ q' 켜진 뒤 reaching_object/reach kernel 상승(flush 유도) ④ play 결정적: 판-면 flush,
   세트째 기울임 소멸. P25(크기DR confound로 success 0, q' 미작동)와 달리 이번엔 q'가 실제로 작동해야 함.
+  -> 결과: ✅ q' 첫 작동 확인 + 방향 검증, but 미완결. success 발견 늦음(it4000) -> qprime it4007 램프
+     -> q'가 ~1000 iter만 작동. 그 구간서 success 유지(3.9 상승중, max 4.28) + reach kernel 0.32->0.51 상승
+     + play(사용자): 판-박스 평평·안정적(flush 개선). 즉 방향 맞으나 수렴 전.
+  eval (32env×4ep, model_4999): drop 0/128(⭐안 놓침) / hold 0.76 / precise<10cm 0.62 / goal err 7.9cm /
+     upright<15° 0.54 / box tilt 평균 ~13°. => 파지 매우 안정(drop 0), "박스 움직임"=놓침 아니라 기울어짐
+     (외란 5N/1Nm ON 상태라 상당부분 외란이 미는 정상 반응). 남은 약점=기울기(upright 54%).
+  다음: P26 resume -> 10000 (q' 충분히 작동시켜 flush 수렴 -> 기울기 개선 기대). episode 5->8s는 별도 scratch.
 
-2026-07-30_20-36-14 : Run P17 = 접근×정렬 통합(reaching_aligned w6, 곱셈), reaching_fine 제거.
-                      from-scratch, seed 42, v1 박스. 관찰 포인트:
-                      ① [it500 조기] reaching_object(통합항) 오르면서 lifting도 같이 오르는지
-                        (곱셈이라 초기 탐색 리스크 - 접근+평행 동시. 발견 늦으면 완충곱 카드)
-                      ② play: 허공 정렬 소멸 - 판이 박스로 내려가 평행하게 접근하는지 (P16 스샷 문제 해소)
-                      ③ lifting 발견 정상 + success 회복(>=75%, P15-v2급) ④ 파지 안정. 결과 추후 기록."""
+--- P27 = P26 resume(이어서) 5000 추가 = 총 10000 (08-03_22-15-48) ---
+  model_4999에서 resume. q'/외란 이미 full로 켜진 지점서 이어받아 q' 효과 5000 iter 더 확보(P26은 1000만).
+  목적: q' 수렴 -> flush 완결 + 기울기(eval upright 0.54/tilt 13°) 개선 확인. P26 좋은 basin 다듬기.
+--- P28 = 처음부터 max_iterations 10000 새 학습 (08-03_22-16-27), seed 42 ---
+  scratch 대조군. "q'를 처음부터 넣으면 flush가 더 깨끗이 수렴하나"에 답 (resume은 P26 basin 의존).
+  둘 비교: P27(resume, P26 다듬기) vs P28(scratch, q' 처음부터). q' 작동 구간·flush·기울기·success 대조.
+  -> 결과: P28(scratch) 승. P28 success last5 ~5.65(~94% 안정, max 5.83), q' full it4044~(~6k iter 작동).
+     P27(resume) success 막판 하락(it9249 5.25 -> it9998 3.85), max 5.68. => q'류 "학습중 성격 변화" 변경은
+     scratch가 나음(P21 resume우세와 반대). reachK 둘다 ~0.4(P26 0.51보다 안 높음 - reachK는 std0.3라 느슨).
+  ⚠ play(P27/P28 공통, 사용자): 접근은 평행 -> 모서리만 접촉+진동(에피소드 대부분) -> 끝 1/8(~0.6s)에 딱 정렬.
+  진단: ① q'가 방향(평행)은 해결했으나 위치(중심성) 못 잡음 - align은 평행이면 모서리도 만점이라
+        모서리 파지가 q' 만점 받음(중앙 옮길 유인 0). ② 중앙 정렬 요구하는 유일 항 success가 1회 latch라
+        "끝 0.5s만 정렬해 훔치기" 게이밍. termination 없음 확인(out_of_bounds만).
+  eval(P26 기준): drop 0/128 안정, upright 0.54/tilt~13°가 약점 = 위 모서리 파지의 정량 증거.
+
+=== [다음 카드] 중심성 + success 지속화 ===
+  ① 중심성 신호: q에 위치(판 중심이 면 중앙에 닿나) blend -> q''=q·align·center, 또는 reaching std 0.3->0.15.
+     현 q'는 방향만 봐서 모서리 파지 통과.
+  ② success 1회 latch -> per-step 지속 보상: success-zone(near&upright&G) 매 스텝 지급. termination 없어
+     일찍 정렬해 오래 유지가 최대 이득 -> 게이밍 소멸 + 정렬유지가 최고 reward로 인센티브 역전.
+     weight 1500(1회) -> 수 단위(per-step) 재조정 필요. 사실상 tilt조건 붙은 fine_grained 강화판.
+  실물 후보 checkpoint: P28 model_9999 (success ~94% 안정).
+
+=== [08041 수정] success 1회 latch -> per-step 지속 (v2 전용, 다음 run) ===
+  변경: success_bonus에 sustained 플래그. sustained=True면 0.5s 진입(count>=hold_steps=25) 후 zone
+    (near&upright&G) 유지하는 "매 스텝" 지급 (기존은 1회 latch). weight 1500->20.
+    delivered: 기존 1회 30 -> 지속 중 ~20/s (dense lifting 15/s와 경쟁/우위) => success-zone 유지가 최대 이득.
+  근거: P27/P28 게이밍(평소 모서리, 끝 0.5s만 정렬해 success 1회 훔침) 차단. termination 없음(out_of_bounds만)
+    이라 "일찍 정렬해 오래 유지"가 그대로 최대 보상 -> 정렬 유지가 최고 reward로 인센티브 역전.
+  주의: 이 모드에선 Episode_Reward/success = "지속 유지량"이라 기존 "값/6=성공률" 해석 무효 -> 진짜 성공률은
+    eval 스크립트(precise/upright hold)로 봐야 함. qprime/disturbance 램프(lo1/hi3)는 새 스케일서도 유효
+    (성공 시작 시 발동, 게이밍성 짧은 유지는 episode_sum 작아 오히려 진짜 지속만 반영).
+  v0/v1 무영향: sustained 미설정=False -> 1회성 그대로. 스모크 통과(v2 success weight 20 확인).
+  판정: play에서 ① 모서리->중앙 정렬을 "일찍" 하고 끝까지 유지하는지(게이밍 소멸) ② upright/tilt eval 개선.
+  ※ 남은 카드(미적용): 중심성 신호(q에 위치 blend, 5-13g ①) - 이번 성공 지속화로 upright가 개선되면
+    모서리 파지도 간접 완화될 수 있어 먼저 관찰 후 결정.
+
+--- P29 = success per-step 지속 첫 학습 (08-04_13-05-37), scratch, seed 42, max_iter 10000 ---
+  Isaac-Lift-Box-DualFR3-Plate-v2. [08041] success 1회->per-step 지속(weight 20) + q'(08032) + 외란 + symmetry.
+  크기 DR off([08033b]) 유지. scratch 선택 근거: 보상 지형 근본 변화(정렬유지=최고reward 역전)라 처음부터
+  그 지형서 학습해야 함 (P28: q'류 변경은 scratch>resume).
+  관찰: ① success-zone을 "일찍" 진입해 오래 유지하는지(track/lift 거동, 게이밍이면 끝에만 몰림)
+  ② qprime/disturbance 램프 타이밍 ③ ⚠ Episode_Reward/success는 "지속량"이라 값/6=성공률 무효 -> 끝나고 eval로
+  진짜 성공률(precise/upright hold) 확인 ④ play: 중앙 정렬 일찍+유지 + 기울기 개선.
+  -> 결과(eval 08-04, model_9999, 32env×4ep): lifted/hold 0.78 · drop 0/128(⭐안정 유지) · precise<10cm 0.71 ·
+     upright<15° 0.63 · box tilt 평균 ~11.6° · goal err 6.9cm. P26(0.62/0.54/13°) 대비 전반 개선 => per-step
+     지속이 "정렬 유지=최고 reward" 인센티브 역전시켜 기울기 완화 확인. success(지속량) tail~7.28은 유지량이라
+     성공률 아님(위 eval이 진짜). ⚠ 잔존(play, 사용자): 박스가 파지 중 수직축으로 도는 yaw drift. upright는
+     tilt만 봐서 yaw 못 잡음. 원인=두 판 접촉이 면 중심 아닌 COM 옆 -> z축 커플. => 다음 카드 ①(중심성) 발동.
+
+=== [0804 수정] 중심성 q'' + spawn yaw DR 축소 (똑바로 들기, v2, 다음 run) ===
+  문제: P29 play서 박스가 파지 중 수직축으로 도는(yaw drift). box_upright는 tilt(roll/pitch)만 보고 yaw는 자유
+    -> 아무도 안 막음. 근본 원인=두 판 TCP가 면 위서 어긋나(로컬 x-offset) 생기는 z축 커플(yaw ∝ x_R-x_L).
+  변경 ① centrality를 q' 게이트에 곱셈 확장: q'' = q·align·centrality (기존 _qprime_scale ramp 상속, 새 additive
+    항 0개). centrality=_plate_centrality_min: 양 판 TCP를 박스 로컬 투영, 면평면 오프셋 exp(-(x²+z²)/0.12²),
+    min(양팔). align "평행이면 모서리도 만점"이라 중앙 이동 유인 0이던 사각(P28/P29 진단①)을 직접 메움.
+  변경 ② spawn yaw DR ±0.3 -> ±0.1: "world ori == base frame(똑바로)"를 목표화. ±17° 능동 재정렬은 평판 2개로
+    도달 난이도 高라 ±0.1로 축소(재정렬 task -> 안정화기). 실물 배치 yaw robustness는 이후 재확대 커리큘럼.
+  eval 갱신: yaw-aligned hold(<15°) · box yaw err(deg) 2개 추가 (박스 x축 vs base x축 수평각).
+  방침: A(별도 yaw 페널티)는 미적용 - centrality가 원인 직격이라 B만 먼저. 남는 yaw 있으면 A/yaw disturbance 추가.
+  주의: 단일변수 아님(centrality + yaw DR 동시) but 한 "정렬 패치"의 원인/도달성 짝 (무관 변수 동시변경 P25와 다름).
+
+--- P30 = 중심성 q'' + yaw DR ±0.1 첫 학습 (08-04_20-21-51), scratch, seed 42, max_iter 10000 ---
+  Isaac-Lift-Box-DualFR3-Plate-v2. [0804] q''=q·align·centrality + spawn yaw DR ±0.1. P29 기반(success per-step
+  지속 weight20 + 외란 5N/1Nm + symmetry, 크기DR off) 유지, 위 2개만 변경. scratch(q'류 지형변경 scratch>resume).
+  관찰: ① Curriculum/qprime 램프 후 파지가 모서리->면중앙으로 이동하는지 ② eval: yaw-aligned hold 상승 +
+  upright/tilt 추가 개선 ③ play: 박스가 안 돌고 base frame과 나란히 똑바로 들리는지 ④ centrality 곱으로 q''
+  과도히 깎여 success 발견 지연/붕괴 안 하는지(vanishing 곱 리스크 - ramp로 완화 예상).
+  -> 결과(eval 08-04, model_9999): ❌ 목표(yaw) 실패 + 부작용. precise<10cm 0.31(P29 0.71서 붕괴)·
+     lifted 0.74·yaw-aligned<15° 0.03·box yaw 평균 35°(!)·upright 0.72/tilt 8.1°(개선)·drop 0.
+     ⭐진단: (i) centrality는 판TCP를 **박스 로컬**로 측정 -> 박스가 world yaw로 돌면 판도 같이 돌아
+     **불변** => yaw를 구조적으로 못 잡음(35°). (ii) q''가 goal_tracking까지 곱 -> "중앙파지 안되면
+     goal보상도 0" 인질 => precise-hold 붕괴(track 8.8->5.3). (iii) 게이트 빡세져 success 발현 it4300->
+     it7000 지연(실질 학습 반토막). => centrality 폐기. yaw는 결과 직접명세(A)로.
+  교훈 ⑨: 정렬 목표를 **물체 로컬 프레임**서 측정하면 그 물체의 world 회전에 불변 -> world ori 목표엔
+     반드시 world/base 기준 측정. 로컬 곱셈 게이트는 "물체 위 어디를 잡나"용이지 "물체가 어떻게 놓였나"용 아님.
+
+=== [0804b 수정] centrality 철회 + yaw 직접 페널티 A (똑바로 들기 재시도, v2, 다음 run) ===
+  P30 실패(위)에서: centrality 폐기(q''->q' 복귀, _plate_centrality_min 삭제) => P29의 precise/lift 회복.
+  A 신설: box_yaw_misalignment = 1-cos(박스 x축 vs base x축, 수평면). box_upright(tilt=roll/pitch)의 yaw 짝.
+    weight -2 시작 -> lifting EMA>10 후 커리큘럼 -3 (box_upright 미러, 교훈 ③ 성능 커리큘럼).
+  근거: yaw는 곱셈 게이트로 불가(P30 교훈 ⑨) -> 결과를 base frame 기준으로 직접 페널티. spawn yaw DR ±0.1
+    유지(P30서 무해 확인)라 A는 대부분 "돌리지 마"(작은 유지)라 -2~-3이면 충분(±57° 능동재정렬 부담 없음).
+  P29 대비 net 변경 2개: ① yaw DR ±0.3->±0.1 ② A 페널티 추가. centrality는 P30에서 왔다가 도로 제거(net 0).
+  방침: A만 먼저(단일 결과축). yaw 여전하면 weight 강화 or yaw disturbance. eval yaw metric 이미 존재.
+
+--- P31 = centrality 철회 + yaw 페널티 A 첫 학습 (08-04_23-24-24), scratch, seed 42, max_iter 10000 ---
+  Isaac-Lift-Box-DualFR3-Plate-v2. [0804b] q' 복귀 + box_yaw_misalignment(-2->커리큘럼-3) + yaw DR ±0.1.
+  나머지 P29 그대로(success per-step 지속 w20 + q' + 외란 5N/1Nm + symmetry + 크기DR off). scratch.
+  관찰: ① eval yaw-aligned hold가 P30 0.03에서 오르나 + box yaw err 35°->하락 ② precise-hold가 P29 0.71로
+  회복되나(centrality 철회 효과) ③ Curriculum/box_yaw_misalignment 발동 타이밍(lifting>10 후) ④ A가 너무
+  약하면(yaw 안 잡힘) or 강하면(발견/lift 방해) 판정 -> weight 재조정 카드 ⑤ play: 박스 안 돌고 똑바로.
+  -> 결과(eval, model_9999): 절반 성공. ✅centrality 철회 정답: precise 0.31->0.70 회복·lifting/track(11.3/9.3)
+     P29수준 복구·tilt 8.2°(최고)·drop 0. ❌A(yaw 페널티 -3) 무효: yaw 37°·aligned 0.03 (P30 35°와 동일).
+     페널티는 tail -0.443로 꼬박 물면서(box_upright -0.027의 16배) 박스를 안 돌림.
+  ⭐⭐ grip-axis 진단(eval에 추가): grip축(오른판-왼판) yaw = 144.8° (이상 180°에서 35° 벗어남) = 박스 yaw 37°와
+     일치. => "박스가 도는 게 아니라 팔이 grip을 35° 비틀어 놓고(placement) 박스가 따라간 것" 확정 (사용자
+     영상: 판이 평행접근이 아니라 접촉 후 평행 맞추다 비틀림). 근본: reaching/align/q' 전부 박스 상대라 base
+     앵커 없음 -> grip+박스가 arm kinematic 편한 35°로 흐름. A는 박스 기준이나 align(36)+kinematic에 밀림.
+  교훈 ⑩: box_upright(roll/pitch)은 목표(world-up)가 grip과 양립(중력 도움)이라 약한 페널티로 됨. yaw 목표는
+     grip placement와 싸움 -> 같은 형태 페널티라도 무효. 정렬 신호가 "지배 보상과 곱셈"(q' 논리)이 아니면
+     스케일 36을 못 이김. Humanoid 논문(2310.03191)은 box goal-pose(자세) 추종으로 yaw를 base에 앵커 —
+     우리 goal_tracking은 position-only라 goal yaw=0을 방치한 게 구멍.
+
+=== [0805 수정] P32/A' — yaw를 goal_tracking에 곱셈 앵커 (H1, 다음 run) ===
+  P31 진단(grip 35° placement, A 무효) 대응. A(box_yaw_misalignment 페널티) 제거 + A' 신설:
+  object_goal_distance_perenv_squeezed에 yaw_factor = 1 - s·tanh(yaw_err/0.35) 곱 (tracking w16 + fine w5).
+    yaw_err=_box_yaw_error(박스x vs base x, 수평, rad, world/base 기준). s=_yawtrack_scale.
+  ramp_yawtrack_on_success (qprime 미러, success EMA lo1~hi3 0->1). s=0이면 yaw_factor=1(발견 안전, P30
+    vanishing 곱 회피). s=1이면 tracking이 "goal 위치 + base yaw 정렬"만 만점 -> grip을 base 재배치 강제.
+  가설 H1: yaw는 (i)base 측정 + (ii)지배보상 곱셈이어야 잡힌다(q'가 additive를 이긴 논리). A(P31)는 (ii) 없어 실패.
+  ⚠ H1/H2 판별 실험이기도: s full 후 success 유지+yaw 하락=H1(reachable) / success·precise 붕괴+yaw 유지=
+    H2(arm kinematic 한계 -> "똑바로" 정의 완화 or mount/goal 손봐야). Curriculum/yawtrack + grip-axis 진단으로 판정.
+  P31 대비 net: A 페널티 제거 + A' 곱셈 추가. yaw DR ±0.1·나머지 P29 그대로.
+
+--- P32 = yaw goal_tracking 곱셈 앵커(A') 첫 학습 (08-05_11-06-46), scratch, seed 42, max_iter 10000 ---
+  Isaac-Lift-Box-DualFR3-Plate-v2. [0805] A(페널티) 제거 + goal_tracking yaw_factor(_yawtrack_scale ramp).
+  나머지 P29 그대로(success 지속 w20 + q' + 외란 + symmetry + 크기DR off) + yaw DR ±0.1. scratch.
+  관찰: ① Curriculum/yawtrack 발동 후 eval box yaw err 37°->하락 + yaw-aligned hold 0.03->상승 (H1 검증)
+  ② precise-hold 0.70 유지되나(yaw 곱이 goal 인질 안 만드나 - ramp라 발견 후 발동이라 안전 예상)
+  ③ ⚠ success 붕괴하면 H2(kinematic) -> grip-axis 진단으로 판 배치가 실제 0 근처 가는지 확인
+  ④ play: 판이 base 정렬로 접근·파지해 박스 똑바로 들리는지.
+  -> 결과: ❌ 죽은 run(설계 실수). success가 it2000~9999 내내 0. 근데 ⭐silver lining. curriculum 로그:
+     it~1500 success 잠깐 튐 -> EMA 1.9 -> disturbance/q'/yawtrack 셋 다 0.46으로 latch -> 직후 success
+     붕괴 후 영구 0 (latch라 압력 안 내려감 = 교착). 원인: yawtrack을 disturbance/q'와 같은 lo1/hi3로 걸어
+     갓 발견된 취약 success에 yaw 압력이 너무 일찍 얹힘(P30 vanishing 곱과 동형 실수).
+     eval(model_9999): lifted 0.79·precise 0.71(위치는 OK)·drop 0 BUT upright 0.038·tilt ~43°(붕괴 - success
+     죽어 upright gate 사라짐, box_upright -2 홀로 부족). ⭐ yaw-aligned 0.03->0.28·box yaw 37°->20.6°로 개선!
+     => success 죽은 채로도 A'(곱셈)가 yaw를 움직임 = P31 A(페널티, 37° 요지부동)와 대조 -> H1 방식 자체는 맞음.
+     단지 너무 일찍 켠 것. 교훈 ⑪: 붕괴 위험 큰 ramp를 여러 개 같은 스케줄로 겹치면 안 됨 - 새 압력은
+     기존 압력들이 안정된(EMA로 확인) 뒤 순차 발동. (+eval 좀비 버그 픽스: simulation_app.close() 멈춤 ->
+     결과 flush 후 os._exit(0)로 자기종료, P33부터 좀비 안 생김.)
+
+=== [0805b 수정] P33 = yawtrack lo/hi 1/3 -> 3/6 (yaw 발동 뒤로 미룸) ===
+  P32 사망(yaw 조기 발동) 대응. A' 구조·yaw_std 0.35 그대로, yawtrack 커리큘럼 lo1/hi3 -> lo3/hi6만 변경.
+  의미: yaw는 success EMA 3(=disturbance full 지점) 도달 후에야 켜지기 시작 -> success가 외란까지 견디며
+  단단해진 뒤 yaw 압력. P31처럼 success 먼저 7~9로 크고, 그 다음 yaw. 단일변수(lo/hi만) = 깨끗한 H1/H2 판별.
+
+--- P33 = yawtrack 발동 지연(lo3/hi6) 첫 학습 (08-05_13-40-18), scratch, seed 42, max_iter 10000 ---
+  Isaac-Lift-Box-DualFR3-Plate-v2. [0805b] P32에서 yawtrack lo/hi 1/3->3/6만 변경. 나머지 전부 P32=P29 그대로.
+  관찰: ① success가 P31급(7~9)으로 정상 회복하나 (yaw 발동 전까지 disturbance/q'만 = P31과 동일 조건)
+  ② Curriculum/yawtrack 발동 시점(EMA 3 이후) + 발동 후 success 유지되나 ③ eval box yaw 20.6°보다 더 하락 +
+  yaw-aligned 0.28보다 상승 + upright/tilt 정상(8°) 회복 ④ ⚠ yaw 켠 뒤 success 붕괴하면 H2(kinematic 한계)
+  -> grip-axis 진단으로 판정. ⑤ play: 박스 base 정렬로 똑바로.
+  -> 결과: ⭐⭐ H1 확증 + 새 문제. eval(model_9999): yaw-aligned 0.03->0.787·box yaw 37°->3.1°(!!거의완벽)·
+     grip-axis 15° off(35°서 개선) => yaw는 도달 가능·A'(곱셈)가 실제로 시킴 = H2(kinematic 한계) 기각.
+     BUT precise 0.71->0.004 붕괴·upright 0.27/tilt 19°·lifted 0.79·drop 0.
+     원인: 이 run은 success를 늦게 배움(track은 it9400까지 10+로 좋았으나 tilt 이슈로 success EMA는 it9490에야
+     3 도달). 그 순간 EMA가 3->6을 13iter만에(it9493->9506) 넘어 yawtrack ramp가 사실상 step=순간 full ->
+     막판 500iter에 yaw가 확 걸려 정책이 position 버리고 yaw만 맞춤(track 10.9->3.85). model_9999가 붕괴 순간 포착.
+  교훈 ⑫: success EMA는 급등 가능 -> EMA기반 ramp(lo/hi)는 "순간 full"이 될 수 있음(step화). ramp "속도"가
+     중요하면 EMA(값)가 아니라 iteration(시간)으로 고정해야 완만 보장. (발동 "조건"만 성능, "속도"는 시간.)
+
+=== [0805c 수정] P34 = yawtrack iteration 기반 완만 ramp (급발진 차단) ===
+  P33: yaw 3.1° 달성(H1 확증) but ramp 급발진(13iter만에 full)으로 position 붕괴. 발동 조건은 success 유지,
+  ramp 속도만 iteration 고정으로 교체. ramp_yawtrack_on_success 재작성:
+    success EMA >= trigger(3, disturbance full 지점) 최초 도달 시점(_yawtrack_start=common_step_counter) 기록
+    -> 그 뒤 ramp_steps(72000 = 24 steps/iter x 3000 iter)에 걸쳐 scale 0->1 선형(common_step_counter 기반).
+  효과: EMA 급등과 무관하게 완만. 늦게 발동해도 급발진 없이 부분 적용(graceful, position 안 죽음).
+  reaching은 이미 _face_dists로 ±y면 중심점 타겟(centrality 부분 존재) -> P34는 yaw ramp만 단일변수. precise
+  붕괴는 centrality 아니라 ramp 탓(P31 동일 reaching으로 0.70). 면중심 강화는 P34 후 필요시(box-local 금지).
+
+--- P34 = yawtrack iteration ramp 첫 학습 (08-05_19-33-34), scratch, seed 42, max_iter 10000 ---
+  Isaac-Lift-Box-DualFR3-Plate-v2. [0805c] yawtrack을 EMA ramp -> iteration ramp(trigger3, ramp_steps72000).
+  나머지 P33=P29 그대로. scratch.
+  관찰: ① success 정상 확립(~it4500) 후 yaw가 3000iter 완만 ramp되나(Curriculum/yawtrack 기울기 확인)
+  ② 발동 후 precise 0.70 유지 + yaw도 하락(P33 3.1°는 붕괴대가였음 - 이번엔 position 지키며 얼마까지) 동시 달성
+  ③ tilt 정상(8°) 유지 ④ base run이 P33처럼 늦게 성공하면 yaw 부분만 적용돼 붕괴 없이 graceful한지 확인
+  ⑤ play: 박스가 goal 위치 + base 정렬 둘 다.
+  -> 결과: ✅ ramp fix 성공(붕괴 차단) but ramp 미완(seed가 또 늦게 성공). eval(model_9999): precise 0.697·
+     upright 0.78/tilt 8.2°(P33 0.004/19°서 완전 회복!)·yaw 22.9°(37°서 소폭)·yaw-aligned 0.06·lifted 0.80·drop 0.
+     커리큘럼: 이 seed도 success를 극도로 늦게 배움(it9400까지 0, track/lift는 좋으나 tilt 미해결로 success gate
+     미달) -> it9490 success 폭발 0->8.72 -> yawtrack it9497 발동했으나 500iter만 남아 scale 0.17까지만 참
+     (그래서 yaw 22.9°에 그침). ⭐끝 상태 이상적: it9999 success 8.72·upright -0.042(tilt~0)·yaw 0.17 막 시작
+     = "탄탄한 성공 위에 yaw 이제 완만히 켜지는" 지점서 종료. => iteration ramp가 P33 급발진 붕괴를 확실히 차단
+     (precise/upright 지킴) 확인. 남은 건 ramp 완주 시간뿐. 반복 블로커: seed42+yaw코드는 discovery가 늦음
+     (P29/P31=다른 RNG는 it4000). => P35 resume으로 완주.
+
+=== [0806] P35 = P34 resume (yaw ramp 완주) ===
+  P34 model_9999(success 8.72로 탄탄, yaw 0.17서 종료) resume +5000iter. 근거: 로드 정책이 이미 success -> EMA
+  즉시 3 넘어 yaw 초반 발동 -> 3000iter 완만 ramp를 안정 정책 위에서 완주. 커리큘럼 상태는 resume시 0부터
+  재시작(체크포인트에 없음)이나 정책이 성공적이라 disturbance/q'/yaw 빠르게 재램프 = 오히려 우리 의도. reward/
+  구조 변경 0(순수 이어학습)이라 resume 적합(P28 "q'류 변경은 scratch"는 reward 지형변경 얘기, 여긴 무변경).
+
+--- P35 = P34 resume, yaw ramp 완주 시도 (08-05_23-29-52), resume from 08-05_19-33-34/model_9999, +5000iter ---
+  Isaac-Lift-Box-DualFR3-Plate-v2. seed 42. 변경 0(순수 resume). 관찰: ① Curriculum/yawtrack이 초반 발동 후
+  3000iter 완만 ramp로 full 도달하나 ② full 도달 후에도 success 유지 + precise 0.70 유지 (H1 통합 = position
+  지키며 yaw까지) ③ eval box yaw가 P33 3.1°급으로 하락하면서 precise/upright 0.7+ 유지되면 최종 성공.
+  ④ ⚠ full 도달 후 success/precise 붕괴하면 = yaw와 position이 동시 달성 불가(부분 H2/트레이드오프) -> yaw_std
+  완화 or goal_tracking에서 yaw 가중 낮추기 카드.
+  -> 결과: ramp는 교과서적 완벽(it10007 발동->full it13001 = 2994iter 완만!) but ⭐ yaw 안 잡힘.
+     eval(model_14998): precise 0.664·upright 0.79/tilt 5.5°(position 유지) but yaw-aligned 0.063·box yaw 30.8°
+     (P34 22.9°보다 오히려 악화!)·drop 0. 커리큘럼: yaw full로 가는 동안 track 6.86->0.81 붕괴했는데 success는
+     9.48 멀쩡·precise 0.66 유지. ⭐⭐결정적 진단: success(지배 sustained w20)는 near&upright&grasp만 봄=yaw-BLIND.
+     tracking(w16)에 yaw 넣어도 정책이 "success만 파밍하고 yaw-penalized track은 버림" -> yaw 무시. A'(yaw를
+     tracking에만)는 지배 보상이 yaw-blind라 원천 무력. position↔yaw 이분법 확정: P33=yaw만/P35=position만, 둘다 X.
+  교훈 ⑬: 정렬을 곱셈 앵커해도 "지배 보상이 그 축을 안 보면" 무력(정책이 지배항만 파밍). 정렬 요구는 반드시
+     **지배 보상 자체**에 넣어야 함(부차 보상에 넣으면 무시). (P35 yaw in tracking 무력 -> P36 yaw in success.)
+
+=== [0806b] P36 = yaw를 success에 soft 곱셈 (지배 보상에 앵커) ===
+  P35 진단(success yaw-blind) 대응. yaw_factor를 goal_tracking -> success로 이동:
+    success = (zone 유지) x (1 - s·tanh(yaw_err/yaw_std=0.35)), s=_yawtrack_scale(iteration ramp 그대로).
+    goal_tracking은 position-only로 복귀. 지배 보상 success가 yaw 요구 -> 정책이 position+upright 유지하며 yaw까지.
+  soft 선택(hard 게이트 아님): 이력상 hard는 P32(sustained count 리셋 영구사망)+P12(게이트0 vanishing gradient)
+    두 실패모드. soft는 P18(q곱셈 success 12%하락후회복)/P26(q' 성공) 선례. yaw 미달도 항상 양수 gradient.
+  floor 미적용(일단 강한 압력): yaw는 도달가능(P33 3.1° 확증)+ramp 완만이라 강하게 시도. 붕괴시 yaw_std↑(0.5~0.7)
+    or floor(1-0.6·s·tanh, success 40% 바닥) 카드. 튜닝 노브 = yaw_std(작을수록 강함).
+
+--- P36 = yaw를 success에 soft 곱셈 첫 학습 (08-06_15-25-31), scratch, seed 42, max_iter 10000 ---
+  Isaac-Lift-Box-DualFR3-Plate-v2. [0806b] yaw_factor tracking->success 이동(soft, yaw_std0.35). 나머지 P34=P29
+  그대로(iteration ramp·q'·외란·크기DR off·yaw DR±0.1). scratch(reward 구조 변경).
+  관찰: ① yaw가 이번엔 실제 하락하나(P35 30.8°->) - 지배 보상이 yaw 요구하니 정책이 못 피함 ② precise 0.70 +
+  yaw 낮음 **동시** 달성되면 완전 해결 ③ ⚠ success 붕괴(yaw 못 맞춰 지배 보상 통째 손실)하면 yaw_std↑ or floor
+  ④ Curriculum/yawtrack 발동 타이밍(이 seed도 discovery 늦으면 P34처럼 ramp 미완 가능 - 그럼 resume) ⑤ play.
+  -> 결과: inconclusive(예상대로). 이 seed(42)도 discovery 늦어(it9490 success 폭발) yawtrack it9497 발동,
+     scale 0.06까지만 -> yaw-in-success 효과 못 봄. eval(model_9999): precise 0.70·upright 0.74·box yaw 31.0°
+     (P35 30.8°와 동일 = yaw 기계 거의 안 켜짐)·drop 0. 즉 P34/P35/P36은 seed42+yaw코드라 yaw 발동 전까진
+     동일 rollout(tensorboard 겹침 확인). 판정하려면 resume 필요했으나 -> 사용자 play 관찰로 방향 전환:
+     "접촉 시 팔이 하나씩 닿아 yaw가 튄다" = yaw origin 진단. yaw를 reward로 되돌리는 대신 origin 차단으로 pivot.
+  교훈 ⑭: 이 seed+reward조합이 반복적으로 discovery 늦음(P32~P36 전부 it9490) -> yaw 실험이 매번 말미로 밀려
+     10k로는 검증 불가. 근본 대안(origin 차단)이 있으면 reward 되돌리기보다 그쪽이 나음. (+ seed 고정 재현성의 함정:
+     같은 seed가 특정 reward조합서 나쁜 basin 반복 -> 검증 막히면 seed 변경도 고려.)
+
+=== [0806c] P37 = 접촉 타이밍 대칭 (yaw origin 차단, yaw-reward 파킹) ===
+  사용자 play 관찰: 처음 접촉 시 양팔이 '하나씩' 닿음 -> 먼저 닿은 판이 반대 힘 없이 박스를 밀어 회전(yaw)
+  -> align/grasp이 그 틀어진 상태 고정(35° 락인). => yaw origin = 비동시 접촉. 동시 터치다운이면 힘 상쇄 순토크0.
+  구현: plates_approach_symmetry = 근접 시(가까운 판 proximity=5cm 이내) |d_left-d_right| 페널티. _face_dists의
+    d_l,d_r(판TCP->면중심 거리) 차. 대칭이면 0(hover 유인 없음), 비대칭(한 판만 붙음)만 벌금. 파지 후 d~0이라 ~0.
+    시작 -1e-4 -> lifting 후 커리큘럼 -20 (교훈 ③). plates_misalignment(위치, G-gate 파지후)와 상보=이건 접근 타이밍.
+  yaw-reward(A/A'/P36 success곱) 전부 파킹(재활성 주석 남김) -> 단일변수로 "접촉 대칭만으로 yaw 안 생기나" 판정.
+  근거: yaw를 reward로 되돌리기(P31~36)는 seed discovery 지연으로 검증 난항 + outcome. origin 차단이 근본·play기반.
+  노브: proximity(0.05), 커리큘럼 weight(-20). 리스크: P3(대칭 hover 국소해)-근접게이트+페널티로 완화 / 35°가
+    kinematic 선호면 origin 차단해도 잔존 -> 그땐 reaching 손보거나 yaw-reward 병용.
+
+--- P37 = 접촉 타이밍 대칭 페널티 첫 학습 (08-06_18-02-09), scratch, seed 42, max_iter 10000 ---
+  Isaac-Lift-Box-DualFR3-Plate-v2. [0806c] plate_approach_symmetry 신설(-1e-4->커리큘럼-20) + yaw-reward 전부 off.
+  나머지 P29 그대로. scratch.
+  관찰: ① eval box yaw가 31°에서 실제 하락하나(동시 접촉으로 yaw origin 차단되면) ② precise/upright/success
+  정상 유지(P3 대칭hover 국소해 안 빠짐 - lifting/success 안 죽나) ③ Curriculum/plate_approach_symmetry 발동
+  후 거동 ④ play: 양팔이 동시에 박스에 닿는지(핵심 검증) ⑤ 35° 잔존하면 kinematic 선호 -> reaching 카드.
+  -> 결과: 절반 성공. P36 대비 box yaw 31.0° -> 24.1°, yaw-aligned 0.059 -> 0.103으로 개선,
+     drop 0. play에서도 양팔이 동시에 닿으려는 거동 확인. 반면 precise 0.616/upright 0.645/tilt 약13°로
+     P34 계열보다 소폭 하락. grip-axis yaw도 약 24° off로 box yaw와 일치 -> 남은 yaw는 접촉 transient가
+     아니라 팔이 그 각도로 파지를 배치하는 kinematic steady-state. 분해: 비동시 접촉 원인 약 7~11° +
+     placement 잔차 약 24°. P37은 전자만 줄였고 후자는 base-frame outcome 앵커가 필요.
+
+=== [0808] P38 = P37 cause + soft yaw-in-success outcome ===
+  목적: P37의 동시 접촉으로 yaw 발생 원인을 줄인 상태에서, 남은 24° grip placement를 지배 보상 success가
+  직접 base frame에 정렬하도록 한다. P36 yaw-in-success는 방향이 아니라 작동 시간이 문제였음(seed42에서
+  success it9490, yaw scale 0.06으로 종료). P37은 success를 일찍 학습했으므로 3000-iter ramp 완주 가능.
+  변경(단일 구조): P37 전부 유지 + sustained success에
+    yaw_factor = 1 - yaw_alpha(0.5) * yaw_scale * tanh(yaw_err / yaw_std(0.35rad))
+  를 곱한다. yaw_scale은 success EMA>=3 최초 도달 후 72000 env-step(24step/iter x 3000iter)에 걸쳐 0->1.
+  alpha=0.5이므로 full ramp/큰 yaw에서도 factor>=0.5 (success 50% floor) — P33처럼 yaw만 맞추고
+  position/upright를 버리는 붕괴 방지. P37 plate_approach_symmetry(-20), q', 외란, sustained success w20,
+  yaw DR ±0.1, 나머지 reward/DR/agent는 불변. from-scratch seed42, max_iter 10000 권장.
+  판정: ① box yaw <10°(최소 <15°) ② yaw-aligned hold >=0.5 ③ precise/upright >=0.60 유지
+  ④ drop=0 ⑤ grip-axis yaw가 box yaw와 함께 감소(파지 배치 자체 base 정렬). 실패 분기:
+  yaw↓+precision↓ -> alpha 0.3 또는 yaw_std 0.5 완화 / yaw 그대로 -> base-frame grip-axis anchor 후보.
+  (실제 P38은 yaw/precision 동시 합격해 이 실패 분기는 폐기; P39 번호는 actual-contact XOR에 사용.)
+
+--- P38 학습 시작 (08-08_15-18-11), scratch, seed 42, max_iter 10000 ---
+  실행: python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-v2 --headless --max_iterations 10000
+  로그: logs/rsl_rl/dual_fr3_plate_lift_v2/2026-08-08_15-18-11
+  학습 중 점검: ① success EMA>=3 이후 Curriculum/yawtrack이 발동하는지 ② 발동 뒤 3000 iter에 걸쳐
+  scale 0->1 선형 완주하는지 ③ success/precise/upright가 ramp 중 붕괴하지 않는지
+  ④ plate_approach_symmetry와 qprime/disturbance가 함께 full 상태로 안정되는지. 최종 판정은 위 P38 기준 사용.
+
+--- P38 완료 + TensorBoard/eval 판정 (08-08, 2026-08-08_15-18-11) ---
+  학습: 10000 iter / 983,040,000 transitions / 03:10:34 완주. 42 scalar tag 모두 it0~9999 정상.
+  milestone: first lift it434, lifting>10 it682, 일반 reward curriculum full it1303, first sustained success it4155,
+    disturbance/qprime full it4277, yawtrack it4276 시작 -> it7277 full(정확히 3000iter ramp).
+  후반 500iter: mean reward 205.29, lifting 11.59, tracking 10.26, yaw-weighted sustained success 10.16.
+    yaw full 이후에도 position/upright/success 붕괴 없이 계속 상승. P37과 공통 scalar는 it4276까지 동일하고
+    그 뒤에만 분기해 P37->P38 controlled A/B가 성립. TB object_pose orientation_error≈0은 yaw metric이 아님.
+
+  evaluator 보완:
+    scripts/tools/eval_dual_fr3_plate_robustness.py 기본 task를 v2로 정정하고 seed, disturbance 고정,
+    0.5s sustained combined episode SR(base/yaw10/yaw15), grip-axis modulo-pi offset, 최초 L/R 접촉 시차,
+    plate force/height 비대칭, actual done/OOB와 grasp-loss를 추가. Startup 물성 독립성을 위해 128env×1ep 사용.
+  authoritative 조건:
+    Play-Noisy-v2, obs noise + mass3.5~4.5kg/friction/gain DR, fixed v2 size, disturbance scale=1
+    (각축 ±5N/±1Nm), seeds 42/43/44, checkpoint당 총 384 episodes.
+    명령 예:
+      python scripts/tools/eval_dual_fr3_plate_robustness.py --task Isaac-Lift-Box-DualFR3-Plate-Play-Noisy-v2 \
+        --checkpoint logs/rsl_rl/dual_fr3_plate_lift_v2/2026-08-08_15-18-11/model_9850.pt \
+        --num_envs 128 --episodes 1 --seed 42 --disturbance_scale 1.0 --headless
+
+  ⭐ 선택 checkpoint = model_9850.pt (seed42/43/44 평균):
+    precise hold 0.737, upright hold 0.787, yaw-aligned hold 0.786, box yaw 2.7°, grip-axis offset 6.4°.
+    episode sustained SR base/yaw10/yaw15 = 0.997/0.997/0.997, TTS median base1.80s/yaw10 1.98s.
+    drop=0, OOB=0. first-contact |dt| median 40~60ms, <=20/40/100ms 평균 0.164/0.477/0.997.
+    hold force: per-plate max median 89.6N, p95 112.2N, run-max 평균 289.6N.
+    force imbalance median 4.46N, p95 21.05N. plate height diff median 3.17cm, p95 8.40cm.
+    transient grasp-loss 3~4 events/128ep(seed별), 최종 drop은 없음.
+  model_9999.pt (3seed 평균): precise 0.730, upright 0.780, yaw-aligned 0.791, yaw 2.7°, grip offset 8.1°,
+    base/yaw10/yaw15 SR 0.995/0.992/0.995, drop0. 그러나 <=40ms 접촉 0.214, grasp-loss 7.3/128ep,
+    height p95 11.15cm, force run-max 평균343N로 9850보다 안전/대칭 tail이 나빠 최종본으로 선택하지 않음.
+
+  동일 corrected eval P37(seed42, full disturbance) 대비 P38/model9850:
+    box yaw 23.6° -> 2.7°, grip offset 23.6° -> 6.7°, precise 0.606 -> 0.737,
+    upright 0.662 -> 0.785, yaw-aligned 0.103 -> 0.785,
+    base sustained SR 0.922 -> 0.992, yaw10 SR 0 -> 0.992, plate-height p95 21.0cm -> 8.3cm, drop0 유지.
+  최종 판정: ✅ P38의 핵심 outcome(똑바른 base-yaw + position/upright 동시 유지)은 해결.
+    ⚠ cause/안전은 미완: P37 first-contact <=40ms 0.531 vs P38/model9850 0.516(seed42; 3seed 평균0.477)로
+    동시 접촉 자체는 개선되지 않았고, p95 contact force가 100N threshold를 넘으며 transient grasp-loss가 생김.
+    다음 변경은 yaw reward 강화가 아니라 play의 접촉 순서 확인 + action/contact timing·force outlier 계측/교정.
+
+=== [0808b] P39 = actual one-sided-contact XOR duration penalty ===
+  P38 진단: yaw outcome은 해결(box yaw2.7°, yaw10 SR0.997)했지만 384ep 최초 접촉 L/R/tie=371/3/10,
+  left-first 96.6%, <=20/40ms=0.164/0.477, 기존 진단 one-sided 평균2.68step=53.6ms.
+  양판 접촉 뒤 actual joint-path R/L=1.35로 오른팔 후속 교정도 남음.
+
+  단일 변경:
+    cL = [Object-filtered left plate force >1N], cR = [right >1N], X = XOR(cL,cR).
+    별도 timestamp/latch 없이 매 20ms control step에 계산해 RewardManager가 duration을 적분.
+    initial weight=0.0 -> lifting EMA>10 뒤 -5.0 latch. 한 step -0.1 return,
+    기존 평균53.6ms면 약-0.268, 0.5s=-2.5, 1s=-5.
+  보존: P38/V2의 plate_approach_symmetry(-20), yawtrack, qprime, disturbance, height symmetry,
+    sustained success, actor56D/action14D/PPO/DR 전부 불변. P38 class/task는 수정하지 않음.
+
+  구현/등록:
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P39(DualFR3PlateBoxLiftEnvCfg_V2)
+    train: Isaac-Lift-Box-DualFR3-Plate-P39-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P39-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P39-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p39/
+    runner: seed42, max_iterations10000, save_interval50, scratch(resume 금지).
+    상태: 코드/등록/evaluator + runtime smoke 완료, 정식 학습 진행 중.
+  실행:
+    python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P39-v0 --headless --seed 42 --max_iterations 10000
+  checkpoint protocol: model_9850.pt primary, model_9999.pt late-regression sentinel.
+
+  정식 학습 시작 (2026-08-09_14-12-11):
+    task: Isaac-Lift-Box-DualFR3-Plate-P39-v0, scratch, seed42, max_iterations10000.
+    log: logs/rsl_rl/dual_fr3_plate_lift_p39/2026-08-09_14-12-11
+    absolute log: /home/dyros/dual_fr3_lab/logs/rsl_rl/dual_fr3_plate_lift_p39/2026-08-09_14-12-11
+    Exact experiment name: 2026-08-09_14-12-11
+
+  smoke 검증 (08-08_21-33-32):
+    registry/config: P39 train/play/noisy 3 ID, reward 0.0, curriculum -5/threshold10,
+      actor obs/action 동일, runner seed42/10k/log root 확인 PASS.
+    runtime: 16env×1iter에서 env.rewards.one_sided_contact.weight=-5.0을 임시 강제.
+      Reward Manager 16 terms 중 one_sided_contact=-5, Curriculum 12 terms 중 해당 term=-5,
+      obs56/action14, 384 timesteps, value/surrogate/reward finite, exit0.
+    임시 로그: /tmp/dual_fr3_p39_runtime_smoke/2026-08-08_21-33-32
+    정식 cfg는 initial 0.0 그대로이며 smoke override/로그는 정식 P39 run에 영향 없음.
+
+  evaluator 보완:
+    Object filter index0을 reward와 동일하게 사용. pre-step contact state로 full-episode XOR duration,
+    first-contact L/R/tie와 gap, paired/actual-bilateral coverage, grasp-loss episode/count,
+    post-bilateral actual joint-path L/R ratio를 done-aware하게 출력.
+    기존 2.68step은 first-contact 기반 값이므로 최종 50% 판정 전 P38도 새 full-episode 정의로 재측정.
+
+  최소 합격선:
+    ① mean one-sided duration P38 대비 >=50% 감소
+    ② first-contact <=20ms >=0.50, <=40ms >=0.75, p95<=60ms
+    ③ actual bilateral-contact episode>=0.99, dominant first side<=0.80
+    ④ precise hold>=0.70, upright/yaw-aligned hold>=0.75, box yaw<=5deg, sustained yaw10 SR>=0.95
+    ⑤ drop/OOB=0, hold force p95<=115N, grasp-loss<=4 events/128ep
+    ⑥ post-bilateral R/L joint-path는 1.35보다 악화 금지, <=1.15는 stretch.
+  해석: timing 합격+R/L ratio 잔존이면 "접촉 원인 해결, motion symmetry 미해결".
+    효과가 작고 task 안정일 때만 별도 P39b=-10. 첫 run에 -20/action clipping/mirror를 섞지 않음.
+  후속 확정 순서: P40 bounded/snapshot action interface -> P41 q7 mirror 검증 후 mirror loss/augmentation
+    -> asymmetric critic -> measured temporal Sim2Real DR/history.
 
 
 ----------------------------------------------------------------------------------------
