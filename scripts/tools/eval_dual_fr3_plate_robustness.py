@@ -19,6 +19,13 @@ P39의 actual-contact XOR 누적 지속시간, plate force/높이 비대칭을 �
         --task Isaac-Lift-Box-DualFR3-Plate-Play-Noisy-v2 \
         --checkpoint logs/rsl_rl/dual_fr3_plate_lift_v2/<run>/model_9850.pt \
         --num_envs 128 --episodes 1 --seed 42 --disturbance_scale 1.0 --headless
+
+    # 선택 env의 q/dq/raw action/contact/yaw/mirror error를 control-step CSV로 저장
+    python scripts/tools/eval_dual_fr3_plate_robustness.py \
+        --task Isaac-Lift-Box-DualFR3-Plate-P39-Play-v0 \
+        --checkpoint logs/rsl_rl/dual_fr3_plate_lift_p39/<run>/model_9850.pt \
+        --num_envs 32 --episodes 1 --seed 42 --disturbance_scale 1.0 \
+        --joint_trace_csv /tmp/p39_joint_trace.csv --joint_trace_env_ids 0 --headless
 """
 
 import argparse
@@ -240,8 +247,10 @@ def main():
     prev_sample_hold = torch.zeros(num_envs, dtype=torch.bool, device=eval_device)
     for step in range(total_steps):
         # Contact metrics are sampled before stepping because post-step done envs have already auto-reset.
-        left_pre = _object_contact_force(left_sensor) > CONTACT_THRESHOLD
-        right_pre = _object_contact_force(right_sensor) > CONTACT_THRESHOLD
+        left_force_pre = _object_contact_force(left_sensor)
+        right_force_pre = _object_contact_force(right_sensor)
+        left_pre = left_force_pre > CONTACT_THRESHOLD
+        right_pre = right_force_pre > CONTACT_THRESHOLD
         xor_pre = torch.logical_xor(left_pre, right_pre)
         union_pre = left_pre | right_pre
         bilateral_pre = left_pre & right_pre
@@ -261,8 +270,8 @@ def main():
         # Once an actual same-step bilateral contact occurred, track joint travel (not net displacement).
         joint_pos_pre = robot_asset.data.joint_pos
         joint_travel = (joint_pos_pre - prev_joint_pos).abs()
-        bilateral_joint_path_left += joint_travel[:, left_joint_ids].sum(dim=-1) * bilateral_phase_before.float()
-        bilateral_joint_path_right += joint_travel[:, right_joint_ids].sum(dim=-1) * bilateral_phase_before.float()
+        bilateral_joint_path_left += joint_travel[:, left_joint_ids] * bilateral_phase_before.unsqueeze(-1).float()
+        bilateral_joint_path_right += joint_travel[:, right_joint_ids] * bilateral_phase_before.unsqueeze(-1).float()
         prev_joint_pos = joint_pos_pre.clone()
         ep_had_bilateral |= bilateral_pre
 
@@ -303,9 +312,10 @@ def main():
         x_axis[:, 0] = 1.0
         bx = quat_apply(obj.data.root_quat_w, x_axis)  # 박스 x (world)
         rx = quat_apply(robot.data.root_quat_w, x_axis)  # base x (world)
-        yaw_err = torch.atan2(
+        yaw_signed = torch.atan2(
             bx[:, 0] * rx[:, 1] - bx[:, 1] * rx[:, 0], bx[:, 0] * rx[:, 0] + bx[:, 1] * rx[:, 1]
-        ).abs()
+        )
+        yaw_err = yaw_signed.abs()
         # [진단] grip 축은 무방향이므로 raw 0/180도를 동일 정렬로 보고 modulo-pi offset을 사용한다.
         ee = uenv.scene["ee_frame"]
         _names = ee.data.target_frame_names
@@ -319,6 +329,13 @@ def main():
         ).abs()
         grip_off = torch.minimum(grip_yaw_raw, torch.pi - grip_yaw_raw)
         plate_height_diff = (ee.data.target_pos_w[:, _li, 2] - ee.data.target_pos_w[:, _ri, 2]).abs()
+        q_left_post = robot.data.joint_pos[:, left_joint_ids]
+        q_right_post = robot.data.joint_pos[:, right_joint_ids]
+        q_right_mirror_expected = q_left_post * mirror_signs
+        mirror_error_post = torch.atan2(
+            torch.sin(q_right_post - q_right_mirror_expected),
+            torch.cos(q_right_post - q_right_mirror_expected),
+        )
 
         valid_post_samples += int(active.sum().item())
         lifted_sum += lifted[active].sum().item()
@@ -338,8 +355,67 @@ def main():
             force_samples.append(torch.maximum(left_force, right_force)[hold_b].detach().cpu())
             force_imbalance_samples.append((left_force - right_force).abs()[hold_b].detach().cpu())
             plate_height_diff_samples.append(plate_height_diff[hold_b].detach().cpu())
+            mirror_error_hold_samples.append(mirror_error_post[hold_b].abs().detach().cpu())
+            left_joint_hold_samples.append(q_left_post[hold_b].detach().cpu())
+            right_joint_hold_samples.append(q_right_post[hold_b].detach().cpu())
 
         episode_step[active] += 1
+
+        # Optional per-control-step trace. Terminal rows are excluded because Isaac Lab has already auto-reset
+        # those envs when step() returns; every saved q/contact state therefore belongs to the labelled episode.
+        if trace_env_ids:
+            action_left = actions[:, left_action_ids]
+            action_right = actions[:, right_action_ids]
+            for env_id in trace_env_ids:
+                if not active[env_id]:
+                    continue
+                row = {
+                    "global_step": step,
+                    "env_id": env_id,
+                    "episode_index": int(episode_index[env_id].item()),
+                    "episode_step": int(episode_step[env_id].item()),
+                    "time_s": float(episode_step[env_id].item() * uenv.step_dt),
+                    "left_contact": int((left_force[env_id] > CONTACT_THRESHOLD).item()),
+                    "right_contact": int((right_force[env_id] > CONTACT_THRESHOLD).item()),
+                    "one_sided_contact": int(
+                        ((left_force[env_id] > CONTACT_THRESHOLD) ^ (right_force[env_id] > CONTACT_THRESHOLD)).item()
+                    ),
+                    "lifted": int(lifted[env_id].item()),
+                    "hold": int(hold[env_id].item()),
+                    "left_force_N": float(left_force[env_id].item()),
+                    "right_force_N": float(right_force[env_id].item()),
+                    "box_yaw_signed_deg": float(yaw_signed[env_id].item() * 57.2957795),
+                }
+                for joint_idx in range(7):
+                    joint_num = joint_idx + 1
+                    q_left_value = float(q_left_post[env_id, joint_idx].item())
+                    q_right_value = float(q_right_post[env_id, joint_idx].item())
+                    row.update(
+                        {
+                            f"left_j{joint_num}_q_rad": q_left_value,
+                            f"right_j{joint_num}_q_rad": q_right_value,
+                            f"left_j{joint_num}_q_deg": q_left_value * 57.2957795,
+                            f"right_j{joint_num}_q_deg": q_right_value * 57.2957795,
+                            f"right_j{joint_num}_mirror_expected_rad": float(
+                                q_right_mirror_expected[env_id, joint_idx].item()
+                            ),
+                            f"mirror_error_j{joint_num}_rad": float(
+                                mirror_error_post[env_id, joint_idx].item()
+                            ),
+                            f"mirror_error_j{joint_num}_deg": float(
+                                mirror_error_post[env_id, joint_idx].item() * 57.2957795
+                            ),
+                            f"left_j{joint_num}_dq_rad_s": float(
+                                robot.data.joint_vel[env_id, left_joint_ids[joint_idx]].item()
+                            ),
+                            f"right_j{joint_num}_dq_rad_s": float(
+                                robot.data.joint_vel[env_id, right_joint_ids[joint_idx]].item()
+                            ),
+                            f"left_j{joint_num}_raw_action": float(action_left[env_id, joint_idx].item()),
+                            f"right_j{joint_num}_raw_action": float(action_right[env_id, joint_idx].item()),
+                        }
+                    )
+                trace_rows.append(row)
 
         near = err < SUCCESS_D
         upright = tilt < UPRIGHT_TILT
@@ -431,6 +507,7 @@ def main():
             ep_base_success[dones_b] = False
             ep_yaw10_success[dones_b] = False
             ep_yaw15_success[dones_b] = False
+            episode_index[dones_b] += 1
 
         if step % steps_per_ep == 0:
             print(f"[EVAL] episode cycle {step // steps_per_ep + 1}/{args_cli.episodes}", flush=True)
@@ -553,13 +630,60 @@ def main():
             f"{total_right / max(bilateral_episodes, 1):.3f} rad/bilateral-episode / "
             f"{total_right / max(total_left, 1e-12):.3f}"
         )
+        per_joint_path_left = path_left.sum(dim=0) / max(bilateral_episodes, 1)
+        per_joint_path_right = path_right.sum(dim=0) / max(bilateral_episodes, 1)
+        print("post-bilateral per-joint path (rad/bilateral-episode):")
+        print("  joint       left       right      R/L")
+        for joint_idx in range(7):
+            left_value = per_joint_path_left[joint_idx].item()
+            right_value = per_joint_path_right[joint_idx].item()
+            print(
+                f"  j{joint_idx + 1:<2d}     {left_value:8.4f}   {right_value:8.4f}   "
+                f"{right_value / max(left_value, 1e-12):7.3f}"
+            )
     else:
         print("post-bilateral joint path L/R/ratio: n/a")
+
+    mirror_hold = _cat(mirror_error_hold_samples)
+    left_hold_q = _cat(left_joint_hold_samples)
+    right_hold_q = _cat(right_joint_hold_samples)
+    if mirror_hold.numel() > 0:
+        mirror_median = mirror_hold.median(dim=0).values * 57.2957795
+        mirror_p95 = torch.quantile(mirror_hold, 0.95, dim=0) * 57.2957795
+        mirror_max = mirror_hold.max(dim=0).values * 57.2957795
+        left_q_median = left_hold_q.median(dim=0).values * 57.2957795
+        right_q_median = right_hold_q.median(dim=0).values * 57.2957795
+        print("hold-pose mirror error |qR - sign*qL| wrapped (deg):")
+        print("  joint   sign   qL_med   qR_med   err_med   err_p95   err_max")
+        for joint_idx in range(7):
+            print(
+                f"  j{joint_idx + 1:<2d}     {int(mirror_signs[joint_idx].item()):+d}   "
+                f"{left_q_median[joint_idx].item():7.2f}  {right_q_median[joint_idx].item():7.2f}  "
+                f"{mirror_median[joint_idx].item():8.2f}  {mirror_p95[joint_idx].item():8.2f}  "
+                f"{mirror_max[joint_idx].item():8.2f}"
+            )
+    else:
+        print("hold-pose per-joint mirror error: n/a")
     assert left_first + right_first + tied_first == contact_pairs
     assert contact_pairs + left_only + right_only + no_contact == completed_episodes
     assert bilateral_episodes <= contact_pairs
     assert union_total_steps == xor_total_steps + bilateral_total_steps
     print(f"drop / grasp-loss events: {drops} / {grasp_loss_events}", flush=True)
+
+    if args_cli.joint_trace_csv:
+        trace_path = Path(args_cli.joint_trace_csv).resolve()
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        if trace_rows:
+            with trace_path.open("w", newline="", encoding="utf-8") as csv_file:
+                writer = csv.DictWriter(csv_file, fieldnames=list(trace_rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(trace_rows)
+            print(
+                f"joint trace CSV: {trace_path} ({len(trace_rows)} rows, envs={trace_env_ids})",
+                flush=True,
+            )
+        else:
+            print(f"joint trace CSV: no active rows collected; file not written ({trace_path})", flush=True)
 
 
 if __name__ == "__main__":

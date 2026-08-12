@@ -248,6 +248,37 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
         lift_results.append(lifted)
         print(f"[RESULT] lift: box z={box_z:.3f} (spawn {BOX_POS_W[2]:.3f}) -> lifted={lifted}")
 
+        # --- grip-axis offset & joint mirror 측정 ---
+        import math
+        right_pos_w, _ = right.tcp_pose_w()
+        left_pos_w, _ = left.tcp_pose_w()
+        grip = right_pos_w - left_pos_w  # world frame 오른-왼 벡터
+        y_ax = torch.zeros(1, 3, device=device); y_ax[:, 1] = 1.0
+        from isaaclab.utils.math import quat_apply as _qa
+        ry = _qa(robot.data.root_quat_w[:1], y_ax)
+        cross_z = grip[:, 0] * ry[:, 1] - grip[:, 1] * ry[:, 0]
+        dot_xy   = grip[:, 0] * ry[:, 0] + grip[:, 1] * ry[:, 1]
+        raw = torch.atan2(cross_z, dot_xy).abs()
+        grip_off = torch.minimum(raw, math.pi - raw)
+        print(f"[MEASURE] grip-axis offset: {grip_off[0].item() * 57.296:.2f} deg  (ideal=0)")
+
+        # joint mirror error (j1~j7 각 관절)
+        jnames = robot.data.joint_names
+        mirror_signs = [-1, +1, -1, +1, -1, +1, -1]  # FR3 대칭 부호
+        print("[MEASURE] joint mirror |qR - sign*qL| (deg):")
+        print(f"  {'joint':<6} {'qL':>8} {'qR':>8} {'err':>8}")
+        for k in range(7):
+            try:
+                li = next(i for i, n in enumerate(jnames) if n == f"left_fr3_joint{k+1}")
+                ri = next(i for i, n in enumerate(jnames) if n == f"right_fr3_joint{k+1}")
+            except StopIteration:
+                continue
+            qL = robot.data.joint_pos[0, li].item()
+            qR = robot.data.joint_pos[0, ri].item()
+            expected = qL * mirror_signs[k]
+            diff = math.atan2(math.sin(qR - expected), math.cos(qR - expected))
+            print(f"  j{k+1:<5} {math.degrees(qL):>8.2f} {math.degrees(qR):>8.2f} {abs(math.degrees(diff)):>8.2f}")
+
     def p_lower():
         # 조임 유지한 채 z만 하강
         right.set_goal((x, -(HALF - SQUEEZE), z), QUAT_R, duration=200, start_b=(x, -(HALF - SQUEEZE), z + LIFT_H))
