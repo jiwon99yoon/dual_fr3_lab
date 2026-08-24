@@ -59,3 +59,112 @@ class LiftPlateP39PPORunnerCfg(LiftPlateV2PPORunnerCfg):
     seed = 42
     max_iterations = 10000
     experiment_name = "dual_fr3_plate_lift_p39"
+
+
+@configclass
+class LiftPlateP40PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P40 scratch training: j6 mirror loss, dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p40"
+
+
+@configclass
+class LiftPlateP41PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P41 scratch training: grip_axis_alignment (TCP geometry), dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p41"
+
+
+@configclass
+class LiftPlateP42PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P42 scratch training: plates_misalignment -4 → -6, dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p42"
+
+
+@configclass
+class LiftPlateP43PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P43 scratch training: plate_approach_symmetry proximity 0.05→0.08, dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p43"
+
+
+@configclass
+class LiftPlateP44PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P44 scratch training: yawtrack trigger 3.0→1.5, dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p44"
+
+
+@configclass
+class LiftPlateP45PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P45 scratch training: P44 + one_sided_contact -5→-7, dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p45"
+
+
+@configclass
+class LiftPlateP46PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P46 scratch training: P44 + box_upright curriculum -3→-4, dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p46"
+
+
+@configclass
+class LiftPlateP47PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P47 scratch training: P44 + plate_height_symmetry curriculum -6→-8, dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p47"
+
+
+@configclass
+class LiftPlateP48PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P48 scratch training: P44 + excessive_squeeze threshold 100→120N, dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p48"
+
+
+@configclass
+class LiftPlateP49PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P49 scratch training: P47 + plate_face_alignment reward (curriculum), dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p49"
+
+
+@configclass
+class LiftPlateP50PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P50 scratch training: P49 + plate_face_alignment weight 2.0→1.0, dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p50"
+
+
+@configclass
+class LiftPlateP51PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P51 scratch training: P49 + plate_face_z_offset penalty (curriculum), dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p51"
+

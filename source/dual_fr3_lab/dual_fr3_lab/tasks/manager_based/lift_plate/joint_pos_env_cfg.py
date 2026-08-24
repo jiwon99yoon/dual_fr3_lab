@@ -272,6 +272,33 @@ def plates_pair_misalignment(
     return misalign * gate
 
 
+def plate_face_z_offset(
+    env,
+    finger1_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    finger2_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    threshold: float = 1.0,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """각 판 TCP와 담당 box face 중심점 사이의 절대 z-오프셋 합산 (G-gate).
+
+    plates_pair_misalignment의 z항은 (L_z - R_z) - (face_L_z - face_R_z), 즉 상대 높이 차만 봄.
+    양팔이 동시에 같은 높이로 높아지면 pair_error_z≈0 → 기존 함수가 포착 불가.
+    이 함수는 각 판 TCP의 담당 면 중심점 절대 z-오프셋을 per-arm으로 합산:
+      z_err_L = |EE_L_z - face_L_z|
+      z_err_R = |EE_R_z - face_R_z|
+    → 양팔이 모두 높거나 낮아도 동일하게 패널티 부여.
+    G-gate: 파지 전 접근 phase에서는 비활성 (P3 국소해 방지).
+    """
+    ee_frame = env.scene[ee_frame_cfg.name]
+    li, ri, _, face_l, face_r, _, _ = _face_dists(env, object_cfg, ee_frame_cfg)
+    p = ee_frame.data.target_pos_w
+    z_err_l = (p[:, li, 2] - face_l[:, 2]).abs()
+    z_err_r = (p[:, ri, 2] - face_r[:, 2]).abs()
+    gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
+    return (z_err_l + z_err_r) * gate
+
+
 def plates_approach_symmetry(
     env,
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
@@ -313,6 +340,80 @@ def one_sided_plate_contact(
         force = torch.norm(sensor.data.force_matrix_w[:, :, filter_idx, :], dim=-1).amax(dim=-1)
         contact_flags.append(force > threshold)
     return torch.logical_xor(contact_flags[0], contact_flags[1]).float()
+
+
+def j6_mirror_loss(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    finger1_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    finger2_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    threshold: float = 1.0,
+) -> torch.Tensor:
+    """[P40] j6(손목 pitch) 좌우 비대칭 |q_L_j6 - q_R_j6| (rad) 페널티 — G 게이트.
+
+    eval 진단(2026-08-10): hold 중 j6 mirror error 중간값 13.87°, p95 31.21°.
+    j6 비대칭이 plate face의 수직 기울기를 만들어 부분 면접촉(~2/3)을 유발.
+    sign=+1(대칭 조건 q_R=q_L)이므로 단순 절댓값 차가 mirror error.
+    G 게이트(양판 접촉 중)에서만 적용 — 접근 단계 간섭 없음.
+    첫 접촉 직후엔 55° 오차가 hold에서 9°로 수렴하므로, G 게이트로 수렴을 더 빠르게 유도.
+    [P41 분석] rule-based에서 j6 error=45.33°인데 grip-axis offset=1.03°. FR3가 redundant이라
+    joint별 대칭 없이도 TCP geometry 대칭이 가능 → j6만 타겟하는 이 함수는 잘못된 방향.
+    P41에서 grip_axis_alignment로 대체됨.
+    """
+    robot = env.scene[robot_cfg.name]
+    if not hasattr(env, "_j6_lr_ids"):
+        jnames = robot.data.joint_names
+        env._j6_lr_ids = (
+            next(i for i, n in enumerate(jnames) if n == "left_fr3_joint6"),
+            next(i for i, n in enumerate(jnames) if n == "right_fr3_joint6"),
+        )
+    l_idx, r_idx = env._j6_lr_ids
+    gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
+    diff = (robot.data.joint_pos[:, l_idx] - robot.data.joint_pos[:, r_idx]).abs()
+    return gate * diff
+
+
+def grip_axis_alignment(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+    finger1_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    finger2_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    threshold: float = 1.0,
+) -> torch.Tensor:
+    """[P41] 오른-왼 EE 연결벡터와 로봇 +y축의 yaw 오프셋 (rad) 페널티 — G 게이트.
+
+    TCP geometry를 직접 최적화. joint별 대칭 조건 없이 j1~j7 어떤 조합이라도
+    grip axis가 로봇 y축과 정렬되면 reward를 받음.
+
+    측정값 (2026-08-12):
+      rule-based: grip-axis offset = 1.03°  (j6 err = 45° 에도 불구하고)
+      P40 RL:     grip-axis offset = 30.5°  (j6_mirror_loss가 잘못된 joint 조합으로 수렴시킴)
+
+    계산: grip = right_ee_pos - left_ee_pos (world xy),
+          ry = robot root +y 방향 (world),
+          grip_off = min(|atan2(cross_z, dot_xy)|, π - |atan2(cross_z, dot_xy)|)
+          → 0이 이상적, G 게이트에서만 적용.
+    """
+    robot = env.scene[robot_cfg.name]
+    ee_frame = env.scene[ee_frame_cfg.name]
+    li, ri = _ee_lr_indices(ee_frame)
+
+    right_pos = ee_frame.data.target_pos_w[:, ri]
+    left_pos = ee_frame.data.target_pos_w[:, li]
+    grip = right_pos - left_pos  # (N, 3)
+
+    y_ax = torch.zeros(grip.shape[0], 3, device=grip.device)
+    y_ax[:, 1] = 1.0
+    ry = quat_apply(robot.data.root_quat_w, y_ax)  # robot +y in world
+
+    cross_z = grip[:, 0] * ry[:, 1] - grip[:, 1] * ry[:, 0]
+    dot_xy = grip[:, 0] * ry[:, 0] + grip[:, 1] * ry[:, 1]
+    raw = torch.atan2(cross_z, dot_xy).abs()
+    grip_off = torch.minimum(raw, torch.pi - raw)
+
+    gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
+    return gate * grip_off
 
 
 def object_orientation_in_robot_root_frame(
@@ -1419,6 +1520,531 @@ class DualFR3PlateBoxLiftEnvCfg_P39_PLAY(DualFR3PlateBoxLiftEnvCfg_P39):
 @configclass
 class DualFR3PlateBoxLiftEnvCfg_P39_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P39_PLAY):
     """P39 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P40(DualFR3PlateBoxLiftEnvCfg_P39):
+    """P40 = frozen P39 baseline + j6 wrist-pitch mirror loss.
+
+    단일 변경: 양판 접촉(G 게이트) 중 |q_L_j6 - q_R_j6|(rad) 페널티.
+    진단 근거: hold 중 j6 L=127°/R=118° 잔존 비대칭(중간값 13.87°, p95 31.21°)이
+    plate face 기울기를 만들어 부분 면접촉(~2/3)을 유발함. sign=+1 대칭 조건.
+    weight 0.0 시작 → lifting EMA>10 후 -0.1 latch.
+    초기 -0.5 run(2026-08-10) dense gradient → entropy 붕괴 확인 → -0.1로 완화(2026-08-11).
+    P39 전 항목(one_sided_contact, plate_approach_symmetry, yawtrack, qprime 등) 불변.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        grasp_params = {
+            "finger1_sensor_cfg": SceneEntityCfg("left_plate_object_contact"),
+            "finger2_sensor_cfg": SceneEntityCfg("right_plate_object_contact"),
+            "threshold": 1.0,
+        }
+        self.rewards.j6_mirror_loss = RewTerm(
+            func=j6_mirror_loss,
+            params=grasp_params,
+            weight=0.0,
+        )
+        self.curriculum.j6_mirror_loss = CurrTerm(
+            func=modify_reward_weight_on_lifting_learned,
+            params={"term_name": "j6_mirror_loss", "weight": -0.1, "threshold": 10.0},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P40_PLAY(DualFR3PlateBoxLiftEnvCfg_P40):
+    """P40 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P40_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P40_PLAY):
+    """P40 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P41(DualFR3PlateBoxLiftEnvCfg_P39):
+    """P41 = frozen P39 baseline + grip_axis_alignment (j6_mirror_loss 대체).
+
+    변경 사항 (2026-08-12):
+      P40의 j6_mirror_loss는 rule-based 분석 결과 잘못된 방향임을 확인.
+      rule-based에서 j6 error=45.33° 임에도 grip-axis offset=1.03° — FR3가 redundant이라
+      joint 개별 대칭 없이도 TCP geometry 대칭 달성 가능. P40 RL은 j6만 타겟해 이상한
+      joint 조합으로 수렴(grip-axis 30.5°).
+      → joint 개별 대칭 대신 TCP geometry(오른-왼 연결벡터 vs 로봇 +y축 yaw 오프셋)를
+        직접 최적화. j1~j7 어떤 조합이라도 grip axis만 맞추면 reward 지급.
+    weight 0.0 시작 → lifting EMA>10 후 -0.1 latch (P40과 동일 schedule).
+    P39 전 항목 불변.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        grasp_params = {
+            "finger1_sensor_cfg": SceneEntityCfg("left_plate_object_contact"),
+            "finger2_sensor_cfg": SceneEntityCfg("right_plate_object_contact"),
+            "threshold": 1.0,
+        }
+        self.rewards.grip_axis_alignment = RewTerm(
+            func=grip_axis_alignment,
+            params=grasp_params,
+            weight=0.0,
+        )
+        self.curriculum.grip_axis_alignment = CurrTerm(
+            func=modify_reward_weight_on_lifting_learned,
+            params={"term_name": "grip_axis_alignment", "weight": -0.1, "threshold": 10.0},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P41_PLAY(DualFR3PlateBoxLiftEnvCfg_P41):
+    """P41 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P41_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P41_PLAY):
+    """P41 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P42(DualFR3PlateBoxLiftEnvCfg_P39):
+    """P42 = frozen P39 baseline + plates_pair_misalignment weight -4.0 → -6.0.
+
+    변경 사항 (2026-08-13):
+      P41 eval에서 box y축 쏠림(p95 +0.194m) + P39 play에서 2/3 면접촉 관찰.
+      plates_pair_misalignment(파지 중 위치 편차 페널티)를 강화해 파지 후 위치 비대칭 압력 증가.
+      -4→-6 (중간 단계). 역사: -4 미게이팅(P3)은 정지 국소해 유발했으나 현재는 G-게이트라 안전.
+      -6→-8은 이력 없어 jump 크므로 우선 -6에서 검증.
+    P39 전 항목 불변.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.plates_misalignment.weight = -6.0
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P42_PLAY(DualFR3PlateBoxLiftEnvCfg_P42):
+    """P42 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P42_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P42_PLAY):
+    """P42 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P43(DualFR3PlateBoxLiftEnvCfg_P39):
+    """P43 = frozen P39 baseline + plates_approach_symmetry proximity 0.05 → 0.08.
+
+    변경 사항 (2026-08-18):
+      P42 eval에서 first-contact tie 20.3% (P39: 47.7%)로 감소 → yaw 4.5° 악화 원인.
+      plates_approach_symmetry의 proximity를 0.05→0.08로 확대해 더 일찍(8cm부터) 좌우
+      대칭 접근 압력을 줌으로써 tie 회복을 시도.
+      proximity는 P37 신설 이후 한 번도 건드리지 않은 노브.
+      P39 전 항목 불변 (plates_misalignment -4.0, P42 변경 미포함).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.plate_approach_symmetry = RewTerm(
+            func=plates_approach_symmetry,
+            params={"proximity": 0.08},
+            weight=-1e-4,
+        )
+        self.curriculum.plate_approach_symmetry = CurrTerm(
+            func=modify_reward_weight_on_lifting_learned,
+            params={"term_name": "plate_approach_symmetry", "weight": -20.0, "threshold": 10.0},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P43_PLAY(DualFR3PlateBoxLiftEnvCfg_P43):
+    """P43 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P43_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P43_PLAY):
+    """P43 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P44(DualFR3PlateBoxLiftEnvCfg_P39):
+    """P44 = frozen P39 baseline + yawtrack trigger 3.0 → 1.5 (조기 발동).
+
+    변경 사항 (2026-08-18):
+      P39/P42/P43 모두 play에서 초기 접촉 시 yaw 발생 후 나중에 정렬하는 패턴 잔존.
+      proximity 확대(P43)로 tie 미회복 → yaw origin 차단이 아닌 outcome 조기 강화 시도.
+      yawtrack trigger를 3.0→1.5로 낮춰 success를 더 일찍 배운 시점부터 yaw 압력 시작.
+      ramp_steps=72000(3000iter) 유지 — P33 전례(급발진 collapse) 고려, 속도는 불변.
+    P39 전 항목 불변.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.curriculum.yawtrack = CurrTerm(
+            func=ramp_yawtrack_on_success,
+            params={"success_term": "success", "trigger": 1.5, "ramp_steps": 72000},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P44_PLAY(DualFR3PlateBoxLiftEnvCfg_P44):
+    """P44 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P44_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P44_PLAY):
+    """P44 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P45(DualFR3PlateBoxLiftEnvCfg_P44):
+    """P45 = P44 + one_sided_contact curriculum weight -5.0 → -7.0.
+
+    변경 사항 (2026-08-21):
+      P44 eval: one-sided duration 1.31 steps (P39: 0.67), upright 0.752 (P39: 0.777).
+      hold 중 한쪽 판 떨어지는 패턴이 잔존 → one_sided_contact 페널티 강화로 직접 억제.
+      -5.0 → -7.0 (40% 강화). 이력: -5.0은 P39에서 검증됨, -7.0은 첫 시도.
+    P44 전 항목 불변 (yawtrack trigger=1.5 포함).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.curriculum.one_sided_contact = CurrTerm(
+            func=modify_reward_weight_on_lifting_learned,
+            params={"term_name": "one_sided_contact", "weight": -7.0, "threshold": 10.0},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P45_PLAY(DualFR3PlateBoxLiftEnvCfg_P45):
+    """P45 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P45_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P45_PLAY):
+    """P45 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P46(DualFR3PlateBoxLiftEnvCfg_P44):
+    """P46 = P44 + box_upright curriculum weight -3.0 → -4.0.
+
+    변경 사항 (2026-08-21):
+      P44 eval: upright hold 0.752 (P39: 0.777). hold 중 박스 기울어짐 잔존.
+      box_upright 페널티 상한을 강화해 수평 자세 유지 압력 증가.
+      -3.0 → -4.0 (33% 강화). one_sided는 P44 그대로 -5.0.
+    P44 전 항목 불변 (yawtrack trigger=1.5 포함).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.curriculum.box_upright = CurrTerm(
+            func=modify_reward_weight_on_lifting_learned,
+            params={"term_name": "box_upright", "weight": -4.0, "threshold": 10.0},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P46_PLAY(DualFR3PlateBoxLiftEnvCfg_P46):
+    """P46 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P46_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P46_PLAY):
+    """P46 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P47(DualFR3PlateBoxLiftEnvCfg_P44):
+    """P47 = P44 + plate_height_symmetry curriculum weight -6.0 → -8.0.
+
+    변경 사항 (2026-08-21):
+      P44 eval: plate height diff p95 7.6cm. hold 중 좌우 판 높이 비대칭 잔존.
+      plate_height_symmetry 페널티 강화로 양판 높이 균등 압력 증가.
+      -6.0 → -8.0 (33% 강화). one_sided는 P44 그대로 -5.0.
+    P44 전 항목 불변 (yawtrack trigger=1.5 포함).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.curriculum.plate_height_symmetry = CurrTerm(
+            func=modify_reward_weight_on_lifting_learned,
+            params={"term_name": "plate_height_symmetry", "weight": -8.0, "threshold": 10.0},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P47_PLAY(DualFR3PlateBoxLiftEnvCfg_P47):
+    """P47 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P47_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P47_PLAY):
+    """P47 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P48(DualFR3PlateBoxLiftEnvCfg_P44):
+    """P48 = P44 + excessive_squeeze force_threshold 100N → 120N.
+
+    변경 사항 (2026-08-21):
+      P44 eval: hold 중 가끔 squeeze 과다 패널티로 grip 느슨해지는 패턴 의심.
+      force_threshold를 높여 더 강한 조임을 허용 → 안정적 hold 유도.
+      100N → 120N. one_sided는 P44 그대로 -5.0.
+    P44 전 항목 불변 (yawtrack trigger=1.5 포함).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.excessive_squeeze = RewTerm(
+            func=excessive_squeeze_penalty, params={"force_threshold": 120.0}, weight=-1e-4
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P48_PLAY(DualFR3PlateBoxLiftEnvCfg_P48):
+    """P48 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P48_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P48_PLAY):
+    """P48 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P49(DualFR3PlateBoxLiftEnvCfg_P47):
+    """P49 = P47 + plate_face_alignment reward 활성화 (curriculum).
+
+    변경 사항 (2026-08-24):
+      play 관찰: P44는 오른팔 평행·왼팔 모서리, P47은 왼팔 평행·오른팔 모서리.
+      '한쪽만 좋으면 되는 local optimum' 원인:
+        plates_misalignment(판↔판 상대 위치)와 plate_approach_symmetry(접근 타이밍)는
+        각 판과 box face 사이의 절대 각도를 직접 보지 않음 → 한 팔 완벽+한 팔 모서리
+        = reward 거의 동일한 해가 존재.
+
+      `plate_face_alignment` 함수는 P12부터 정의되어 있으나 P39 이후 reward에 등록되지 않음.
+      구조:
+        ① per-arm box face normal 기준 각도: n_L·(-y_box), n_R·(+y_box) 각각 측정
+        ② min(a_L, a_R): 양팔 모두 좋아야 reward 오름 (한쪽만으론 절반도 못 받음)
+        ③ G-gate (양판 동시 접촉 threshold=1N): 접근 phase에서 P3 회피
+        ④ upright_factor: 박스 기울여 판 붙이는 exploit 차단 (P11 역사 교훈)
+
+      P41 yaw 붕괴와의 차이:
+        P41은 squeeze axis(판↔판 축) 기준 → yawtrack과 충돌.
+        P49는 box face normal(y_box) 기준 → yawtrack과 방향 일치
+        (box yaw 정렬될수록 plate_face_alignment와 yawtrack 둘 다 개선됨).
+      P45 P3 패턴과의 차이:
+        G-gate로 접근 phase 제외 → 접촉 회피 유인 없음.
+        positive reward(0~1)라 페널티 과다 붕괴 위험 낮음.
+
+      curriculum: lifting EMA > 10 이후 1e-4 → 2.0 활성
+        (다른 curriculum 항목과 동일 threshold, 발견 전엔 무해)
+    P47 전 항목 불변 (plate_height_symmetry -8.0, yawtrack trigger=1.5 포함).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.plate_face_alignment = RewTerm(
+            func=plate_face_alignment, weight=1e-4
+        )
+        self.curriculum.plate_face_alignment = CurrTerm(
+            func=modify_reward_weight_on_lifting_learned,
+            params={"term_name": "plate_face_alignment", "weight": 2.0, "threshold": 10.0},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P49_PLAY(DualFR3PlateBoxLiftEnvCfg_P49):
+    """P49 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P49_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P49_PLAY):
+    """P49 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P50(DualFR3PlateBoxLiftEnvCfg_P49):
+    """P50 = P49 + plate_face_alignment curriculum weight 2.0 → 1.0.
+
+    변경 사항 (2026-08-24):
+      P49 eval: grip-axis median 17.3° (P47: 3.3°). weight=2.0이 다른 reward와 균형을
+      깨뜨려 판이 y_box를 과도하게 추적, 세계좌표 기준 grip axis에서 이탈 가능성.
+      weight 절반으로 완화해 plate_face_alignment와 기존 항목 간 균형 조정.
+    P49 전 항목 불변.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.curriculum.plate_face_alignment = CurrTerm(
+            func=modify_reward_weight_on_lifting_learned,
+            params={"term_name": "plate_face_alignment", "weight": 1.0, "threshold": 10.0},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P50_PLAY(DualFR3PlateBoxLiftEnvCfg_P50):
+    """P50 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P50_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P50_PLAY):
+    """P50 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P51(DualFR3PlateBoxLiftEnvCfg_P49):
+    """P51 = P49 + plate_face_z_offset 페널티 추가 (curriculum).
+
+    변경 사항 (2026-08-24):
+      P49 play: 오른팔 plate가 box 위쪽 부분에만 접촉.
+      plates_pair_misalignment(z항)는 (L_z-R_z) 상대 높이 차만 → 양팔이 같은 높이로
+      높아지면 포착 불가. 새 함수 plate_face_z_offset으로 각 판의 담당 face 중심 대비
+      절대 z-오프셋을 per-arm 합산 → 양팔 동시 높이 오류까지 커버.
+      G-gate 조건: 파지 후에만 활성 (P3 방지). curriculum: 1e-4 → -2.0 after lifting EMA>10.
+    P49 전 항목 불변 (plate_face_alignment weight=2.0 포함).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.plate_face_z_offset = RewTerm(
+            func=plate_face_z_offset, weight=-1e-4
+        )
+        self.curriculum.plate_face_z_offset = CurrTerm(
+            func=modify_reward_weight_on_lifting_learned,
+            params={"term_name": "plate_face_z_offset", "weight": -2.0, "threshold": 10.0},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P51_PLAY(DualFR3PlateBoxLiftEnvCfg_P51):
+    """P51 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P51_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P51_PLAY):
+    """P51 robustness-evaluation cfg with training observation corruption enabled."""
 
     def __post_init__(self):
         super().__post_init__()

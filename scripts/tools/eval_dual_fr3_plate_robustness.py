@@ -208,6 +208,8 @@ def main():
     tts_base_samples = []
     tts_yaw10_samples = []
     tts_yaw15_samples = []
+    box_pos_err_hold_samples = []  # (N, 3) world-frame position error during hold
+    grip_off_hold_samples = []     # grip-axis offset distribution during hold
 
     # Success는 post-step scene을, contact timing은 auto-reset 편향을 피하려고 pre-step scene을 계측한다.
     episode_step = torch.zeros(num_envs, dtype=torch.long, device=eval_device)
@@ -358,6 +360,8 @@ def main():
             mirror_error_hold_samples.append(mirror_error_post[hold_b].abs().detach().cpu())
             left_joint_hold_samples.append(q_left_post[hold_b].detach().cpu())
             right_joint_hold_samples.append(q_right_post[hold_b].detach().cpu())
+            box_pos_err_hold_samples.append((obj.data.root_pos_w - goal_w)[hold_b].detach().cpu())
+            grip_off_hold_samples.append(grip_off[hold_b].detach().cpu())
 
         episode_step[active] += 1
 
@@ -551,12 +555,27 @@ def main():
         f"{sustained_base_sum / n:.3f} / {sustained_yaw10_sum / n:.3f} / {sustained_yaw15_sum / n:.3f}"
     )
     print(f"goal err while holding: {err_hold_sum / max(hold_sample_count, 1):.3f} m")
+    box_pos_err_all = _cat(box_pos_err_hold_samples)  # (N, 3), box_pos - goal (world frame)
+    if box_pos_err_all.numel() > 0:
+        for axis_idx, axis_name in enumerate(["x (fwd)", "y (left+)", "z (up)"]):
+            axis_err = box_pos_err_all[:, axis_idx]
+            print(
+                f"  box pos err {axis_name}: "
+                f"mean {axis_err.mean().item():+.3f}m  "
+                f"median {axis_err.median().item():+.3f}m  "
+                f"p95 [{torch.quantile(axis_err, 0.05).item():+.3f}, {torch.quantile(axis_err, 0.95).item():+.3f}]m"
+            )
     print(f"box tilt while holding: {tilt_hold_sum / max(hold_sample_count, 1):.4f} (1-cos)")
     print(f"box yaw err while holding: {yaw_hold_err_sum / max(hold_sample_count, 1) * 57.29578:.1f} deg")
-    print(
-        "grip-axis offset while holding: "
-        f"{grip_off_hold_sum / max(hold_sample_count, 1) * 57.29578:.1f} deg (mod pi)"
-    )
+    grip_off_all = _cat(grip_off_hold_samples) * 57.29578  # deg
+    if grip_off_all.numel() > 0:
+        print(
+            f"grip-axis offset while holding: "
+            f"mean {grip_off_all.mean().item():.1f}  "
+            f"median {grip_off_all.median().item():.1f}  "
+            f"p95 {torch.quantile(grip_off_all, 0.95).item():.1f}  "
+            f"max {grip_off_all.max().item():.1f} deg (mod pi)"
+        )
     print(f"per-plate max force while holding: {_quantile_text(force_samples, 'N')}")
     print(f"left-right force imbalance: {_quantile_text(force_imbalance_samples, 'N')}")
     print(f"plate height difference: {_quantile_text(plate_height_diff_samples, 'm')}")
