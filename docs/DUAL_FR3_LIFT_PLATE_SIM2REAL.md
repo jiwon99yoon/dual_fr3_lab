@@ -1,41 +1,53 @@
 # Dual FR3 Plate-EE Box Lift — Sim2Real 전략과 문헌 정리
 
-> 현재 개발 태스크: `Isaac-Lift-Box-DualFR3-Plate-P39-v0`
-> (동결 기준점: `Isaac-Lift-Box-DualFR3-Plate-v2`, P38)
+> 현재 개발 태스크: `Isaac-Lift-Box-DualFR3-Plate-P47-v0` (**현재 최선**)
+> P50/P51 병행 학습 중 (2026-08-24, 판-박스 면접촉 개선 목표)
 >
-> 현재 기준: **2026-08-08, P38 완료** (`2026-08-08_15-18-11`, 선택 checkpoint `model_9850.pt`;
+> 현재 기준: **2026-08-24, P47 채택** (`2026-08-21_17-26-47/model_9999.pt`;
 > 상세 결과는 [`log_per_task.txt`](log_per_task.txt))
 >
 > 코드 기준: `source/dual_fr3_lab/dual_fr3_lab/tasks/manager_based/lift_plate/`
 >
-> 역할: 이 문서는 **실물 전이 계약, calibration, 문헌 근거, P39 이후 실험 설계와 안전 평가**를 관리한다.
-> reward/P1~P38 설계 이력은 [`DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md`](DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md),
+> 역할: 이 문서는 **실물 전이 계약, calibration, 문헌 근거, 실험 설계와 안전 평가**를 관리한다.
+> reward/P1~P51 설계 이력은 [`DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md`](DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md),
 > 공통 원칙은 [`sim2real_gap.md`](sim2real_gap.md)를 본다.
 
 ---
 
 ## 0. 결론과 현재 결정
 
-P38 이후의 우선순위는 관찰된 좌우 비대칭을 한 축씩 분리하는 다음 순서다.
+## 현재 sim 실험 상태 (2026-08-24)
 
-1. **P38 완료:** late-checkpoint sweep 결과 `model_9850.pt`를 현재 sim 기준점으로 선택했다.
-2. **P39:** 실제 Object 접촉의 좌/우 XOR 지속시간만 새 reward로 추가한다.
-3. **P40:** raw action 범위와 physics-substep 재기준화를 bounded/snapshot action contract로 정리한다.
-4. **P41:** q7 mirror 초기화를 먼저 검증한 뒤, 검증된 reflection만 mirror loss/augmentation에 사용한다.
-5. 그 뒤 **asymmetric critic → 실측 temporal DR → history/GRU**를 각각 분리해 검증한다.
-6. 병행해 실물 FR3·ArUco의 지연, 보간, bias, 좌우 skew와 plate/box 물성을 측정한다.
-7. 질량·마찰 범위를 무작정 넓히지 않고 실측한 CoM/TCP/contact posterior로 DR을 조정한다.
+| 실험 | 변경 | 결과 | 판정 |
+|------|------|------|------|
+| P39 | one_sided_contact -5 (기준선) | SR 1.000, tie 47.7%, one-sided 0.67 steps | ✅ 기준 |
+| P40 | j6 mirror loss | grip-axis 악화 | ❌ |
+| P41 | grip_axis_alignment (squeeze axis 기준) | yaw 붕괴 | ❌ |
+| P42~P43 | plates_misalignment/proximity 조정 | tie 미회복 | △ |
+| P44 | yawtrack trigger 3.0→1.5 | SR 0.992, 궤적 개선, tie 9.4% | ✅ 채택 |
+| P45 | one_sided -5→-7 | SR 0.000 P3 붕괴 | ❌ |
+| P46 | box_upright -3→-4 | yaw 붕괴 | ❌ |
+| **P47** | plate_height_symmetry -6→-8 | SR 0.984, tie 83.6%, one-sided 0.85 steps, grip 3.3° | ✅ **현재 최선** |
+| P48 | squeeze threshold 120N | yaw 붕괴 + grasp-loss | ❌ |
+| P49 | plate_face_alignment 활성화(weight 2.0) | SR 0.992 but grip 17.3° 악화 | △ |
+| P50 | P49 weight 1.0 완화 | 학습 중 | — |
+| P51 | plate_face_z_offset 절대 z 페널티 추가 | 학습 중 | — |
+
+**현재 남은 과제**: play에서 한 팔의 판이 box 면 전체가 아닌 상단 모서리에만 접촉하는 패턴 해소.
+
+다음 우선순위:
+1. **P50/P51 결과 확인** — 판-박스 면접촉 개선 여부
+2. 판-박스 면접촉 해결 후 **asymmetric critic** 실험
+3. 실측 temporal DR / history → real safety ladder
 
 현재 유지할 결정:
 
-- **P38의 14D delta policy output은 유지**한다. 다만 현재 sim은 같은 delta를 100 Hz physics
+- **P47의 14D delta policy output은 유지**한다. 다만 현재 sim은 같은 delta를 100 Hz physics
   substep마다 최신 `q_current`에 다시 더하므로, 이를 50 Hz held target으로 해석해 바로 배포하지 않는다.
 - **actor는 실기에 존재하는 56D 관측만 사용**한다.
-- **V1/V2 actor에 plate force를 다시 넣지 않는다.** `tau_ext`는 우선 독립 안전 감시용이다.
+- **actor에 plate force를 넣지 않는다.** contact sensor truth는 reward/curriculum 전용이다.
 - retry를 보존하기 위해 time/phase clock이나 late-contact termination을 넣지 않는다.
-- P38의 soft base-yaw outcome은 유지하되 더 강화하지 않는다. Yaw는 해결됐고 남은 것은 contact timing/force다.
-- 새로운 DR·history·critic·reward를 한 run에서 동시에 바꾸지 않는다. P39가 실패하면 그 reward를
-  P40/P41에 누적하지 않고 마지막 합격 기준점에서 분기한다.
+- 새로운 DR·history·critic·reward를 한 run에서 동시에 바꾸지 않는다. 실패 시 직전 합격 기준점(P47)에서 분기한다.
 
 ### P38 최종 판정
 

@@ -20,7 +20,7 @@
 
 ## 1. PC 구성
 
-### 1-1. 개발 PC (학습·inference 개발)
+### 1-1. 5090-v2 (학습·inference 개발)
 
 | 항목 | 값 |
 |---|---|
@@ -30,7 +30,7 @@
 | 주요 저장소 | `~/dual_fr3_lab` (Isaac Lab sim) |
 | 계획 workspace | `~/dual_fr3_real_ws` (inference + perception ROS2 패키지) |
 
-### 1-2. 로봇 PC (하드웨어 제어)
+### 1-2. husky-rcu (하드웨어 제어)
 
 | 항목 | 값 |
 |---|---|
@@ -38,14 +38,14 @@
 | ROS2 | Humble |
 | 역할 | fr3_husky controller 빌드·실행, FR3 hardware interface, MuJoCo sim2sim |
 | 주요 저장소 | `~/ros2_ws/src/fr3_husky` (예정) |
-| 연결 | 개발 PC와 DDS 네트워크 통신 |
+| 연결 | 5090-v2와 DDS 네트워크 통신 |
 
 ---
 
 ## 2. 역할 분리 원칙
 
 ```
-개발 PC (Jazzy)                         로봇 PC (Humble)
+5090-v2 (Jazzy)                         husky-rcu (Humble)
 ───────────────────────────             ────────────────────────────
 dual_fr3_lab  (Isaac Lab 학습)          fr3_husky (controller + MJCF)
 ArUco node    (perception)    ←──DDS──  joint_states
@@ -55,17 +55,17 @@ ONNX model, obs/action 계약              MuJoCo sim (sim2sim)
 ```
 
 **분리 근거:**
-- fr3_husky는 Humble 전용 의존성(libfranka, franka_ros2)을 가지므로 로봇 PC에서만 빌드한다.
+- fr3_husky는 Humble 전용 의존성(libfranka, franka_ros2)을 가지므로 husky-rcu에서만 빌드한다.
 - policy inference는 순수 Python + ONNX이므로 Jazzy에서 문제 없이 실행된다.
 - ROS2 DDS는 Jazzy ↔ Humble 네트워크 통신을 지원한다 (DDS vendor 일치 필요, 아래 §4 참조).
 
-**개발 PC에서 빌드·실행하는 것:**
+**5090-v2에서 빌드·실행하는 것:**
 - `dual_fr3_policy` (ONNX inference, 36D obs 조립, 20 Hz timer)
 - `dual_fr3_perception` (ArUco, RealSense)
 - `dual_fr3_bringup` (launch 모음, config YAML)
 - shadow mode / evaluation logger
 
-**로봇 PC에서 빌드·실행하는 것:**
+**husky-rcu에서 빌드·실행하는 것:**
 - `fr3_husky_controller` (1000 Hz ros2_control plugin)
 - `dual_fr3_policy_controller` (fr3_husky generator로 생성한 position-mode 컨트롤러)
 - MuJoCo launch (sim2sim)
@@ -82,7 +82,7 @@ ONNX model, obs/action 계약              MuJoCo sim (sim2sim)
 | URL | `https://github.com/JunHeonYoon/fr3_husky` |
 | 브랜치 | `devel` |
 | 확인한 commit | `5e255a93` |
-| 로봇 PC 경로 (예정) | `~/ros2_ws/src/fr3_husky` |
+| husky-rcu 경로 (예정) | `~/ros2_ws/src/fr3_husky` |
 | ROS2 | Humble |
 
 **구조 요약:**
@@ -110,7 +110,7 @@ ONNX model, obs/action 계약              MuJoCo sim (sim2sim)
 | URL | `https://github.com/iamjoseph1/aruco_realsense` |
 | 브랜치 | `ros2` |
 | 확인한 commit | `dc38102f` |
-| 개발 PC 경로 (예정) | `~/dual_fr3_real_ws/src/aruco_realsense` 또는 독립 |
+| 5090-v2 경로 (예정) | `~/dual_fr3_real_ws/src/aruco_realsense` 또는 독립 |
 
 **구조 요약:**
 - 핵심 스크립트: `6_publish_object_multiple_qr.py`
@@ -148,7 +148,7 @@ ros2 doctor --report | grep rmw
 
 ## 5. 계획된 ROS2 workspace 구조
 
-### 개발 PC: `~/dual_fr3_real_ws`
+### 5090-v2: `~/dual_fr3_real_ws`
 
 ```
 ~/dual_fr3_real_ws/
@@ -179,7 +179,7 @@ string stop_reason
 - ArUco stale 검사
 - `/dual_fr3_lift/raw_action` 발행
 
-### 로봇 PC: `~/ros2_ws/src` (기존 workspace에 추가)
+### husky-rcu: `~/ros2_ws/src` (기존 workspace에 추가)
 
 ```
 ~/ros2_ws/src/
@@ -188,7 +188,7 @@ string stop_reason
 ```
 
 **`dual_fr3_policy_controller` 역할:**
-- 개발 PC의 `/dual_fr3_lift/raw_action` 구독
+- 5090-v2의 `/dual_fr3_lift/raw_action` 구독
 - 오른팔: 20→100 Hz rebase (`q_target = q_current + 0.1 * action`)
 - 왼팔: ready pose hold
 - 1000 Hz tracking + joint/rate/workspace limit
@@ -198,7 +198,7 @@ string stop_reason
 
 ## 6. sim2sim → sim2real 로드맵
 
-### Phase 1: Offline (로봇 PC 불필요)
+### Phase 1: Offline (husky-rcu 불필요)
 
 - [ ] Isaac Lab에서 obs/action 저장 (`obs_000.npy`, `action_000.npy`)
 - [ ] ONNX parity test: `max |action_onnx - action_sim| < 1e-5`
@@ -213,14 +213,14 @@ string stop_reason
 
 ### Phase 2: sim2sim (MuJoCo)
 
-- [ ] 로봇 PC에 fr3_husky 빌드 (devel 브랜치)
+- [ ] husky-rcu에 fr3_husky 빌드 (devel 브랜치)
 - [ ] `use_mujoco:=true`로 dual arm MuJoCo 실행 확인
 - [ ] joint_states topic 이름·Hz·joint 순서 확인
 - [ ] `dual_fr3_policy_controller` 생성 (position mode)
   - `generate_fr3_controller.py DualFr3LiftPolicyController --control_mode position`
   - `update()` 내 20→100 Hz rebase 구현
   - 왼팔 ready hold, 오른팔 policy target
-- [ ] 개발 PC ↔ 로봇 PC DDS 연결 확인
+- [ ] 5090-v2 ↔ husky-rcu DDS 연결 확인
 - [ ] shadow mode: inference 결과 로그만, 명령 미전송
 - [ ] 작은 수동 action으로 controller 동작 확인 (`a = [0.01, 0, ...]`)
 - [ ] policy + MuJoCo 연동 (gripper 없이 팔 7축만)

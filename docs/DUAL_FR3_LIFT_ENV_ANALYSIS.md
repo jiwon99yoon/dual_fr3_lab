@@ -10,7 +10,9 @@
 > 대상: `Isaac-Lift-Cube-DualFR3-v0` (`lift/config/dual_fr3/joint_pos_env_cfg.py` + 베이스 `lift/lift_env_cfg.py`)
 > 알고리즘: PPO (rsl_rl), 4096 envs
 > 작성 기준: **2026-07-27 14:42** — grasp gating(ContactSensor) 구현·검증 완료 시점.
-> **최종 갱신 2026-07-28 저녁 (Run D 구현 완료)**: §2는 Run D 기준 (obs 43, delta action,
+> **최종 갱신 2026-08-03 (v3 완결 — 세로 cube 재학습 + 크기 DR 버그 수정)**: §5-13 추가.
+> 배포 후보 = **v3** (`dual_fr3_lift_v3/2026-08-03_16-52-40/model_4999.pt`).
+> 이전 갱신 2026-07-28 저녁 (Run D 구현 완료): §2는 Run D 기준 (obs 43, delta action,
 > action_l2, upright 보상, finger-table 충격 페널티). yaw DR + orientation obs는 Run E로 분리
 > (거동 교정과 난이도 상승 분리 — 사용자 결정). 이하 이력 헤더:
 > **갱신 2026-07-27 16시경 (Run B 준비 완료)**: MJCF 테이블(상판 0.75) + 중력보상(disable_gravity)
@@ -248,7 +250,7 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
 - [x] **5-0. Run A (gating만 재학습)**: `2026-07-27_14-59-58`, 3000 iter — **판정 성공**: reaching tail **0.853** (기준 0.8, v4 0.07), lifting 14.04, tracking 14.29 / fine 3.68 (역대 최고), drop ~0%. 서커스 exploit 소멸
 - [x] **5-4. 충돌 페널티** — Run B에 포함 (right_arm_contact + undesired_contacts, 성능 curriculum). goal y −0.05 복원
 - [x] **Run B 학습 실행 중**: `2026-07-27_15-59-59`, 3000 iter (2026-07-27 16시경 시작). 체크: contact_penalty가 curriculum 발동 후에도 ~0 유지 / reaching ≥ 0.8 / tracking 절대값은 goal 상향 탓에 Run A보다 낮게 시작 가능
-- [x] **5-7. Run D (`2026-07-28_18-55-30` [PC2]) — 성공, Run A~D 아크 완결**: upright 2.70/3,
+- [x] **5-7. Run D (`2026-07-28_18-55-30` [5090-v3]) — 성공, Run A~D 아크 완결**: upright 2.70/3,
   finger_impact 0, fine 3.53 최고, drop 0.2%. 강건성 재평가: baseline≈noisy (hold 0.95,
   precise 0.92, err 1.1cm, drop 0) — B 정책의 468~750 drop이 0으로 (시리즈 목적 달성).
   **yaw 민감도 sweep: 성공률 0~±10° 평평 99~100%, tts 1.4s → "가지런히 놓기" 실로봇에
@@ -256,14 +258,14 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
   ① object_upright 보상 (w3.0, C4 play의 운반 중 기울어짐 대응) ② finger_table_impact 페널티
   (>10N, "콩 박기" 대응; finger 센서 filter [Object, Table] 확장 — **object_grasped는 filter_idx=0
   필수**, 아니면 테이블 누르기가 파지로 오인). 판정: upright ≥ 2.5/3, finger_impact → 0, C4 지표 유지
-- [x] **5-11. v1 = tau_ext obs ablation — 판정: 제거 확정 (2026-07-29, `2026-07-29_12-38-27` [PC2])**:
+- [x] **5-11. v1 = tau_ext obs ablation — 판정: 제거 확정 (2026-07-29, `2026-07-29_12-38-27` [5090-v3])**:
   토크 제거(obs 36)가 **전면 우세** — reward 172.5(D 167.7), fine 3.84 신기록, lifting 발견 2배
   빠름(it76), critic loss 절반(0.40 vs 0.90 — σ0.5Nm 7dim 토크 채널이 순수 잡음 주입이었다는
   결정적 증거). eval: yaw 0/5/10° 전부 SUCCESS 1.000(strict 동일), drop 0×3, tts 1.33s.
   → **배포 후보 = v1 checkpoint**, 실물 인터페이스에서 tau_ext 스트리밍 생략 (§5-9 ③ 단순화).
   교훈: 토크/힘 obs는 태스크의 접촉 의존도에 비례해서만 (contact-rich인 remove_hook/plate와 달리
   cube lift엔 잉여). 유일 열세 upright 2.43(기준 2.5 미달)은 drop 0.1%라 실질 무해 — 관찰 카드
-- [x] **5-12. v2 = decimation 재학습 (정책 50→20Hz) — 판정: 성공 (2026-07-31, `2026-07-31_14-33-32` [PC1])**:
+- [x] **5-12. v2 = decimation 재학습 (정책 50→20Hz) — 판정: 성공 (2026-07-31, `2026-07-31_14-33-32` [5090-v2])**:
   v1(obs 36) 동일 + 변경 3개: decimation 2→5(정책 20Hz), episode 5→8s(160 step),
   resampling 5→8s(goal 1개/ep 유지 — 8초 에피소드에서 goal 5초 재샘플로 2개 되는 버그 수정).
   목적: "action 너무 빠름"(사용자 관찰) + perception 느림(~10~30Hz) 동시 해결 (§9). 근거: FR3
@@ -272,7 +274,7 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
   느린 주기가 탐색 안정화). 미세 열세 fine 3.50(v1 3.84)이나 pos err 0.213 동급. play: 1~2s에
   파지·운반·유지 완료(8s는 여유). eval 3종 진행 중. → **20Hz 배포 후보** (실물 perception 정합).
   다음 카드: 되면 dec 10(10Hz), latency DR은 별도 축. 상세 스펙: `dual_fr3_lift_v2.md`.
-- [x] **5-13. v3 = 세로 cube 50×50×100 재학습 + ⚠크기 DR 버그 수정 (2026-08-03, `2026-08-03_16-52-40` [PC1])**:
+- [x] **5-13. v3 = 세로 cube 50×50×100 재학습 + ⚠크기 DR 버그 수정 (2026-08-03, `2026-08-03_16-52-40` [5090-v2])**:
   실물 cube가 50×50×100mm 확정 → v2(정육면체) 10cm zero-shot에서 drop 160(CoM 높아 슬립) → 세로
   물체 재학습. **개발 중 크기 DR이 v0~v3 내내 무효였음을 발견**: `randomize_cube_size`가 mode="usd"
   였는데 env는 "prestartup"만 호출(manager_based_env.py:155) → 이벤트 침묵, 실제 4.80cm 고정 학습.
@@ -352,9 +354,10 @@ step  75~: lifted=1.00  gate=1.00   (이후 끝까지 동일)
 > 갱신: 2026-07-29. 상세 근거는 위 §5 해당 항목 참조. **완료되면 여기서 지우고 §5에 [x]로 기록.**
 > **배포(v1) 관련 스펙·TODO는 `dual_fr3_lift_v1.md`가 원본** — 여기는 환경 설계 관점 항목만 유지.
 
-**현 상태 요약: Run A~D + v1 ablation 완결. 배포 후보 = v1 정책
-(`dual_fr3_lift_v1/2026-07-29_12-38-27/model_4999.pt`, obs 36) — 성공률 100% (yaw ±10°까지,
-strict 2.5cm 포함), tts 1.33s, drop 0. 토크 obs 제거 확정 (§5-11).**
+**현 상태 요약: Run A~D + v1/v2/v3 ablation 완결. 배포 후보 = v3 정책
+(`dual_fr3_lift_v3/2026-08-03_16-52-40/model_4999.pt`, obs 36) — 성공률 1.000/1.000/0.984
+(yaw 0/5/10°, strict 2.5cm 포함), drop 0×3, tts 1.25s (20 Hz). 세로 cube 50×50×100 학습 (v3),
+크기 DR prestartup 수정 완료, 토크 obs 제거 확정 (§5-11).**
 
 - [ ] **1. 그리퍼 toggle 빈도 점검** — D 정책 play에서 open/close 명령 전환 빈도 측정.
       실물 그리퍼는 명령당 수백 ms라 파닥거리면 배포 불가. sim에서 10분. (§4-2)

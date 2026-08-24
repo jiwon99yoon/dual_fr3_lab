@@ -13,7 +13,7 @@
 | 항목 | 값 |
 |---|---|
 | 배포 후보 checkpoint | `logs/rsl_rl/dual_fr3_lift_v3/2026-08-03_16-52-40/model_4999.pt` |
-| 학습 | PPO (rsl-rl-lib 3.0.1), 4096 envs, 5000 iter, from-scratch, seed 42, [PC1: IsaacLab 2.2.1/Isaac Sim 5.0] |
+| 학습 | PPO (rsl-rl-lib 3.0.1), 4096 envs, 5000 iter, from-scratch, seed 42, [5090-v2: IsaacLab 2.2.1/Isaac Sim 5.0] |
 | 네트워크 | Actor/Critic MLP [256,128,64] ELU, 입력 **36** → 출력 8 (v1/v2와 동일) |
 | obs 정규화 | 없음 — raw 값 그대로 |
 | 제어 주기 | **20 Hz** (물리 100Hz × decimation 5) — v2 상속 |

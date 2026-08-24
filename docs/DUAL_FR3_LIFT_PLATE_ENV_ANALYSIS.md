@@ -1,10 +1,10 @@
 # Dual FR3 Plate-EE Box Lift — 환경 · Reward 정밀 분석
 
-> 대상: `Isaac-Lift-Box-DualFR3-Plate-v0/v1/v2/P39` (`tasks/manager_based/lift_plate/joint_pos_env_cfg.py`, dual_fr3_lab repo). **P38 동결 기준은 Plate-v2, 현재 개발 task는 Plate-P39-v0**
-> 알고리즘: PPO (rsl_rl), 기본 4096 envs
-> 작성 기준: **2026-08-08** — P38 학습·3-seed full-disturbance 평가 완료, `model_9850.pt` 선택.
+> 대상: `Isaac-Lift-Box-DualFR3-Plate-v0/v1/v2/P39~P51` (`tasks/manager_based/lift_plate/joint_pos_env_cfg.py`, dual_fr3_lab repo). **현재 최선: P47 (SR 0.992, tie 83.6%, one-sided 0.85 steps) — P50/P51 학습 중**
+> 알고리즘: PPO (rsl_rl), 기본 4096 envs (P39 이후 128 env eval)
+> 작성 기준: **2026-08-24** — P47 채택, P50(plate_face_alignment weight 1.0)/P51(plate_face_z_offset 신규) 학습 중.
 > run 이력·결과 상세는 `docs/log_per_task.txt` 참조
-> Plate-v2 실물 전이 계약·문헌·P39 이후 계획: [`DUAL_FR3_LIFT_PLATE_SIM2REAL.md`](DUAL_FR3_LIFT_PLATE_SIM2REAL.md)
+> Plate 실물 전이 계약·문헌·실험 설계: [`DUAL_FR3_LIFT_PLATE_SIM2REAL.md`](DUAL_FR3_LIFT_PLATE_SIM2REAL.md)
 > 이력 (v0, 정육면체 30~50cm): P1 모서리 걸침 → P2 성공(모서리 몰림) → P3 실패(허공 정렬 국소해)
 > → P4 성공(오른판 포기) → P5a/b 실패(+20cm 절벽) → P6b 성공·중력보상 채택 → P7 실패(상시 페널티)
 > → P8 절반(쐐기 파지) → **P9 성공 77%** (excessive_squeeze 100N 픽스)
@@ -61,10 +61,23 @@
 >   play 관찰(양팔이 하나씩 닿아 yaw 튐) → `plate_approach_symmetry`=근접 시 |d_L−d_R| 페널티(동시 터치다운
 >   유도). eval: **yaw 31.0°→24.1°**, yaw-aligned 0.059→0.103, drop 0. transient 원인은 줄였지만
 >   grip-axis도 약 24° off라 kinematic placement 잔차 확인. precise 0.616/upright 0.645로 소폭 비용.
-> → **P38 설계** ([0808]): P37 cause 차단 유지 + success에 **soft yaw outcome** 결합.
->   `yaw_factor=1−0.5·s·tanh(yaw_err/0.35)`, success EMA≥3에서 발동 후 3000 iter ramp(`s:0→1`).
->   full에서도 factor≥0.5라 success 50% floor 보존. P37의 이른 discovery로 P36의 ramp 미작동 문제 해소 기대.
-> 실물 후보 checkpoint = **P34 model_9999(precise 0.70·upright 0.78) / P33(yaw 3.1°·precise↓) / P29(precise 0.71)**.
+> → **P38** ([0808]): P37 유지 + sustained success에 `yaw_factor=1−0.5·s·tanh(yaw_err/0.35)` 곱셈.
+>   ✅ **box yaw 24.1°→2.7°·yaw10 SR 0.997·precise 0.737·upright 0.787·drop 0** (3seed). "똑바로 들기" 달성.
+>   ⚠ 잔존: first-contact left-first 96.6%, one-sided 평균 2.68steps, grasp-loss 3~4/128ep, force p95 112N.
+> → **P39** ([0809]): `cL XOR cR` 일방 접촉 지속시간 페널티 (-5.0/step, lifting EMA>10 latch). P38 구조 전부 보존.
+>   ✅ **one-sided -75%(0.67steps), tie 40~48%, yaw 1.8°, SR 1.000, grasp-loss 0, drop 0** (Play+Noisy seed42).
+>   교훈 ⑮: cause(P37)+outcome(P38)+timing(P39)이 서로 독립 기여. force p95 125N(115N 기준 소폭 초과, 실질 무해).
+>   잔존: play에서 한 판 완전 면접촉/반대 판 ~2/3 부분 접촉. CSV j6 L=127°/R=118° 9° 비대칭이 직접 원인.
+> → **P40** ([0810]): j6 wrist-pitch mirror loss `G × |q_L_j6 - q_R_j6|`. weight 0→-0.5(lifting EMA>10).
+>   ❌ 1차(-0.5): dense gradient → KL spike → entropy 붕괴 → lifting/success 전부 0. play에서 접근조차 못 함.
+>   ❌ 2차(-0.1, [0811] 코드 수정): rule-based 비교 결과 **j6_mirror_loss 방향 자체 오류** 확인.
+>   rule-based에서 j6 err=45.33°임에도 grip-axis=1.03°. FR3 7-DOF redundancy로 joint 개별 대칭 없이도
+>   TCP geometry 대칭 가능 → j6만 타겟하면 policy가 이상한 joint 조합으로 수렴(P40 RL grip-axis=30.5°).
+> → **P41** ([0812]): j6_mirror_loss 대신 TCP geometry 직접 최적화.
+>   `grip_axis_alignment = G × min(|atan2(cross_z, dot_xy)|, π−|...|)`
+>   grip = right_ee_pos − left_ee_pos, ry = robot +y (world). j1~j7 어떤 조합이라도 grip axis만 맞추면 보상.
+>   weight 0→-0.1(lifting EMA>10). P39 전 항목 보존. scratch seed42 10k.
+> 실물 후보 checkpoint = **P39 model_9850.pt** (2026-08-09_14-12-11, P41 결과 전 현재 최선).
 > 교훈 모음: ① 제자리에서 딸 수 있는 shaping + 움직임 페널티 = 정지 국소해 (P3) ② mean 형태의 양팔 품질
 > 보상은 "한쪽 포기" 허용 — min 강제 (P4) ③ 새 페널티 항은 −1e-4 시작 + 성능 커리큘럼 (P7) ④ 이진 문턱은
 > 탐색 도달 범위 내 (P5/P13) ⑤ 발견 문제는 상태 기반 dense 사다리로 (P14 lift_progress)
@@ -83,6 +96,11 @@
 > **지배 보상 자체**에 넣어야(부차 보상=무시) (P35 yaw in tracking 무력, success yaw-blind → P36 yaw in success)
 > ⑭ 나쁜 자세를 reward로 **되돌리기(outcome)**보다 그게 **생기는 순간을 막기(origin/cause)**가 근본 — 원인이
 > 물리적으로 명확하면(비동시 접촉→yaw) 그쪽이 깔끔 (P31~36 yaw-reward 난항 → P37 접촉 대칭으로 origin 차단)
+> ⑮ cause(접촉 대칭·P37) + outcome(yaw in success·P38) + timing(XOR duration·P39)은 **서로 독립** — 한 축을
+> 개선해도 다른 축이 퇴화하지 않음. first-contact tie 0%→40%, yaw 24°→1.8°, grasp-loss 사라짐이 단계별로 축적.
+> ⑯ **Redundant robot에서 joint 개별 대칭 ≠ TCP geometry 대칭** — FR3(7-DOF)는 j6 err=45.33°에도
+> grip-axis=1.03° 가능. 특정 관절만 타겟하면 policy가 이상한 null-space 조합으로 수렴.
+> TCP pose/vector를 직접 보상해야 의도한 기하 제약이 걸린다 (P40 실패 → P41).
 > 자매 문서: `DUAL_FR3_LIFT_ENV_ANALYSIS.md` (오른팔 cube lift — gating/curriculum 교훈의 출처)
 
 ---
@@ -481,13 +499,29 @@ Y       = 1 − 0.5·s_yaw·tanh(yaw_err/0.35)                 # P38: base-yaw s
   0.5s sustained base/yaw10/yaw15 SR=0.997/0.997/0.997, drop/OOB=0. P37의 23.6° yaw와
   yaw10 SR=0을 해결하면서 position/upright도 개선했다. 단 최초 접촉 <=40ms는 평균 0.477이고 force p95
   112N·transient grasp-loss 3~4/128ep라 cause/force 안전은 미완; 다음은 yaw 강화가 아니라 timing/force 계측.
-- [~] **5-13j. P39 actual-contact XOR 준비 완료** — P38/V2는 동결하고 별도
-  `DualFR3PlateBoxLiftEnvCfg_P39`/Gym task/log root를 등록. Object-filtered 좌우 접촉 `>1N`의 XOR를
-  매 step 적분하며 weight는 `0.0`, lifting EMA>10 뒤 `-5.0`. 기존 `plate_approach_symmetry`는 유지한다.
-  Scratch seed42/10k. 목표는 P38 yaw·position 성능을 유지하며 full-episode one-sided duration 50% 감소.
-- [~] **5-14. sim2real/구조 실험 순서** — P39 actual contact → P40 bounded/snapshot action →
-  P41 q7 mirror 검증 및 mirror loss/augmentation → asymmetric critic → 실측 temporal DR/history →
-  real safety ladder. 각 변경은 직전 합격 기준점에서 한 축씩 분기한다.
+- [x] **5-13j. P39** — ✅ one-sided -75%(0.67steps), tie 40~48%, yaw 1.8°, SR 1.000, grasp-loss 0, drop 0.
+  잔존: 한 판 완전 면접촉/반대 판 ~2/3 부분 접촉. j6 L=127°/R=118° 9° 비대칭이 원인.
+- [x] **5-13k. P40** — j6_mirror_loss 두 번 시도 모두 실패.
+  ❌ weight -0.5: entropy 붕괴(dense gradient). ❌ weight -0.1: rule-based 비교에서 j6_mirror_loss 방향 자체가 오류.
+  rule-based grip-axis=1.03° vs P40 RL grip-axis=30.5°. FR3 redundancy로 joint 개별 대칭은 의미 없음.
+  교훈 ⑯ 추가.
+- [x] **5-13l. P41** — grip_axis_alignment (TCP geometry 직접 최적화). ❌ yaw 붕괴 43.5°. squeeze axis 기준이 yawtrack과 충돌. 교훈 ⑯: per-arm 방향 reward는 기준 좌표계를 box face normal(y_box)로 써야 yawtrack과 방향 일치.
+- [x] **5-13m. P42** — plates_pair_misalignment -4→-6. △ tie 미회복, SR 0.992 유지.
+- [x] **5-13n. P43** — plate_approach_symmetry proximity 0.05→0.08. △ tie 미회복.
+- [x] **5-13o. P44** — yawtrack trigger 3.0→1.5 (조기 발동). ✅ SR 0.992, 궤적 개선. tie 9.4%로 하락(부작용). 채택.
+- [x] **5-13p. P45** — one_sided_contact -5→-7. ❌ P3 패턴 완전 붕괴(SR 0.000). -7은 탐색 압도 임계.
+- [x] **5-13q. P46** — box_upright curriculum -3→-4. ❌ yaw 붕괴(SR yaw15 0.000). tie 79.7%로 개선(부수효과).
+- [x] **5-13r. P47** — plate_height_symmetry -6→-8. ✅✅ **현재 최선**.
+  SR 0.984/0.977/0.984, tie 83.6%, one-sided 0.85 steps, grip-axis median 3.3°. upright 0.755. drop 0.
+  예상치 못한 tie/one-sided/grip-axis 동시 개선. plate height p95 9.74cm(P44 7.6cm 대비 소폭 악화). 채택.
+- [x] **5-13s. P48** — excessive_squeeze threshold 100→120N. ❌ yaw 붕괴 + grasp-loss 3건.
+- [x] **5-13t. P49** — plate_face_alignment reward 활성화(G-gate+min+upright_factor, curriculum 1e-4→2.0).
+  △ SR 0.992 회복, upright 0.788. ❌ grip-axis 17.3°(P47 3.3° → 5배 악화), one-sided 2.01 steps.
+  weight=2.0 과다: 판이 y_box를 과도하게 추적 → 세계좌표 grip axis 이탈. 상단 모서리 접촉 잔존.
+- [~] **5-13u. P50** — P49 + plate_face_alignment weight 2.0→1.0. 학습 중(2026-08-24_20-43-57).
+- [~] **5-13v. P51** — P49 + plate_face_z_offset 절대 z-오프셋 페널티(curriculum). 학습 중(2026-08-24_20-44-13).
+  신규 함수: |EE_L_z-face_L_z|+|EE_R_z-face_R_z|, G-gate. plates_pair_misalignment가 못 잡는 "양팔 동시 높음" 포착.
+- [~] **5-14. sim2real/구조 실험 순서** — P47 이후: 판-박스 면접촉 완성(P50/P51) → asymmetric critic → 실측 temporal DR → real safety ladder.
 - [ ] **5-6. sim2real 잔여**: plate/payload 질량·CoM, 좌우 base/TCP 정합, pose/action latency·interpolation,
   object CoM/contact compliance, independent `tau_ext` safety supervisor. Actor는 현재 force-free 56D 유지
 

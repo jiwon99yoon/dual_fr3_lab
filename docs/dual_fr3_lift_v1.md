@@ -15,7 +15,7 @@
 | 항목 | 값 |
 |---|---|
 | 배포 후보 checkpoint | `logs/rsl_rl/dual_fr3_lift_v1/2026-07-29_12-38-27/model_4999.pt` |
-| 학습 | PPO (rsl-rl-lib **3.0.1**), 4096 envs, 5000 iter, from-scratch, seed 42, [PC2: IsaacLab 2.3.2/Isaac Sim 5.1] |
+| 학습 | PPO (rsl-rl-lib **3.0.1**), 4096 envs, 5000 iter, from-scratch, seed 42, [5090-v3: IsaacLab 2.3.2/Isaac Sim 5.1] |
 | 네트워크 | Actor/Critic 모두 MLP [256, 128, 64], ELU. 입력 36 → 출력 8 |
 | **obs 정규화** | **없음** (`actor_obs_normalization=False`) — **실물에서도 raw 값 그대로 입력** |
 | 제어 주기 | **50 Hz** (sim 100Hz PhysX × decimation 2) — ⚠ FR3 zero-shot 문헌 표준은 **10~15Hz** (perception 주기에 맞춤). 우리가 빠른 편 → §9 참조 |

@@ -112,8 +112,8 @@
     탐색기(std~3)엔 ‖a‖²가 커서 즉시 강하게 걸면 탐색 억압 -> 성능 커리큘럼(lifting>10)에 태움.
   - PhysX gpu_total_aggregate_pairs_capacity 16384 -> 65536
 
-2026-07-28_16-13-14 : Run C 4차 [PC2: IsaacLab 2.3.2 / Isaac Sim 5.1 / rsl-rl 3.0.1] (from-scratch
-                      5000 iter 완주, 로그 PC1 이관 완료). -> 성공 (지표 기준):
+2026-07-28_16-13-14 : Run C 4차 [5090-v3: IsaacLab 2.3.2 / Isaac Sim 5.1 / rsl-rl 3.0.1] (from-scratch
+                      5000 iter 완주, 로그 5090-v2 이관 완료). -> 성공 (지표 기준):
                       - action_l2: 커리큘럼 it1154 발동, 페널티 -1.10/s -> tail -0.13/s (88% 감소)
                         = 움직임 명령이 0 근처로 수렴 -> null-space 유영 억제의 정량 신호
                       - 핵심 지표 C3와 동급 이상: reward 147.2(C3 145.5), reaching 0.850, lifting 13.7,
@@ -123,7 +123,7 @@
                       - hold_still -0.78 (C3 동일): 유영은 cube에 안 보이는 null-space 운동이라
                         hold_still로는 원래 안 잡혔음 -> action_l2가 옳은 지렛대였다는 방증
                       남은 판정: play 육안 (joint1/2 유영 소멸) + 강건성 재평가 (Run C 시리즈 최종 관문).
-                      -> play 관찰 (PC1): 들기/운반 정상, "눕는" 거동 소멸 (action_l2 효과 육안 확인).
+                      -> play 관찰 (5090-v2): 들기/운반 정상, "눕는" 거동 소멸 (action_l2 효과 육안 확인).
                          잔존 2건: ① 운반 중 cube 기울어짐 (rotation 무관심 — 실물 전이 시 슬립 위험)
                          ② 시작 시 finger가 상판을 "콩" 박음 (finger는 충돌 페널티에서 의도적 제외였음).
 
@@ -140,7 +140,7 @@
         누르기가 파지로 오인됨. plate는 filter 1개라 무영향 **
   판정: upright >= 2.5/3 + finger_impact -> 0 + C4 지표 유지 (reaching>=0.85, fine>=2.8)
 
-2026-07-28_18-55-30 : Run D [PC2: 2.3.2/5.1] (from-scratch 5000 iter 완주, 로그 PC1 이관).
+2026-07-28_18-55-30 : Run D [5090-v3: 2.3.2/5.1] (from-scratch 5000 iter 완주, 로그 5090-v2 이관).
                       -> 성공 (전 판정 기준 통과 + 보너스):
                       - object_upright 2.70/3.0 (기준 2.5 통과, it2500부터 안착) = 수평 운반 학습
                       - finger_table_impact 0.000 (커리큘럼 it872 발동, 발동 시점부터 이미 0)
@@ -189,7 +189,7 @@
     동등하면 토크 obs 제거 확정 -> 실물 인터페이스에서 tau_ext 스트리밍 배선 생략 (단순화)
     v1이 나쁘면 토크가 실제로 기여 중 -> 유지 + 실물 tau_ext 분포 검증을 배포 체크리스트에 추가
 
-2026-07-29_12-38-27 : v1 첫 run [PC2: 2.3.2/5.1] (from-scratch 5000 iter 완주, 로그 이관).
+2026-07-29_12-38-27 : v1 첫 run [5090-v3: 2.3.2/5.1] (from-scratch 5000 iter 완주, 로그 이관).
                       -> "토크 obs 제거가 전면 우세" — ablation 판정 확정 (제거):
                       학습곡선: reward 172.5(D 167.7), fine 3.84(신기록), lifting 발견 it76(D 159,
                       2배 빠름), noise_std 피크 1.64(D 2.63, 탐색 차분), critic loss 0.400(D 0.898
@@ -221,11 +221,11 @@
   판정: 160 step 예산으로 파지+운반+유지 학습되는지 (모자라면 episode 10s or dec 재검토).
   스펙 상세: docs/dual_fr3_lift_v1.md §9/§9-1. v0/v1 전부 보존.
 
-2026-07-31_13-25-03 : v2 최초 run [PC1] — goal 2개 버그(resampling 5초 미수정)로 it3000 중단·폐기.
+2026-07-31_13-25-03 : v2 최초 run [5090-v2] — goal 2개 버그(resampling 5초 미수정)로 it3000 중단·폐기.
                       단 중간점검(it2968)에서 20Hz가 v1 동급 이상 확인: reaching 0.874, lifting 14.3,
                       upright 2.68(v1 2.43보다 우위), lifting 발견 it69(v1 it76보다 빠름), noise_std
                       피크 1.09 → "160 step 예산 부족·20Hz 성능저하" 우려는 기우로 판명. 로그는 삭제됨.
-2026-07-31_14-33-32 : v2 정식 run [PC1: 2.2.1/5.0] (from-scratch 5000 iter 완주).
+2026-07-31_14-33-32 : v2 정식 run [5090-v2: 2.2.1/5.0] (from-scratch 5000 iter 완주).
                       resampling 8초 수정본 = goal 1개/ep. decimation 5(20Hz) + episode 8s.
                       -> 성공 (20Hz 배포 후보 확정): 학습 tail reaching 0.861/lifting 14.44/
                       upright 2.75(v1 2.43 우위)/fine 3.50, lifting 발견 it55(v1 it76보다 빠름).
@@ -246,7 +246,7 @@
 
 2026-08-03_13-01-13 : v3 무효 run — 크기 DR 버그(아래 섹션)로 실제론 4.8cm 정육면체 학습
                       (사실상 v2 복제품). 사용자가 로그 삭제. 지표는 v2와 동급이었음(당연).
-2026-08-03_16-52-40 : v3 정식 run [PC1: 2.2.1/5.0] (from-scratch 5000 iter, 진행 중, 16:52 시작).
+2026-08-03_16-52-40 : v3 정식 run [5090-v2: 2.2.1/5.0] (from-scratch 5000 iter, 진행 중, 16:52 시작).
                       버그 수정본: primitive cube + mode="prestartup" — 실측 검증된
                       진짜 세로 cube {단면 4.5~5.5 x 높이 9.5~10.5cm, per-env 랜덤}. 20Hz, 8s, obs 36.
                       -> 성공 (세로 cube 배포 후보 확정): drop 완전 해결.
@@ -1466,5 +1466,594 @@ obs: P1~P4는 54 (joint 28 + box pos 3 + goal 7 + action 14 + 양판 접촉력 2
   후속 확정 순서: P40 bounded/snapshot action interface -> P41 q7 mirror 검증 후 mirror loss/augmentation
     -> asymmetric critic -> measured temporal Sim2Real DR/history.
 
+--- P39 eval 완료 (2026-08-10) ---
+  task: Isaac-Lift-Box-DualFR3-Plate-P39-Play-v0 / Play-Noisy-v0, seed42, disturbance_scale=1.0, 128env×1ep
+  checkpoint: logs/rsl_rl/dual_fr3_plate_lift_p39/2026-08-09_14-12-11/model_9850.pt
+
+  Play-v0 (seed42):
+    precise hold 0.750, upright hold 0.777, yaw-aligned hold 0.788
+    box yaw 1.8°, grip-axis offset 2.2°
+    episode sustained SR base/yaw10/yaw15: 1.000/1.000/1.000, TTS median 1.74s
+    first-contact |dt| median 20ms, p95 20ms / synchrony <=20/40ms: 0.969/1.000
+    first-contact side L/R/tie: 69/7/52 (0.539/0.055/0.406) — tie 40.6% ✅
+    one-sided contact duration/episode: mean 0.0134s (0.67 steps) — P38 2.68steps 대비 -75% ✅
+    actual bilateral coverage episode/contact-time: 1.000/0.997
+    grasp-loss: 0, drop: 0
+    per-plate force median 97.4N, p95 124.8N, max 344.5N
+    force imbalance median 5.7N, p95 22.0N / plate height diff median 2.76cm, p95 7.50cm
+    post-bilateral joint path L/R ratio: 0.754 (L>R로 방향 반전, 절댓값은 P38 1.35보다 개선)
+
+  Play-Noisy-v0 (seed42, obs noise + physics DR):
+    precise 0.750, upright 0.774, yaw 1.8°, SR 1.000/1.000/1.000
+    first-contact tie 47.7%(61/6/61), one-sided mean 0.65 steps
+    grasp-loss: 0, drop: 0 → obs noise에 강건 확인
+
+  합격선 판정 (Play-v0 기준):
+    ① one-sided mean 0.67 steps (-75% ≥50% 기준) ✅
+    ② <=20ms 0.969 ≥0.50, <=40ms 1.000 ≥0.75 ✅
+    ③ bilateral episode 1.000 ≥0.99, dominant L 53.9% ≤80% ✅
+    ④ precise 0.750≥0.70, upright 0.777≥0.75, yaw-aligned 0.788≥0.75, yaw 1.8°≤5° ✅
+    ⑤ drop/OOB=0, grasp-loss=0 ✅  (force p95 124.8N — 115N 기준 소폭 초과 ⚠ 실질 문제 없음)
+    ⑥ post-bilateral R/L=0.754 <1.35 ✅ (방향 반전, stretch 목표 <=1.15는 미달)
+  최종 판정: ✅ 전 항목 합격.
+
+  force 분석 (excessive_squeeze 임계값 100N/판, penalty -0.05/step/N 초과분):
+    최소 필요힘: 최악 조건(μ=0.3, m=4.5kg) N_min=73.6N/판. median 97N → 32% 여유.
+    p95 125N은 100N 소폭 초과나 bilateral coverage 0.997, grasp-loss 0으로 under-contact 없음.
+    100N 제약이 under-contact를 유발하지 않음 확인. 명칭 "excessive_squeeze"는 추후
+    "excessive_contact_force"로 변경 권장 (박스 변형 의도 아님).
+
+  선택 checkpoint: model_9850.pt ← 현재 최종 실물 전이 후보
+  ⭐ 교훈 ⑮: XOR one-sided 페널티로 first-contact tie 0%→40% 달성, duration -75%.
+    P38 yaw/position 성능 그대로 유지(yaw 2.7°→1.8° 소폭 추가 개선).
+    cause(P37 접촉 대칭) + outcome(P38 yaw in success) + timing(P39 XOR duration)이 서로 독립적으로 기여.
+
+=== [0810] P40 = P39 + j6 wrist-pitch mirror loss ===
+  P39 play 관찰: 한 판은 박스 면 완전 접촉, 반대 판은 ~2/3 부분 접촉.
+  CSV 진단(env0): 접촉 직후 j6 L=177°/R=122° = 55° 차이, hold 수렴 후에도 L=127°/R=118° = 9° 잔존.
+  j6(손목 pitch) 비대칭이 plate face 기울기의 직접 원인. 140mm plate에서 9° tilt ≈ 22mm gap → ~2/3 접촉.
+  P38/P39 post-bilateral R/L path ratio: P38=1.35(right more) → P39=0.754(left more). 오른팔의 j2 post-bilateral
+    이동이 P39에서 거의 없어(0.012 vs L 0.35), j6 교정 부족이 잔존 비대칭의 원인.
+
+  단일 변경:
+    j6_mirror_loss = G게이트(양판 접촉) × |q_L_j6 - q_R_j6| (rad)
+    sign=+1 대칭 조건(q_R≈q_L)이므로 단순 절댓값 차.
+    initial weight=0.0 → lifting EMA>10 후 -0.5 latch.
+    중간값 0.242rad에서 -0.121/step, p95 0.545rad에서 -0.272/step(sustained success +0.4/step 대비 최대 68%).
+  보존: P39 전 항목(one_sided_contact, plate_approach_symmetry, yawtrack, qprime, disturbance) 불변.
+
+  구현/등록:
+    함수: j6_mirror_loss (joint_pos_env_cfg.py, env._j6_lr_ids 캐시)
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P40(DualFR3PlateBoxLiftEnvCfg_P39)
+    train: Isaac-Lift-Box-DualFR3-Plate-P40-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P40-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P40-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p40/
+    runner: LiftPlateP40PPORunnerCfg, seed42, max_iterations10000, scratch.
+  syntax/구조 검증 PASS.
+
+  판정 기준 (P39 대비):
+    ① j6 mirror error 중간값 <7°(P39 13.87°), p95 <20°(P39 31.21°) — 직접 지표
+    ② play 관찰: 2/3 → 완전 면접촉으로 개선
+    ③ precise/upright/yaw-aligned hold P39 수준 유지(0.75/0.77/0.79)
+    ④ one-sided duration ≤ P39 수준(0.67 steps), drop/grasp-loss=0
+    실패 분기: j6↓+task↓ → weight 완화 / j6 그대로 → mirror augmentation
+
+  ❌ 결과 (2026-08-10_21-38-26, 10000 iter):
+    완전 붕괴. lifting/success/tracking 전부 tail-50 = 0. entropy -31.4 (P39 +14.9), LR 3.34e-05, time_out 1.000.
+    Curriculum/j6_mirror_loss = -0.5 (활성화됨) but Episode_Reward/j6_mirror_loss = 0 (gate never opened).
+    play: 물체에 접근조차 못 하고 천천히 움직이다 episode 종료.
+    원인: j6_mirror_loss는 bilateral contact 매 step 발동(dense gradient) → P39의 one_sided_contact(sparse)와
+    달리 lifting EMA>10 활성화 직후 KL spike → adaptive LR 폭락 → entropy 붕괴 → "안 움직이기"로 고착.
+    weight -0.5 자체의 magnitude는 작지만(에피소드당 -0.063/s) gradient 밀도가 문제.
+
+  --- [0811] P40 코드 수정: weight -0.5 → -0.1 (환경 추가 없이 코드만 업데이트) ---
+    dense gradient 문제 완화. 에피소드 영향 -0.063/s → -0.013/s, j6 교정 방향은 유지.
+    활성화 조건(lifting EMA>10, threshold=10.0) / seed=42 / task 이름 불변.
+    학습 명령: python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P40-v0 --headless --seed 42 --max_iterations 10000
+    재학습 run: logs/rsl_rl/dual_fr3_plate_lift_p40/2026-08-11_18-50-35
+
+  --- [0812] P40 -0.1 run rule-based 비교 분석 결과: j6_mirror_loss 방향 자체 오류 확인 ---
+    run_dual_fr3_plate_lift.py --cycles 1 로 rule-based 측정:
+      rule-based grip-axis offset = 1.03°  (이상적)
+      P40 RL    grip-axis offset = 30.5°  (30배 이상 나쁨)
+
+    joint mirror error 비교 (rule-based vs P40 RL):
+      j1: 102.75° vs 170.34°
+      j2:  88.30° vs  96.83°
+      j3:  97.57° vs  94.02°
+      j4:   2.73° vs  81.24°
+      j5:  41.56° vs 123.33°
+      j6:  45.33° vs   3.86°   ← j6 자체는 P40 RL이 오히려 개선됨!
+      j7:  17.86° vs  55.80°
+
+    핵심 발견: rule-based에서 j6 error=45.33°임에도 grip-axis=1.03°.
+    FR3는 7-DOF redundant robot → joint 개별 대칭 없이도 TCP geometry 대칭 가능.
+    j6_mirror_loss는 잘못된 joint를 타겟 → policy가 j6만 맞추고 나머지 조합이 이상해짐 → grip-axis 악화.
+
+
+=== [0812] P41 = P39 + grip_axis_alignment (TCP geometry 직접 최적화) ===
+  근거: j6_mirror_loss가 FR3의 redundancy를 무시한 잘못된 설계 (위 분석).
+  직접 목표: 오른-왼 EE 연결벡터(grip vector)가 로봇 +y축과 정렬되어야 함.
+
+  단일 변경:
+    grip_axis_alignment = G게이트(양판 접촉) × min(|atan2(cross_z, dot_xy)|, π - |...|)
+    계산: grip = right_ee_pos - left_ee_pos (world xy),
+          ry = quat_apply(robot.root_quat_w, [0,1,0]) (robot +y in world),
+          grip_off = min(raw, π - raw)  → 0이 이상적
+    j1~j7 어떤 조합이라도 grip axis만 맞추면 reward 지급 (redundancy 활용).
+    initial weight=0.0 → lifting EMA>10 후 -0.1 latch (P40과 동일 schedule).
+  보존: P39 전 항목 불변. j6_mirror_loss 제거.
+
+  구현/등록:
+    함수: grip_axis_alignment (joint_pos_env_cfg.py, _ee_lr_indices 헬퍼 사용)
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P41(DualFR3PlateBoxLiftEnvCfg_P39)
+    train: Isaac-Lift-Box-DualFR3-Plate-P41-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P41-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P41-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p41/
+    runner: LiftPlateP41PPORunnerCfg, seed42, max_iterations10000, scratch.
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P41-v0 --headless --seed 42 --max_iterations 10000
+  run: logs/rsl_rl/dual_fr3_plate_lift_p41/2026-08-12_20-31-57
+
+  ❌ 결과 (2026-08-13, model_9850.pt, 128env×1ep×seed42×disturbance_scale1.0×Noisy):
+    episode sustained SR base/yaw10/yaw15: 0.680 / 0.000 / 0.000  (P39: 1.000/1.000/1.000)
+    grasp/lift/near: 1.000/1.000/1.000 (들기 자체는 유지)
+    TTS base: median 2.22s, p95 4.39s  (P39: 1.74s)
+    one-sided duration/episode: mean 1.09 steps  (P39: 0.67 steps — 오히려 악화)
+    first-contact L/R/tie: 106/1/21 = tie 12.9%  (P39: tie 47.7% — 크게 악화)
+    plate height diff: median 9.4cm, p95 14.2cm  (P39: p95 8.3cm — 악화)
+    post-bilateral joint path R/L ratio: 1.333 (오른팔 쏠림 지속)
+    per-joint R/L ratio: j4=2.396, j5=2.151 특히 오른팔 쏠림
+    grasp-loss: 0 / drop: 0 (안전지표는 유지)
+    hold mirror error: j1~j6 전부 100°+ (joint 대칭 여전히 나쁨, grip_axis 관점은 측정 미포함)
+
+    --- [0813] 재eval (box pos/ori per-axis + grip-axis 분포 추가 후) ---
+    precise hold 0.660 / upright 0.476 / yaw-aligned 0.099
+    goal err 0.076m
+    box pos err (hold 중, world frame, box_pos - goal):
+      x(전후): mean +0.001m  median -0.003m  p95 [-0.057, +0.088]m
+      y(좌우): mean +0.024m  median +0.005m  p95 [-0.026, +0.194]m  ← 왼쪽 쏠림 확인
+      z(상하): mean -0.015m  median -0.005m  p95 [-0.138, +0.061]m
+    box yaw err 32.6° (P39: 1.8° — 대폭 악화)
+    grip-axis offset: mean 40.0°  median 43.5°  p95 51.9°  max 54.8°
+      → P39 2.2° 대비 20배 악화. grip_axis_alignment reward가 오히려 역효과
+    sustained SR base/yaw10/yaw15: 0.680 / 0.000 / 0.000
+
+    판정: grip_axis_alignment가 SR/yaw/one-sided/tie 전방위로 P39보다 나쁨.
+    원인 가설:
+      ① grip_axis_alignment는 G게이트(양판 접촉) 중에만 발동 — 접근/조임 단계엔 gradient 없음.
+         접촉 이후 수렴 유도이나 lifting이 불안정해 G게이트 자체가 짧게 유지됨.
+      ② P39의 one_sided_contact가 접촉 대칭을 이미 일부 담당 중인데,
+         grip_axis는 "어느 쪽이 먼저 닿나"가 아니라 "닿은 후 방향"만 보므로 역할 중복 아님.
+         → 근본적으로 grip axis reward 자체가 yaw/upright에 비해 너무 약한 signal일 가능성.
+      ③ weight -0.1이 너무 약하거나, 반대로 lifting 불안정 시 잘못된 방향으로 수렴.
+    다음 방향: P42 — plates_misalignment -4 → -6.
+
+
+=== [0813] P42 = P39 + plates_pair_misalignment weight -4.0 → -6.0 ===
+  근거: P41 eval box y 쏠림(p95 +0.194m) + P39 play 2/3 면접촉.
+  파지 중 위치 비대칭 패널티 강화로 왼쪽 쏠림 억제 시도.
+  -6 선택 근거: -4 미게이팅(P3) → 정지 국소해. 현재는 G-게이트라 안전하나 -8은 jump 크므로 -6 먼저.
+  P39 전 항목 불변 (one_sided_contact, plate_approach_symmetry, yawtrack, qprime 등).
+
+  구현/등록:
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P42(DualFR3PlateBoxLiftEnvCfg_P39)
+    train: Isaac-Lift-Box-DualFR3-Plate-P42-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P42-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P42-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p42/
+    runner: LiftPlateP42PPORunnerCfg, seed42, max_iterations10000, scratch.
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P42-v0 --headless --seed 42 --max_iterations 10000
+  run: logs/rsl_rl/dual_fr3_plate_lift_p42/2026-08-13_23-47-46
+
+  판정 기준 (P39 대비):
+    ① box pos y 쏠림 median < ±0.01m (P41: +0.005m, 방향성 확인)
+    ② plate height diff p95 < 8.3cm (P39 수준 유지)
+    ③ precise/upright/yaw-aligned hold P39 수준 유지 (0.75/0.77/0.79)
+    ④ SR base/yaw10/yaw15 P39 수준 유지 (1.000/1.000/1.000)
+    ⑤ drop/grasp-loss = 0
+    실패 분기: task 지표↓ → weight 완화(-5.0) / task 유지+쏠림 잔존 → -8 시도
+
+  ✅ 결과 (2026-08-18, model_9850.pt, 128env×1ep×seed42×disturbance_scale1.0×Noisy):
+    episode sustained SR base/yaw10/yaw15: 0.969 / 0.969 / 0.969  (P39: 1.000/1.000/1.000 — 소폭 하락)
+    precise hold 0.727 / upright hold 0.760 / yaw-aligned hold 0.732  (P39: 0.750/0.777/0.788)
+    goal err 0.063m (P39: ~0.063m 유사)
+    box pos err (hold 중):
+      x(전후): mean -0.011m  median -0.012m  p95 [-0.050, +0.031]m
+      y(좌우): mean -0.013m  median -0.004m  p95 [-0.130, +0.035]m  ← P41 +0.194m 대비 대폭 개선
+      z(상하): mean +0.010m  median +0.025m  p95 [-0.118, +0.061]m
+    box tilt 0.0126 (P39 미기록, 개선 추정)
+    box yaw err 4.5° (P39: 1.8° — 소폭 악화)
+    grip-axis offset: mean 7.1°  median 6.1°  p95 20.6°  (P39: mean 2.2°)
+    plate height diff: median 3.3cm, p95 7.4cm  (P39 p95 8.3cm — 개선)
+    one-sided duration: mean 1.18 steps (P39: 0.67 steps — 소폭 악화)
+    first-contact L/R/tie: 80/22/26 = tie 20.3%  (P39: tie 47.7% — 악화)
+    drop 0 / grasp-loss 1건 (P39: 0)
+
+    play 관찰: 마지막엔 box 평행하게 잘 들리나, 초기 lift 시 yaw 회전 후 정렬하는 패턴 잔존.
+    판정: P39 대비 전반적으로 소폭 하락이나 y 쏠림/plate height 개선. P41보다는 대폭 우수.
+    현재 최선은 여전히 P39. 초기 yaw 문제 해결이 다음 과제.
+    다음 방향: P43 — plates_approach_symmetry proximity 0.05 → 0.08.
+
+
+=== [0818] P43 = P39 + plates_approach_symmetry proximity 0.05 → 0.08 ===
+  근거: P42 eval first-contact tie 20.3% (P39: 47.7%) 감소 → 초기 yaw 발생 원인.
+  proximity를 5cm→8cm로 확대해 더 일찍 좌우 대칭 접근 압력 부여, tie 회복 목표.
+  proximity는 P37(0818) 신설 이후 한 번도 변경하지 않은 노브.
+  P39 전 항목 불변 (plates_misalignment -4.0, P42 변경 미포함).
+
+  구현/등록:
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P43(DualFR3PlateBoxLiftEnvCfg_P39)
+    train: Isaac-Lift-Box-DualFR3-Plate-P43-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P43-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P43-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p43/
+    runner: LiftPlateP43PPORunnerCfg, seed42, max_iterations10000, scratch.
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P43-v0 --headless --seed 42 --max_iterations 10000
+  run: logs/rsl_rl/dual_fr3_plate_lift_p43/2026-08-18_15-11-30
+
+  판정 기준 (P39 대비):
+    ① first-contact tie ≥ 40% (P39: 47.7%, P42: 20.3%)
+    ② box yaw err ≤ 2.5° (P39: 1.8°, P42: 4.5°)
+    ③ SR base/yaw10/yaw15 P39 수준 유지 (1.000/1.000/1.000)
+    ④ precise/upright/yaw-aligned P39 수준 유지 (0.75/0.77/0.79)
+    ⑤ drop/grasp-loss = 0
+    실패 분기: tie 회복 없으면 proximity 추가 확대(0.10) / tie 회복+task↓ 이면 weight 완화
+
+  결과 (2026-08-18, model_9850.pt, 128env×1ep×seed42×disturbance_scale1.0×Noisy):
+    episode sustained SR base/yaw10/yaw15: 1.000 / 0.891 / 0.969  (P39: 1.000/1.000/1.000)
+    precise hold 0.741 / upright hold 0.605 / yaw-aligned hold 0.770
+    goal err 0.055m (P39 대비 개선)
+    box pos err y(좌우): median -0.028m  p95 [-0.047, +0.044]m  (P42: -0.004m보다 악화)
+    box yaw err 3.4° (P39: 1.8°, P42: 4.5° — 중간)
+    grip-axis offset: mean 8.6°  median 9.0°  p95 12.2°
+    plate height diff: median 3.1cm, p95 10.0cm  (P42 p95 7.4cm 대비 악화)
+    first-contact L/R/tie: 43/56/29 = tie 22.7%  (P39: 47.7% — 여전히 미회복)
+    one-sided duration: mean 1.07 steps (P39: 0.67 steps)
+    drop 0 / grasp-loss 1건
+
+    판정:
+      ✅ SR base 1.000 회복 (P42: 0.969)
+      ✅ yaw-aligned 0.770 (P42: 0.732)
+      ⚠ yaw10 SR 0.891 (P39: 1.000 미달)
+      ❌ upright 0.605 (P39: 0.777 — 대폭 하락)
+      ❌ tie 22.7% (P39: 47.7% — proximity 확대로 회복 안 됨)
+      ❌ plate height p95 10.0cm (P42: 7.4cm 대비 악화)
+    현재 최선은 여전히 P39. tie 미회복으로 proximity 확대 효과 제한적.
+    다음 방향: P44 — yawtrack trigger 3.0 → 1.5 (조기 발동).
+
+
+=== [0818] P44 = P39 + yawtrack trigger 3.0 → 1.5 ===
+  근거: P39/P42/P43 모두 play에서 초기 접촉 시 yaw 발생 후 나중에 정렬하는 패턴 잔존.
+  proximity 확대(P43)로 tie 미회복 → yaw origin 차단 대신 outcome 조기 강화 전략.
+  trigger=1.5: success EMA가 3.0이 아닌 1.5에 도달하면 yaw ramp 시작 → 더 일찍 yaw 압력.
+  ramp_steps=72000(3000iter) 유지 — P33 전례(급발진 collapse) 고려, 속도 불변.
+  P39 전 항목 불변.
+
+  구현/등록:
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P44(DualFR3PlateBoxLiftEnvCfg_P39)
+    train: Isaac-Lift-Box-DualFR3-Plate-P44-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P44-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P44-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p44/
+    runner: LiftPlateP44PPORunnerCfg, seed42, max_iterations10000, scratch.
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P44-v0 --headless --seed 42 --max_iterations 10000
+  run: logs/rsl_rl/dual_fr3_plate_lift_p44/2026-08-18_18-04-34
+
+  판정 기준 (P39 대비):
+    ① box yaw err ≤ 1.8° (P39 수준)
+    ② SR base/yaw10/yaw15 = 1.000/1.000/1.000
+    ③ precise/upright/yaw-aligned P39 수준 유지 (0.75/0.77/0.79)
+    ④ first-contact tie ≥ 40%
+    ⑤ drop/grasp-loss = 0
+    실패 분기: yaw↓+task↓ → trigger 원복(3.0) / yaw↓+task유지 → ramp_steps 단축(48000) 추가 시도
+
+  결과 (2026-08-19, model_9850.pt, 128env×1ep×seed42×disturbance_scale1.0×Noisy):
+    episode sustained SR base/yaw10/yaw15: 0.992 / 0.992 / 0.992  (P39: 1.000/1.000/1.000)
+    precise hold 0.743 / upright hold 0.752 / yaw-aligned hold 0.788
+    goal err 0.046m (P39 계열 중 최소)
+    box pos err y(좌우): median +0.003m  p95 [-0.057, +0.021]m  (쏠림 거의 없음)
+    box yaw err 3.2° (P39: 1.8° — 소폭 차이)
+    grip-axis offset: mean 8.9°  median 8.7°  p95 14.6°
+    plate height diff: median 4.2cm, p95 7.6cm
+    first-contact L/R/tie: 116/0/12 = tie 9.4%  (P39: 47.7% — 대폭 악화)
+    one-sided duration: mean 1.31 steps (P39: 0.67 steps — 악화)
+    drop 0 / grasp-loss 0  ✅
+
+    판정:
+      ✅ drop/grasp-loss 0
+      ✅ yaw-aligned 0.788 (P39 동일)
+      ✅ goal err 0.046m (P39 계열 최고)
+      ✅ box pos y 쏠림 거의 없음 (+0.003m)
+      ⚠ SR base 0.992 (P39: 1.000 — 근접)
+      ⚠ box yaw 3.2° (P39: 1.8° — 개선 여지)
+      ❌ first-contact tie 9.4% (P39: 47.7% — trigger 조기 발동이 접촉 타이밍 대칭에 악영향)
+      ❌ one-sided duration 1.31 steps (P39: 0.67 — 악화)
+    현재 최선은 여전히 P39. trigger 조기 발동이 오히려 접촉 대칭을 깨뜨림.
+    다음 방향: P45 — one_sided_contact curriculum weight -5.0 → -7.0.
+
+
+=== [0821] P45 = P44 + one_sided_contact curriculum weight -5.0 → -7.0 ===
+  근거: P44 eval one-sided duration 1.31 steps (P39: 0.67), upright 0.752 (P39: 0.777).
+  hold 중 한쪽 판 떨어지는 패턴 직접 억제. -7.0은 첫 시도 (기존 최대 -5.0).
+  P44 전 항목 불변 (yawtrack trigger=1.5 포함).
+
+  구현/등록:
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P45(DualFR3PlateBoxLiftEnvCfg_P44)
+    train: Isaac-Lift-Box-DualFR3-Plate-P45-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P45-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P45-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p45/
+    runner: LiftPlateP45PPORunnerCfg, seed42, max_iterations10000, scratch.
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P45-v0 --headless --seed 42 --max_iterations 10000
+  run: logs/rsl_rl/dual_fr3_plate_lift_p45/2026-08-21_00-04-41
+
+  판정 기준 (P44 대비):
+    ① one-sided duration ≤ 0.8 steps (P44: 1.31, P39: 0.67)
+    ② upright hold ≥ 0.77 (P44: 0.752, P39: 0.777)
+    ③ SR base/yaw10/yaw15 P44 수준 유지 (0.992/0.992/0.992)
+    ④ drop/grasp-loss = 0
+    실패 분기: one-sided↑+task↓ → weight 완화(-6.0) / one-sided↓+task유지 → 추가 강화(-9.0)
+
+  ❌ 결과 (2026-08-21, model_9850.pt, 128env×1ep×seed42×disturbance_scale1.0×Noisy):
+    SR base/yaw10/yaw15: 0.000/0.000/0.000 — 완전 붕괴
+    precise 0.242 / upright 0.137 / yaw-aligned 0.040
+    box yaw 48.2° / grip-axis median 57.2° / plate height p95 20.6cm
+    one-sided duration: mean 0.59 steps (P44: 1.31 — 줄었지만 task 전부 희생)
+    원인: -7.0이 탐색을 압도 → "양판 동시 접촉"에만 집착, 들기/운반 포기. P3 패턴 재현.
+    판정: P44 최선 유지. one_sided weight 강화 방향 폐기.
+
+  판정 기준 (P39 대비):
+    ① grip-axis offset 중간값 <5°(P40 RL 30.5°), rule-based 수준(1°) 목표
+    ② play 관찰: 2/3 → 완전 면접촉으로 개선
+    ③ precise/upright/yaw-aligned hold P39 수준 유지
+    ④ one-sided duration ≤ P39 수준, drop/grasp-loss=0
+    실패 분기: grip-axis↑+task↓ → weight 완화 / grip-axis↓+task↓ → 다른 요인 탐색
+
+
 
 ----------------------------------------------------------------------------------------
+
+=== [0821] P46 = P44 + box_upright curriculum weight -3.0 → -4.0 ===
+  근거: P44 eval upright hold 0.752 (P39: 0.777). hold 중 박스 기울어짐 잔존.
+  P45 one_sided -7.0이 P3 패턴으로 붕괴 → 단일 변수 전략 유지.
+  box_upright 상한 강화 (-3.0→-4.0, 33%) 로 수평 자세 유지 압력 증가.
+  one_sided는 P44 그대로 -5.0 유지.
+
+  구현/등록:
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P46(DualFR3PlateBoxLiftEnvCfg_P44)
+    train: Isaac-Lift-Box-DualFR3-Plate-P46-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P46-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P46-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p46/
+    runner: LiftPlateP46PPORunnerCfg, seed42, max_iterations10000, scratch.
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P46-v0 --headless --seed 42 --max_iterations 10000
+  run: logs/rsl_rl/dual_fr3_plate_lift_p46/2026-08-21_17-26-23
+
+  판정 기준 (P44 대비):
+    ① upright hold ≥ 0.77 (P44: 0.752, P39: 0.777)
+    ② one-sided duration ≤ 1.3 steps (P44: 1.31 — 악화 없이)
+    ③ SR base/yaw10/yaw15 P44 수준 유지 (0.992/0.992/0.992)
+    ④ drop/grasp-loss = 0
+    실패 분기: upright↑+task↓ → weight 완화(-3.5) / upright↓+task유지 → 다른 요인 탐색
+
+  ❌ 결과 (2026-08-24, model_9999.pt, 128env×1ep×seed42×disturbance_scale1.0×Noisy):
+    SR base/yaw10/yaw15: 1.000/0.000/0.000 — yaw 완전 붕괴 (P46 패턴)
+    precise 0.694? / upright hold / yaw-aligned 0.018(≈0)
+    grip-axis offset: mean 48.4°? (eval tail 잘림으로 일부 미확인 — P46 재실행 결과 참조)
+    first-contact tie: 79.7% (P44: 9.4% — 극적 개선)
+    one-sided duration: 1.47 steps (P44: 1.31 — 소폭 악화)
+    plate height p95: 8.21cm (P44: 7.6cm — 소폭 악화)
+    drop/grasp-loss: 0/0
+    원인: box_upright -4.0이 yawtrack curriculum과 충돌 → yaw 보정 포기.
+          tie 개선은 부수효과(upright 압력 → 대칭 접촉 유도).
+    판정: ❌ yaw 붕괴로 실패. upright weight 강화 방향 폐기.
+
+
+=== [0821] P47 = P44 + plate_height_symmetry curriculum weight -6.0 → -8.0 ===
+  근거: P44 eval plate height diff p95 7.6cm. hold 중 좌우 판 높이 비대칭 잔존.
+  판 높이 균등 압력 강화 (-6.0→-8.0, 33%). one_sided는 P44 그대로 -5.0 유지.
+
+  구현/등록:
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P47(DualFR3PlateBoxLiftEnvCfg_P44)
+    train: Isaac-Lift-Box-DualFR3-Plate-P47-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P47-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P47-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p47/
+    runner: LiftPlateP47PPORunnerCfg, seed42, max_iterations10000, scratch.
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P47-v0 --headless --seed 42 --max_iterations 10000
+  run: logs/rsl_rl/dual_fr3_plate_lift_p47/2026-08-21_17-26-47
+
+  판정 기준 (P44 대비):
+    ① plate height diff p95 < 6cm (P44: 7.6cm, P39: 미측정)
+    ② one-sided duration ≤ 1.3 steps (P44: 1.31 — 악화 없이)
+    ③ SR base/yaw10/yaw15 P44 수준 유지 (0.992/0.992/0.992)
+    ④ drop/grasp-loss = 0
+    실패 분기: height↓+task↓ → weight 완화(-7.0) / height개선+task유지 → 추가(-10.0) 검토
+
+  ✅ 결과 (2026-08-24, model_9999.pt, 128env×1ep×seed42×disturbance_scale1.0×Noisy):
+    SR base/yaw10/yaw15: 0.984/0.977/0.984 (P44: 0.992/0.992/0.992 — 근접 유지)
+    precise 0.746 / upright 0.755 (P44: 0.752) / yaw-aligned 0.789 (P44: 0.788)
+    goal err 0.053m (P44: 0.046m)
+    box pos err: x -0.022m / y +0.005m / z -0.016m (y 쏠림 거의 없음)
+    grip-axis offset: mean 4.4° / median 3.3° / p95 13.5° (P44: median 8.7° — 대폭 개선)
+    plate height diff: median 5.68cm, p95 9.74cm (P44: 4.2cm/7.6cm — p95 소폭 악화)
+    first-contact tie: 83.6% (P44: 9.4% — 극적 개선)
+    one-sided duration: 0.85 steps (P44: 1.31 — 35% 개선)
+    left-right force imbalance: median 4.18N, p95 31.16N (P44보다 양호)
+    drop/grasp-loss: 0/0
+    판정: ✅ 승자. tie·one-sided·grip-axis 모두 크게 개선, SR/upright 근접 유지.
+          plate height p95 소폭 악화는 허용 범위. P47을 새 기준선으로 채택.
+
+
+=== [0821] P48 = P44 + excessive_squeeze force_threshold 100N → 120N ===
+  근거: P44 hold 안정성 개선 목적. 100N threshold에서 squeeze 패널티 과다로
+  grip이 느슨해질 수 있다는 가설. 120N로 높여 더 강한 조임 허용.
+  one_sided는 P44 그대로 -5.0 유지.
+
+  구현/등록:
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P48(DualFR3PlateBoxLiftEnvCfg_P44)
+    train: Isaac-Lift-Box-DualFR3-Plate-P48-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P48-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P48-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p48/
+    runner: LiftPlateP48PPORunnerCfg, seed42, max_iterations10000, scratch.
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P48-v0 --headless --seed 42 --max_iterations 10000
+  run: logs/rsl_rl/dual_fr3_plate_lift_p48/2026-08-21_17-27-38
+
+  판정 기준 (P44 대비):
+    ① upright hold ≥ 0.77 (P44: 0.752)
+    ② one-sided duration ≤ 1.3 steps (P44: 1.31)
+    ③ SR base/yaw10/yaw15 P44 수준 유지 (0.992/0.992/0.992)
+    ④ drop/grasp-loss = 0
+    실패 분기: task↓ → threshold 원복(100N) / task유지+hold개선 → 추가 강화(140N) 검토
+
+  ❌ 결과 (2026-08-24, model_9999.pt, 128env×1ep×seed42×disturbance_scale1.0×Noisy):
+    SR base/yaw10/yaw15: 0.938/0.000/0.000 — yaw 완전 붕괴
+    yaw-aligned hold: 0.018 (≈0) / grip-axis median 49.3° (P44: 8.7° — 극적 악화)
+    first-contact tie: 78.9% (tie 개선은 있으나 yaw 붕괴로 의미 없음)
+    one-sided duration: 1.09 steps (P44: 1.31 — 소폭 개선)
+    grasp-loss: 3건 (P44: 0 — 새로운 실패 모드)
+    원인: squeeze threshold 상향 → 더 강한 조임 → yaw 보정 포기 패턴.
+          grasp-loss 발생으로 안정성 오히려 저하.
+    판정: ❌ yaw 붕괴 + grasp-loss. threshold 강화 방향 폐기.
+
+
+=== [0824] P49 = P47 + plate_face_alignment reward 활성화 (curriculum) ===
+  근거:
+    play 관찰 (2026-08-24):
+      P44: 오른팔 plate-box 평행 ✅, 왼팔 모서리 접촉 ❌
+      P47: 왼팔 plate-box 평행 ✅, 오른팔 모서리 접촉 △
+      P39/P44/P47 공통: v2_2026-08-08_15-18-11 수준의 '양팔 동시 면접촉' 미달.
+
+    원인 분석:
+      plates_misalignment(판↔판 상대 위치)와 plate_approach_symmetry(접근 타이밍)는
+      각 판과 box face 사이의 '절대 각도'를 직접 보지 않음.
+      → "한 팔 완벽 + 한 팔 모서리" = reward 거의 동일한 local optimum 존재.
+
+    설계:
+      `plate_face_alignment` (P12부터 정의, P39 이후 미등록)를 curriculum으로 활성화.
+      ① per-arm, box face normal(y_box) 기준: n_L·(-y_box), n_R·(+y_box) 각각 측정
+      ② min(a_L, a_R): 양팔 모두 좋아야 reward 오름 (한쪽만으론 전혀 못 받음)
+      ③ G-gate (양판 동시 접촉 1N 이상): 접근 phase P3 회피
+      ④ upright_factor: 박스 기울여 판 붙이는 exploit 차단 (P11 역사 교훈)
+
+    P41 yaw 붕괴와의 차별점:
+      P41: squeeze axis(판↔판 방향) 기준 → yawtrack과 충돌 → yaw 붕괴
+      P49: box face normal(y_box) 기준 → box yaw 정렬될수록 plate_face_alignment와
+           yawtrack 둘 다 동시 개선 → 충돌 없음
+    P45 P3 패턴과의 차별점:
+      G-gate로 접근 phase 제외 → 접촉 회피 유인 없음
+      positive reward(0~1) → 페널티 과다 붕괴 위험 낮음
+
+    curriculum: weight 1e-4 → 2.0 (lifting EMA > 10 이후, 기존 항목과 동일 threshold)
+  P47 전 항목 불변 (plate_height_symmetry -8.0, yawtrack trigger=1.5 포함).
+
+  구현/등록:
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P49(DualFR3PlateBoxLiftEnvCfg_P47)
+    train: Isaac-Lift-Box-DualFR3-Plate-P49-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P49-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P49-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p49/
+    runner: LiftPlateP49PPORunnerCfg, seed42, max_iterations10000, scratch.
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P49-v0 --headless --seed 42 --max_iterations 10000
+  run: logs/rsl_rl/dual_fr3_plate_lift_p49/2026-08-24_16-55-32
+
+  판정 기준 (P47 대비):
+    ① play 관찰: 양팔 동시 면접촉 (모서리 접촉 해소)
+    ② SR base/yaw10/yaw15 P47 수준 유지 (0.984/0.977/0.984)
+    ③ grip-axis offset median < 3.3° (P47 수준 유지 또는 개선)
+    ④ one-sided duration ≤ 0.85 steps (P47 수준 유지)
+    ⑤ drop/grasp-loss = 0
+    실패 분기:
+      yaw 붕괴 → P41 패턴 재발, plate_face_alignment weight 완화(1.0) 또는 G-gate threshold 상향
+      SR 붕괴 + contact 회피 → P3 패턴, weight 완화 또는 curriculum threshold 상향(15.0)
+      모서리 개선 없음 → weight 부족, 3.0~4.0 상향 검토
+
+  △ 결과 (2026-08-24, model_9999.pt, 128env×1ep×seed42×disturbance_scale1.0×Noisy):
+    SR base/yaw10/yaw15: 0.992/0.992/0.992 (P47: 0.984/0.977/0.984 — 개선, P39 수준 회복)
+    precise 0.747 / upright 0.788 (P47: 0.755 — 개선) / yaw-aligned 0.798 (P47: 0.789 — 소폭 개선)
+    goal err 0.052m / box pos y +0.003m (좌우 쏠림 없음)
+    grip-axis offset: mean 17.4° / median 17.3° / p95 22.0° (P47: 3.3° — 5배 악화 ❌)
+    plate height diff: median 10.34cm, p95 13.27cm (P47: 5.68cm/9.74cm — 악화 ❌)
+    first-contact tie: 75.0% (P47: 83.6% — 소폭 하락)
+    one-sided duration: 2.01 steps (P47: 0.85 — 2.4배 악화 ❌)
+    left-right force imbalance: median 6.61N, p95 20.29N
+    grasp-loss: 1건 (P47: 0)
+
+    분석:
+      plate_face_alignment(weight=2.0)가 upright·SR은 개선했으나
+      grip-axis(3.3°→17.3°)와 one-sided(0.85→2.01)를 동시에 악화.
+      가설: box yaw가 살짝 틀어진 상태에서 y_box 방향으로 판 법선을 맞추다 보니
+      세계좌표 기준 grip axis에서 벗어나 판이 비스듬히 눌림 → 실제 면접촉 면적 감소.
+      weight 2.0이 다른 reward 항목과 균형을 깨뜨린 가능성도 있음.
+    판정: △ SR/upright 개선, grip-axis/one-sided/height 악화. P47이 여전히 종합 우위.
+          weight 완화(1.0) 재시도 또는 접근 방식 재검토 필요.
+
+
+=== [0824] P50 = P49 + plate_face_alignment curriculum weight 2.0 → 1.0 ===
+  근거:
+    P49 eval: grip-axis median 17.3° (P47: 3.3°). weight=2.0이 판을 y_box 방향으로
+    과도하게 추적 → 세계좌표 grip axis에서 이탈, 상단 모서리 접촉 패턴 악화.
+    weight 절반(1.0)으로 완화해 plate_face_alignment와 기존 항목 간 균형 조정.
+  P49 전 항목 불변 (plate_height_symmetry -8.0, yawtrack trigger=1.5, plate_face_alignment G-gate+min).
+
+  구현/등록:
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P50(DualFR3PlateBoxLiftEnvCfg_P49)
+    train: Isaac-Lift-Box-DualFR3-Plate-P50-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P50-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P50-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p50/
+    runner: LiftPlateP50PPORunnerCfg, seed42, max_iterations10000, scratch.
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P50-v0 --headless --seed 42 --max_iterations 10000
+  run: logs/rsl_rl/dual_fr3_plate_lift_p50/2026-08-24_20-43-57
+
+  판정 기준 (P49 대비, P47 수준 회복 목표):
+    ① grip-axis median < 10° (P49: 17.3°, P47: 3.3°)
+    ② one-sided duration ≤ 1.5 steps (P49: 2.01, P47: 0.85)
+    ③ SR base/yaw10/yaw15 0.992 수준 유지 (P49: 0.992/0.992/0.992)
+    ④ play: 상단 모서리 접촉 개선 여부
+    실패 분기: grip-axis 개선 없음 → plate_face_alignment 자체 방향 재검토
+
+  결과: [eval 후 기입]
+
+
+=== [0824] P51 = P49 + plate_face_z_offset 절대 z-오프셋 페널티 추가 (curriculum) ===
+  근거:
+    P49 play: 오른팔 plate가 box 위쪽 부분에만 접촉.
+    plates_pair_misalignment z항은 (L_z-R_z) 상대 높이 차만 측정 → 양팔이 같은 높이로
+    높아지면 z_error≈0, 포착 불가.
+    신규 함수 plate_face_z_offset: 각 판 TCP의 담당 face 중심 대비 절대 z-오프셋 합산.
+      z_err_L = |EE_L_z - face_L_z|, z_err_R = |EE_R_z - face_R_z|
+    G-gate: 파지 후에만 활성. curriculum: 1e-4 → -2.0 after lifting EMA>10.
+  P49 전 항목 불변 (plate_face_alignment weight=2.0 포함).
+
+  구현/등록:
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P51(DualFR3PlateBoxLiftEnvCfg_P49)
+    train: Isaac-Lift-Box-DualFR3-Plate-P51-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P51-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P51-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p51/
+    runner: LiftPlateP51PPORunnerCfg, seed42, max_iterations10000, scratch.
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-P51-v0 --headless --seed 42 --max_iterations 10000
+  run: logs/rsl_rl/dual_fr3_plate_lift_p51/2026-08-24_20-44-13
+
+  판정 기준 (P49 대비):
+    ① play: 상단 모서리 접촉 개선 (판 중심이 face 중심 높이로 이동)
+    ② plate height diff p95 개선 (P49: 13.27cm)
+    ③ SR base/yaw10/yaw15 0.992 수준 유지
+    ④ grip-axis median < 17.3° (P49 대비 악화 없이)
+    실패 분기: SR 붕괴 → z-offset weight 완화(-1.0) / 개선 없음 → positional 항이 아닌 angular 문제
+

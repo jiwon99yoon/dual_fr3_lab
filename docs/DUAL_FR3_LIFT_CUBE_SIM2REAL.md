@@ -2,7 +2,7 @@
 
 > 대상 태스크: `Isaac-Lift-Cube-DualFR3-v3`
 >
-> 현재 기준: **2026-08-08, v3 실물 배포 후보**
+> 현재 기준: **2026-08-24, v3 실물 배포 후보 (유지 — cube 쪽 추가 실험 없음)**
 >
 > 후보 checkpoint: `logs/rsl_rl/dual_fr3_lift_v3/2026-08-03_16-52-40/model_4999.pt`
 >

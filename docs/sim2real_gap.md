@@ -19,6 +19,7 @@
 | Cube reward/환경 설계 이력 | [`DUAL_FR3_LIFT_ENV_ANALYSIS.md`](DUAL_FR3_LIFT_ENV_ANALYSIS.md) |
 | Cube v1/v2/v3의 고정 스펙과 checkpoint | [`dual_fr3_lift_v1.md`](dual_fr3_lift_v1.md), [`dual_fr3_lift_v2.md`](dual_fr3_lift_v2.md), [`dual_fr3_lift_v3.md`](dual_fr3_lift_v3.md) |
 | 모든 run·평가·실측 결과 | [`log_per_task.txt`](log_per_task.txt) |
+| PC 구성, workspace 구조, sim2sim→sim2real 로드맵 | [`system_pc.md`](system_pc.md) |
 
 이 파일의 2026-07-28 버전은 P5 plate 정책과 cube 항목을 한 문서에 섞고 있었다. 당시 내용은 git 이력에
 남아 있지만 현재 기준으로는 plate force actor 관측, P5 gravity A/B, 50 Hz 공통 가정 등이 오래됐다.
