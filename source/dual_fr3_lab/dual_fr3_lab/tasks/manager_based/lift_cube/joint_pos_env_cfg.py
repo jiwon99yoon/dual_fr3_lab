@@ -30,7 +30,7 @@ from isaaclab.sim.schemas.schemas_cfg import RigidBodyPropertiesCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as Gnoise
+from isaaclab.utils.noise import GaussianNoiseCfg as Gnoise
 
 # 베이스 프레임워크(LiftEnvCfg)는 isaaclab_tasks에서 import, 커스텀 mdp는 이 패키지 것 사용
 from isaaclab_tasks.manager_based.manipulation.lift.lift_env_cfg import LiftEnvCfg
@@ -112,7 +112,7 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
         # PhysX GPU 충돌쌍 버퍼 증설 (베이스 16384 -> 65536): C 3차 it~4533에서 4096 env가
         # 동시에 파지 상태가 되자 16388~16395개를 요구하며 초과 에러 발생 (miss interactions).
         # 버퍼 크기만 키우는 것이라 물리/학습 거동에는 영향 없음
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 64 * 1024
+        self.sim.physics.gpu_total_aggregate_pairs_capacity = 64 * 1024
 
         def _table_part(name: str, size, pos, color=(0.9, 0.9, 0.9)):
             return AssetBaseCfg(

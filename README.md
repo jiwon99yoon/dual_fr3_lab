@@ -4,8 +4,7 @@ DYROS dual-FR3 (Husky 베이스 + 양팔 Franka FR3) 로봇의 RL 태스크 모�
 [Isaac Lab](https://github.com/isaac-sim/IsaacLab) **external project** 방식 — Isaac Lab 본체는 import로만 사용하고,
 로봇 cfg·태스크·에셋·실험 기록을 이 repo에서 독립 관리한다.
 
-> **버전 고정: Isaac Lab 2.2.1 / Isaac Sim 5.0.0** (conda env `env_isaaclab`, Python 3.11, Ubuntu 24.04)
-> Isaac Lab 3.0(beta)/Isaac Sim 6.0은 Python 3.12 + 물리 백엔드 변경이 있으므로 마이그레이션 시 이 기준 코드임을 참고.
+> **최신 버전 브랜치: Isaac Lab 3.0.0 Beta 2 / Isaac Sim 6.0.1** (conda env `isaac_601_300b2`, Python 3.12, Ubuntu 24.04)
 
 ---
 
@@ -19,44 +18,49 @@ DYROS dual-FR3 (Husky 베이스 + 양팔 Franka FR3) 로봇의 RL 태스크 모�
 
 ## Installation
 
-> **기준 환경: 5090-v2** (Ubuntu 24.04, Python 3.11, Isaac Sim 5.0.0 / Isaac Lab 2.2.1, conda pip 방식)
-> 5090-v3(Isaac Sim 5.1.0 바이너리)는 아래 Multi-PC 셋업 참조.
+> **기준 환경: RTX 5070 Ti** (Ubuntu 24.04, Python 3.12, Isaac Sim 6.0.1 / Isaac Lab 3.0.0 Beta 2, conda pip 방식)
+> PyPI 패키지는 호환 패치가 포함된 `isaacsim 6.0.1.0` / `isaaclab 3.0.0b2.post1`로 고정한다.
 
-### 1. conda 환경 생성
-
-```bash
-conda create -n env_isaaclab python=3.11 -y
-conda activate env_isaaclab
-```
-
-### 2. Isaac Sim 5.0.0 + Isaac Lab 2.2.1 pip 설치
+### 1. mamba 환경 생성
 
 ```bash
-# Isaac Sim 5.0.0 (NVIDIA PyPI)
-pip install isaacsim==5.0.0.0 --extra-index-url https://pypi.nvidia.com
-
-# Isaac Lab (설치 당시 최신 버전 = 2.2.1, pip 패키지명 기준 0.46.2)
-pip install isaaclab --extra-index-url https://pypi.nvidia.com
+mamba create -n isaac_601_300b2 python=3.12 -y
+mamba activate isaac_601_300b2
 ```
 
-> 설치 후 `pip show isaacsim isaaclab`으로 버전 확인: `isaacsim 5.0.0.0`, `isaaclab 0.46.2`
-
-### 3. rsl-rl-lib 버전 고정 (필수)
-
-Isaac Lab 기본 설치 시 rsl-rl-lib 최신 버전이 딸려 올 수 있다. **반드시 3.0.1로 맞춰야 한다.**
+### 2. PyTorch 2.11.0 (CUDA 13.0) 설치
 
 ```bash
-pip install rsl-rl-lib==3.0.1
+python -m pip install --upgrade pip
+
+python -m pip install \
+  torch==2.11.0 \
+  torchvision==0.26.0 \
+  --index-url https://download.pytorch.org/whl/cu130
 ```
+
+### 3. Isaac Sim 6.0.1 + Isaac Lab 3.0.0 Beta 2 설치
+
+```bash
+python -m pip install \
+  "isaaclab[isaacsim,all]==3.0.0b2.post1" \
+  --extra-index-url https://pypi.nvidia.com
+```
+
+> `isaacsim[all,extscache] 6.0.1.0`과 Isaac Lab의 RL 의존성이 함께 설치된다.
 
 ### 4. dual_fr3_lab 설치
 
 ```bash
-cd ~/dual_fr3_lab   # 이 repo 루트
-pip install -e source/dual_fr3_lab
+cd ~/etri_ws/src/dual_fr3_lab
+python -m pip install -e source/dual_fr3_lab
+
+# 설치 버전 및 의존성 확인
+python -m pip show isaacsim isaaclab torch torchvision
+python -m pip check
 
 # 정상 설치 확인
-python scripts/list_envs.py   # Isaac-Lift-Cube-DualFR3-v3 등이 보이면 성공
+python scripts/list_envs.py
 ```
 
 ---

@@ -67,11 +67,11 @@ def object_upright_while_carried(
     이 항은 운반 중 기울임(tilt)만 벌한다 (yaw 회전은 자유 — 대칭 cube라 무의미).
     """
     obj: RigidObject = env.scene[object_cfg.name]
-    ez = torch.zeros_like(obj.data.root_pos_w)
+    ez = torch.zeros_like(obj.data.root_pos_w.torch)
     ez[:, 2] = 1.0
     from isaaclab.utils.math import quat_apply
 
-    cube_z_w = quat_apply(obj.data.root_quat_w, ez)
+    cube_z_w = quat_apply(obj.data.root_quat_w.torch, ez)
     upright = cube_z_w[:, 2].clamp(min=0.0)
     gate = object_is_lifted(env, minimal_height, object_cfg) * object_grasped(
         env, finger1_sensor_cfg, finger2_sensor_cfg, threshold
@@ -112,20 +112,32 @@ def object_is_lifted_and_grasped(
     return object_is_lifted(env, minimal_height, object_cfg) * gate
 
 
-def object_goal_distance_grasped(
-    env: ManagerBasedRLEnv,
-    std: float,
-    minimal_height: float,
-    command_name: str,
-    finger1_sensor_cfg: SceneEntityCfg,
-    finger2_sensor_cfg: SceneEntityCfg,
-    threshold: float = 0.5,
-    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-) -> torch.Tensor:
-    """Goal-tracking reward gated on a maintained grasp, so carrying without grasping earns nothing."""
-    goal_reward = object_goal_distance(env, std, minimal_height, command_name, robot_cfg, object_cfg)
-    return goal_reward * object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
+class object_goal_distance_grasped(object_goal_distance):
+    """Official goal-tracking reward gated on a maintained grasp."""
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        std: float,
+        minimal_height: float,
+        command_name: str,
+        finger1_sensor_cfg: SceneEntityCfg,
+        finger2_sensor_cfg: SceneEntityCfg,
+        threshold: float = 0.5,
+        robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+        success_threshold: float | None = None,
+    ) -> torch.Tensor:
+        goal_reward = super().__call__(
+            env=env,
+            std=std,
+            minimal_height=minimal_height,
+            command_name=command_name,
+            robot_cfg=robot_cfg,
+            object_cfg=object_cfg,
+            success_threshold=success_threshold,
+        )
+        return goal_reward * object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
 
 
 def object_velocity_near_goal(
@@ -144,8 +156,10 @@ def object_velocity_near_goal(
     robot: RigidObject = env.scene[robot_cfg.name]
     object: RigidObject = env.scene[object_cfg.name]
     command = env.command_manager.get_command(command_name)
-    des_pos_w, _ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3])
-    near_goal = torch.norm(des_pos_w - object.data.root_pos_w, dim=1) < dist_threshold
-    vel = torch.sum(torch.square(object.data.root_lin_vel_w), dim=1)
-    vel += ang_vel_scale * torch.sum(torch.square(object.data.root_ang_vel_w), dim=1)
+    des_pos_w, _ = combine_frame_transforms(
+        robot.data.root_pos_w.torch, robot.data.root_quat_w.torch, command[:, :3]
+    )
+    near_goal = torch.norm(des_pos_w - object.data.root_pos_w.torch, dim=1) < dist_threshold
+    vel = torch.sum(torch.square(object.data.root_lin_vel_w.torch), dim=1)
+    vel += ang_vel_scale * torch.sum(torch.square(object.data.root_ang_vel_w.torch), dim=1)
     return near_goal * vel

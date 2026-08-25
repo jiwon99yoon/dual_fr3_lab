@@ -32,7 +32,7 @@ from isaaclab.sensors import ContactSensorCfg, FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import combine_frame_transforms, quat_apply, subtract_frame_transforms
-from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as Gnoise
+from isaaclab.utils.noise import GaussianNoiseCfg as Gnoise
 
 from dual_fr3_lab.tasks.manager_based.lift_cube import mdp
 from isaaclab_tasks.manager_based.manipulation.lift.lift_env_cfg import LiftEnvCfg

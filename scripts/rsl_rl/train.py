@@ -26,7 +26,14 @@ parser.add_argument(
     "--agent", type=str, default="rsl_rl_cfg_entry_point", help="Name of the RL agent configuration entry point."
 )
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
-parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
+parser.add_argument(
+    "--max_iterations",
+    "--max_iteration",
+    dest="max_iterations",
+    type=int,
+    default=None,
+    help="RL Policy training iterations.",
+)
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
@@ -103,7 +110,7 @@ except ImportError:
         with open(filename, "wb") as f:
             pickle.dump(data, f)
 
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
+from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
@@ -122,6 +129,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, installed_version)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
@@ -193,25 +201,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
-        agent_dict = agent_cfg.to_dict()
-        # rsl_rl 버전 호환: isaaclab_rl(2.3+) cfg가 rsl_rl(3.0.1)의 PPO가 모르는 필드
-        # (optimizer 등)를 포함할 수 있음 -> PPO 시그니처 기준으로 미지 키 자동 제거.
-        # 2.2.1 스택에서는 전 키가 유효해 no-op (rsl-rl-lib==3.0.1 고정 전제)
-        try:
-            import inspect
-
-            from rsl_rl.algorithms import PPO as _PPO
-
-            _allowed = set(inspect.signature(_PPO.__init__).parameters) | {"class_name"}
-            _alg_cfg = agent_dict.get("algorithm", {})
-            _dropped = [k for k in list(_alg_cfg) if k not in _allowed]
-            for _k in _dropped:
-                _alg_cfg.pop(_k)
-            if _dropped:
-                print(f"[compat] rsl_rl PPO가 모르는 cfg 키 제거: {_dropped}")
-        except Exception:
-            pass
-        runner = OnPolicyRunner(env, agent_dict, log_dir=log_dir, device=agent_cfg.device)
+        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     else:
