@@ -76,7 +76,7 @@ python scripts/rsl_rl/train.py --task Isaac-Lift-Cube-DualFR3-v0 --headless --ma
 
 # 재생 (checkpoint 절대경로 지정)
 python scripts/rsl_rl/play.py --task Isaac-Lift-Cube-DualFR3-Play-v0 --num_envs 16 \
-    --checkpoint logs/rsl_rl/dual_fr3_lift/<run>/model_XXXX.pt
+    --checkpoint logs/rsl_rl/dual_fr3_lift/<run>/model_XXXX.pt --viz kit
 
 # 강건성 평가 (baseline vs noisy, 축 분리 스위치 --no_obs_noise / --no_physics_dr)
 python scripts/tools/eval_dual_fr3_lift_robustness.py \

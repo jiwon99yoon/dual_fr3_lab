@@ -166,27 +166,45 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # obtain the trained policy for inference
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
-    # extract the neural network module
-    # we do this in a try-except to maintain backwards compatibility.
-    try:
-        # version 2.3 onwards
-        policy_nn = runner.alg.policy
-    except AttributeError:
-        # version 2.2 and below
-        policy_nn = runner.alg.actor_critic
-
-    # extract the normalizer
-    if hasattr(policy_nn, "actor_obs_normalizer"):
-        normalizer = policy_nn.actor_obs_normalizer
-    elif hasattr(policy_nn, "student_obs_normalizer"):
-        normalizer = policy_nn.student_obs_normalizer
-    else:
-        normalizer = None
-
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    os.makedirs(export_model_dir, exist_ok=True)
+
+    # rsl_rl 3.x stores separate actor/critic MLPModel instances. The actor returned by
+    # get_inference_policy() owns its observation normalizer and distribution export logic.
+    if hasattr(policy, "as_jit") and hasattr(policy, "as_onnx"):
+        jit_policy = policy.as_jit().cpu().eval()
+        torch.jit.script(jit_policy).save(os.path.join(export_model_dir, "policy.pt"))
+
+        onnx_policy = policy.as_onnx(verbose=False).cpu().eval()
+        dummy_obs = torch.zeros(1, policy.obs_dim)
+        torch.onnx.export(
+            onnx_policy,
+            dummy_obs,
+            os.path.join(export_model_dir, "policy.onnx"),
+            export_params=True,
+            opset_version=18,
+            input_names=["obs"],
+            output_names=["actions"],
+        )
+    else:
+        # Legacy rsl_rl actor-critic/student containers (Isaac Lab 2.x).
+        if hasattr(runner.alg, "policy"):
+            policy_nn = runner.alg.policy
+        elif hasattr(runner.alg, "actor_critic"):
+            policy_nn = runner.alg.actor_critic
+        else:
+            raise AttributeError("Unable to locate the policy module in the loaded rsl_rl runner.")
+
+        if hasattr(policy_nn, "actor_obs_normalizer"):
+            normalizer = policy_nn.actor_obs_normalizer
+        elif hasattr(policy_nn, "student_obs_normalizer"):
+            normalizer = policy_nn.student_obs_normalizer
+        else:
+            normalizer = None
+
+        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
 
     dt = env.unwrapped.step_dt
 
