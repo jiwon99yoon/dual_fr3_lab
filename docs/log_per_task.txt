@@ -2026,8 +2026,18 @@ obs: P1~P4는 54 (joint 28 + box pos 3 + goal 7 + action 14 + 양판 접촉력 2
     ④ play: 상단 모서리 접촉 개선 여부
     실패 분기: grip-axis 개선 없음 → plate_face_alignment 자체 방향 재검토
 
-  결과: [eval 후 기입]
-
+  결과: 실패 (P47 대비 전면 퇴보)
+    eval (Play-Noisy-P50, 128ep):
+      SR base/yaw10/yaw15: 0.682 / 0.000 / 0.000  ← yaw10 완전 실패
+      tie %: 78.9% (L/R/tie 95/13/404)
+      one-sided duration: mean 1.85 steps, median 2.0, p95 4.0
+      grip-axis offset: mean 37.1°, median 39.4°, p95 46.6°, max 57.7°  ← 극심한 악화
+      upright hold (tilt<15°): 0.521
+      plate height diff: median 0.104m, p95 0.268m
+      box pos err z: mean -0.041m (p95 -0.237 ~ +0.027) — 아래로 처짐
+    TB: success 3.16 (P49: 10.27, −69%), undesired_contact −0.25 (P49: −0.007 — 급증)
+    판정: weight 완화로 face_alignment 포기 전략 수렴 → grip-axis 최악(37°), SR 붕괴.
+          P49 계열 face_alignment 접근의 한계 추가 확인. 최선은 P47 유지.
 
 === [0824] P51 = P49 + plate_face_z_offset 절대 z-오프셋 페널티 추가 (curriculum) ===
   근거:
@@ -2056,4 +2066,83 @@ obs: P1~P4는 54 (joint 28 + box pos 3 + goal 7 + action 14 + 양판 접촉력 2
     ③ SR base/yaw10/yaw15 0.992 수준 유지
     ④ grip-axis median < 17.3° (P49 대비 악화 없이)
     실패 분기: SR 붕괴 → z-offset weight 완화(-1.0) / 개선 없음 → positional 항이 아닌 angular 문제
+
+  결과: SR·tie·one-sided는 P47 수준이나 grip-axis 극심 악화 → 종합 실패
+    eval (Play-Noisy-P51, 128ep):
+      SR base/yaw10/yaw15: 0.961 / 0.000 / 0.000  ← yaw10 완전 실패
+      tie %: 83.4% (L/R/tie 58/27/427) — P47(83.6%) 수준
+      one-sided duration: mean 0.76 steps, median 1.0, p95 2.0  ← P47(0.85)보다 개선
+      grip-axis offset: mean 46.1°, median 47.3°, p95 49.7°, max 51.2°  ← P49(17.3°)보다 더 악화
+      upright hold (tilt<15°): 0.757
+      plate height diff: median 0.049m, p95 0.101m  — P50(0.104m)보다 크게 개선
+      box pos err z: mean -0.013m (p95 -0.118 ~ +0.044) — P50보다 개선
+    TB: success 5.23 (P49: 10.27, −49%), learning_rate 말미 2.13e-05 (과도하게 낮음)
+    판정: z-offset penalty가 one-sided·height-diff는 개선했으나 grip-axis가 46.1°로 최악.
+          plate_face_alignment(weight=2.0) + z_offset 복합 압박이 grip-axis를 더 틀어놓음.
+          face_alignment 계열 전체(P49~P51)가 grip-axis 문제를 해결 못 함.
+          → P47로 복귀, 다른 방향 탐색 필요.
+
+=== [0830] P52 = P47 + box_anti_yaw penalty (G-gate + lifted gate, curriculum) ===
+  근거:
+    P47 play: box가 뒤틀리는 현상 관찰. yaw 오차를 직접 페널티로 제어 시도.
+    box_anti_yaw = _box_yaw_error(rad) × grasp_gate × lifted_gate
+    EE-agnostic: 판 위치와 무관하게 box yaw 오차만 측정.
+    curriculum: weight -1e-4(초기) → -2.0 (lifting EMA>10 이후).
+
+  구현/등록:
+    env cfg: DualFR3PlateBoxLiftEnvCfg_P52(DualFR3PlateBoxLiftEnvCfg_P47)
+    train: Isaac-Lift-Box-DualFR3-Plate-P52-v0
+    play:  Isaac-Lift-Box-DualFR3-Plate-P52-Play-v0
+    noisy: Isaac-Lift-Box-DualFR3-Plate-P52-Play-Noisy-v0
+    log root: logs/rsl_rl/dual_fr3_plate_lift_p52/
+    runner: LiftPlateP52PPORunnerCfg, seed42, max_iterations10000, scratch.
+  run: logs/rsl_rl/dual_fr3_plate_lift_p52/ (타임스탬프 미기록)
+
+  결과: 실패 (catastrophic)
+    play: 한쪽 팔이 과격한 동작, box 뒤틀림 — P47보다 전면 악화
+    TB (parse_tb 추정):
+      tie %: ~99.2% (양팔 동시 접근하나 실제 파지력 부족 — bilateral hover 전략 수렴)
+      success: ≈ 0
+      grasp-loss events: 511건 (P47: 77건)
+      mirror error j1: 151.87° (P47 기준 정상 범위 초과)
+      learning_rate 말미: 1.7e-05 (P47: 2.8e-04 — gradient spike로 LR 붕괴)
+    판정: curriculum weight -2.0 가 너무 강해 policy가 "박스 들지 않고 hover" 전략 학습.
+          tie 99.2%이나 success ≈ 0인 역설: 양팔 동시 접근하지만 파지력 없음.
+          box_anti_yaw 자체 방향은 맞으나 curriculum 강도(-2.0) 과도 → P47 최선 유지.
+          P49~P52 전체 실패 → plate task reward 추가 실험 중단, P47을 최종 배포 후보로 확정.
+
+=== [0830] dual_fr3_reach — sim2real gap 분석용 양팔 EE reach 환경 신설 ===
+  목적:
+    FR3 실물 배포 전 sim2real gap 측정·LagDR 파라미터 결정을 위한 전초 task.
+    물체 없이 양팔 EE를 goal center ± 0.20m (y축) 목표점으로 동시 도달.
+    obs 58D = plate task와 완전 동일 구조 (plate_forces·object_orientation 슬롯은 0).
+    action semantics (delta joint pos × 0.1) 동일. policy Hz = 20Hz (카메라 30Hz 기준).
+
+  등록:
+    train: Isaac-Reach-DualFR3-v0
+    play:  Isaac-Reach-DualFR3-Play-v0
+    log root: logs/rsl_rl/dual_fr3_reach/
+    runner: DualFR3ReachPPORunnerCfg, seed42, max_iterations3000.
+    cfg: source/dual_fr3_lab/dual_fr3_lab/tasks/manager_based/reach/joint_pos_env_cfg.py
+
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Reach-DualFR3-v0 --headless
+
+  run: logs/rsl_rl/dual_fr3_reach/2026-08-30_18-59-08  [2.2.1/5.0]
+    checkpoint: model_2999.pt (3000 iter 완료)
+
+  결과:
+    reach_coarse (std=0.3, w=2.0): tail50 mean = 1.89 / 2.0 (94.5%)
+    reach_fine   (std=0.05, w=5.0): tail50 mean = 4.01 / 5.0 (→ EE-target ≈ 2~3cm 추정)
+    mean_reward: -0.13 → 46.63
+    undesired_contact: 0.0 (팔-팔·팔-지면 충돌 없음)
+    action_rate: -0.169 → -0.067 (부드러워짐)
+    entropy: +19 → -1.51 (collapse — 정책 결정론적 수렴)
+    LR 말미: 3.38e-05 (초기 1e-04의 1/30)
+    time_out: 1.0 (전 에피소드 타임아웃, 정상 — 별도 성공 종료 조건 없음)
+    play: 파랑(왼팔)·주황(오른팔) 구 마커로 per-arm target 시각화 확인
+
+  판정: 학습 성공. 양팔 동시 도달 확인. entropy collapse는 단순 task 특성상 허용.
+        실물 배포 시 step-response로 FR3 alpha 실측 후 LagDR 범위 결정할 것 (sim2real_gap.md §2-4).
+        현재 target DR (x:0.40~0.60, y:±0.10, z:0.10~0.35)은 임의 설정 — 실측 workspace 대비 검토 필요.
 

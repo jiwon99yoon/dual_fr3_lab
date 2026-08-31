@@ -2,7 +2,7 @@
 
 > 대상 저장소: `~/dual_fr3_lab`
 >
-> 갱신: **2026-08-08**
+> 갱신: **2026-08-31**
 >
 > 역할: cube-lift와 plate box-lift가 공유하는 **calibration, 시간구조, 평가, 안전 원칙**만 관리한다.
 > 태스크별 observation/action/DR/reward/roadmap은 아래 전용 문서를 기준으로 한다.
@@ -38,6 +38,8 @@
 | policy rate | 20 Hz | 50 Hz |
 | 핵심 gap | gripper timing, pose hold/latency, orientation 미관측 | 양팔 timing skew, pose latency, contact/TCP/CoM, compliance |
 | 배포 안전 | gripper fault·drop·table contact | squeeze/collision·one-side contact·drop/yaw |
+
+> **Reach task** (`Isaac-Reach-DualFR3-v0`): 물체 없는 양팔 EE reach. obs 58D = plate 구조 호환, policy 20Hz = cube와 동일(카메라 30Hz 기준). sim2real gap 측정·LagDR 검증용 전초 task.
 
 공통 robot과 PPO를 사용하더라도 동일한 DR와 배포 전략을 복사하지 않는다. 특히 plate의 외란·접촉
 품질 reward를 cube에 넣거나, cube의 binary grasp 가정을 plate에 적용하지 않는다.
@@ -81,7 +83,114 @@ White noise만으로 다음 gap을 대신할 수 없다.
 Delay를 넣은 뒤에는 actor가 stale 상태를 구분할 `frame_age/dt` 또는 측정된 최대 지연을 덮는 history를
 검토한다. History 길이는 관습적으로 정하지 않고 실측 delay로 정한다.
 
-### 2-4. Bias, drift, white noise를 분리
+### 2-4. Actuator 추종 지연을 측정하고 DR로 모델링한다 — HDR35-20 사례
+
+> **배경**: `~/remove_hook` 프로젝트에서 HDR35-20 + snu_hdr_controller를 대상으로 수행한 actuator
+> system identification 결과. 접근법 자체는 robot에 무관하게 재활용 가능하므로 여기에 정리한다.
+
+#### 문제 구조
+
+60 Hz RL policy가 joint target `q_target[t]`을 출력해도, 실제 관절 위치 `q_real[t]`는 즉각 따라가지 않는다.
+원인은 크게 두 계층이다.
+
+1. **Rate limiter** — `snu_hdr_controller` (`rl_action_server.cpp`)는 200 Hz 루프에서
+   `rl_max_joint_vel = 0.4 rad/s` 제한을 적용한 뒤 servo에 전달한다.
+   policy step(16.7 ms) 동안 최대 추종 가능량 = 0.4 × 0.0167 ≈ **0.0067 rad/step**이다.
+   policy가 큰 delta를 요구하면 rate limiter가 포화되어 `q_ref`가 `q_target`보다 뒤처진다.
+
+2. **Servo 내부 지연** — rate limiter를 통과한 `q_ref`조차 servo 물리 응답(관성·마찰·PD 제어 대역)
+   때문에 즉각 달성되지 않는다. 관찰된 추종 패턴은 1차 IIR로 근사할 수 있다.
+
+   ```
+   q_real[t+1] ≈ q_real[t] + α × (q_ref[t] − q_real[t])
+   ```
+
+   alpha를 1에 가깝게 설정할수록 이상 서보(즉각 추종)에 가깝다.
+
+#### 측정 방법 — step-response 실측
+
+자유 공간(free-space) task에서 RL policy를 실기 배포한 뒤 다음 데이터를 수집한다.
+
+```text
+columns: t, q_target(j1..j6), q_real(j1..j6), q_ref(j1..j6)
+logging: 60 Hz (policy step마다 1행)
+tool:    rl_inference.py CSV 로그 (~/ros2_ws/src/snu_hdr_total/rl_logs/)
+```
+
+각 policy step에서 아래 비율을 계산한다.
+
+```
+α_measured[t] = (q_real[t+1] − q_real[t]) / (q_ref[t] − q_real[t])
+               단, |q_ref[t] − q_real[t]| < ε 인 step은 제외
+```
+
+HDR35-20 HI6 servo 실측 결과: **α ≈ 0.17 ~ 0.33** (j4/j5/j6 공통, 관절별 차이 소).
+
+#### 두 단계 sim actuator 모델
+
+측정 결과를 바탕으로 sim actuator를 두 단계로 교체한다.
+
+**Stage 1 — LagDR** (rate limiter 없는 서보 지연만 모델링)
+
+```python
+# per-episode alpha를 실측 범위에서 무작위로 뽑는다
+alpha ~ Uniform(0.17, 0.33)
+q_actual[t+1] = q_actual[t] + alpha × (q_target[t] − q_actual[t])
+```
+
+IsaacLab 구현: `LagDRRelJointPosActionCfg(alpha_range=(0.17, 0.33))`
+
+- 단순하고 학습이 빠르다.
+- Rate limiter 포화가 없는 구간(작은 delta)에서는 실기와 잘 맞는다.
+- HDR35-20 ep7000 free-space task 실기 배포 성공 (SR ≈ 99% sim → 실기 자유공간 통과).
+
+**Stage 2 — RateLimitedLagDR** (rate limiter + 서보 지연 모두 반영)
+
+```python
+# 1) rate limiter (실기 RLActionServer와 동일 v_max)
+delta_max = v_max × dt          # v_max=0.4 rad/s, dt=1/60 s → 0.00667 rad/step
+q_ref[t]  = q_ref[t-1] + clip(q_target[t] − q_ref[t-1], −delta_max, +delta_max)
+
+# 2) IIR lag (alpha DR)
+alpha ~ Uniform(0.17, 0.33)
+q_actual[t+1] = q_actual[t] + alpha × (q_ref[t] − q_actual[t])
+```
+
+IsaacLab 구현: `LagDRRelJointPosActionCfg(alpha_range=(0.17, 0.33), v_max=0.4)`
+
+- **v_max는 배포 시 `rl_max_joint_vel` 파라미터와 반드시 일치시켜야 한다.**
+- Rate limiter가 dominant한 관절(큰 delta 요구)에서 sim-real 괴리를 추가로 해소한다.
+- EasyReach free-space task 실기 배포 성공 (자유공간 궤적 sim-real 정합 확인).
+
+#### 어떤 모델을 언제 쓰나
+
+| 조건 | 권장 모델 |
+|---|---|
+| 제어 코드에 rate limiter 없음 / 미확인 | LagDR (Stage 1) |
+| rate limiter 존재 확인, v_max 측정 완료 | RateLimitedLagDR (Stage 2) |
+| 물체 접촉·환경 DR이 actuator 모델보다 dominant | LagDR로 충분 (complexity 절감) |
+
+#### HDR35-20에서 확인한 physics Hz 의존성
+
+- **900 Hz** (dt=1/900, decimation=15): 기본 설정. 세밀한 contact 시뮬레이션에 유리.
+- **120 Hz** (dt=1/120, decimation=2): chassis task 일부 실험. LagDR과 조합 시 실기 통과.
+- 어느 Hz든 **LagDR 없이는 실기 자유공간조차 실패**했다. Physics Hz보다 actuator 모델 유무가 더 critical.
+
+#### dual_fr3 적용 전 확인 사항
+
+1. **FR3 제어 루프 분석**: `fr3_ws/` 제어 코드에서 policy command → servo 경로 파악.
+   rate limiter 유무와 형태(속도 제한 vs. 가속도 제한 vs. jerk 제한) 확인.
+
+2. **step-response 실측**: 자유 공간 궤적에서 `q_target`, `q_real`을 같은 timestamp로 수집.
+   joint별 alpha 추정. HDR35-20의 0.17~0.33을 FR3에 그대로 쓰지 않는다.
+
+3. **policy rate 확인**: cube-lift 20 Hz / plate 50 Hz → 각 task마다 `delta_max = v_max × dt`가
+   달라지므로 rate limiter 포화 구간이 다르다. task별로 alpha 범위와 v_max를 독립 측정한다.
+
+4. **action rate penalty 병행 검토**: HDR35-20에서 `action_rate_l2 weight = −0.015`(기본 −0.005의 3배)가
+   실기 oscillation 억제에 효과적이었다. LagDR 도입 시 함께 적용 권장.
+
+### 2-5. Bias, drift, white noise를 분리
 
 - camera-to-base calibration residual은 episode-persistent SE(3) bias다.
 - encoder/pose frame jitter는 per-step noise다.
@@ -91,7 +200,7 @@ Delay를 넣은 뒤에는 actor가 stale 상태를 구분할 `frame_age/dt` 또�
 Quaternion에는 componentwise Gaussian을 직접 더하기보다 tangent-space(axis-angle) perturbation 후
 normalize하는 방식이 실제 orientation error와 맞는다.
 
-### 2-5. 한 실험에 한 축
+### 2-6. 한 실험에 한 축
 
 Reward, reset, latency, history, critic, physical DR를 동시에 바꾸지 않는다. 최소 순서는:
 

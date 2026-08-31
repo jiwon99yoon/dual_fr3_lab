@@ -95,7 +95,8 @@ dual_fr3_lab/
 │   ├── robots/          # ArticulationCfg (USD 경로는 패키지 상대 경로)
 │   └── tasks/manager_based/
 │       ├── lift_cube/   # cube lift (mdp/: grasp gating, hold-still 등 커스텀 reward)
-│       └── lift_plate/  # plate box lift (lift_cube의 mdp·EMA curriculum을 import)
+│       ├── lift_plate/  # plate box lift (lift_cube의 mdp·EMA curriculum을 import)
+│       └── reach/       # sim2real gap 분석용 양팔 EE reach (obs 58D = plate와 동일 구조)
 │
 ├── scripts/
 │   ├── rsl_rl/ | rl_games/ | skrl/ | sb3/   # 학습/재생 (Isaac Lab 템플릿 기반)
@@ -138,8 +139,10 @@ Cube lift는 sim2real 목표로 v0→v3까지 진화했다. **각 버전은 한 
 | `Isaac-Lift-Cube-DualFR3-v3` | v2 + cube **50×50×100mm 세로 직육면체** (실물 정합). **← 현재 실물 배포 후보** |
 | `...-Play-v{N}` / `...-Play-Noisy-v{N}` | 각 버전 play용(corruption off) / 강건성·성공률 평가용(noise on) — `eval_dual_fr3_lift_robustness.py`와 세트 |
 | `Isaac-Lift-Box-DualFR3-Plate-v0/v1/v2` | (plate 세션) 양팔 판형 EE(140×140mm)로 바닥 박스 squeeze 파지·들기. v2=외란+마찰DR, 기준선 |
-| `Isaac-Lift-Box-DualFR3-Plate-P39-v0` ~ `P51-v0` | P-series 단일변수 reward 실험. **현재 최선: P47** (SR 0.984, tie 83.6%, one-sided 0.85 steps) |
+| `Isaac-Lift-Box-DualFR3-Plate-P39-v0` ~ `P52-v0` | P-series 단일변수 reward 실험. **현재 최선: P47** (SR 0.984, tie 83.6%, one-sided 0.85 steps) |
 | `...-P{N}-Play-v0` / `...-P{N}-Play-Noisy-v0` | 각 P-series play/강건성 평가용. `eval_dual_fr3_plate_robustness.py`와 세트 |
+| `Isaac-Reach-DualFR3-v0` | **sim2real gap 분석용 양팔 EE reach.** 물체 없이 goal center ± 0.2m(y축) 목표점으로 양팔 동시 도달. **obs 58D = plate task와 완전 동일 구조** (plate_forces·object_orientation 슬롯은 0으로 채움). action semantics(delta joint pos × 0.1, 20Hz)도 plate와 동일 — 두 정책의 관절 궤적 특성 비교로 제어 지연·tracking 오차 분리 가능 |
+| `Isaac-Reach-DualFR3-Play-v0` | reach play용 (50 envs, corruption off) |
 
 각 버전의 **배포 스펙**(obs 순서·ready pose·action 규약·배포 루프·TODO)은 `docs/dual_fr3_lift_v{1,2,3}.md`.
 **현재 배포 후보 = v3** (`docs/dual_fr3_lift_v3.md`). 설계 이력·판단 근거는
