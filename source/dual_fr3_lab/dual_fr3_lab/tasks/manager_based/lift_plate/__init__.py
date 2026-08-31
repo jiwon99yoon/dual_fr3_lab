@@ -214,6 +214,46 @@ gym.register(
     disable_env_checker=True,
 )
 
+# ---------- P52: P47 + box_anti_yaw 페널티 (G-gate+lifted gate, curriculum) ----------
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-P52-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_P52",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateP52PPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "sb3_cfg_entry_point": f"{agents.__name__}:sb3_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-P52-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_P52_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateP52PPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "sb3_cfg_entry_point": f"{agents.__name__}:sb3_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-P52-Play-Noisy-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_P52_PLAY_NOISY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateP52PPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "sb3_cfg_entry_point": f"{agents.__name__}:sb3_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+
 # ---------- P50: P49 + plate_face_alignment weight 2.0→1.0 ----------
 gym.register(
     id="Isaac-Lift-Box-DualFR3-Plate-P50-v0",

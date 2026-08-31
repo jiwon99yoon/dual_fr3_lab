@@ -2007,6 +2007,29 @@ class DualFR3PlateBoxLiftEnvCfg_P50_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P50_PLA
         self.observations.policy.enable_corruption = True
 
 
+def box_anti_yaw(
+    env,
+    finger1_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    finger2_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    threshold: float = 1.0,
+    lift_delta: float = LIFT_DELTA,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """[P52] 들기 중 박스 yaw 회전 직접 페널티: |box_x vs base_x| (rad). G-gate + lifted gate.
+
+    P51 play: face_alignment가 박스에 비대칭 토크를 가해 들기 중 box yaw 회전 유발.
+    EE 자세를 건드리지 않고 박스 결과(yaw)를 직접 압박.
+    G-gate(양판 접촉) + lifted gate(들린 이후)로 파지+들기 중에만 활성.
+    face_alignment 계열과 달리 TCP geometry에 영향 없어 grip-axis 왜곡 리스크 없음.
+    curriculum: -1e-4 → lifting EMA>10 이후 -2.0.
+    """
+    gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
+    lifted = _lifted_perenv(env, lift_delta, object_cfg)
+    yaw_err = _box_yaw_error(env, robot_cfg, object_cfg)
+    return gate * lifted * yaw_err
+
+
 @configclass
 class DualFR3PlateBoxLiftEnvCfg_P51(DualFR3PlateBoxLiftEnvCfg_P49):
     """P51 = P49 + plate_face_z_offset 페널티 추가 (curriculum).
@@ -2045,6 +2068,58 @@ class DualFR3PlateBoxLiftEnvCfg_P51_PLAY(DualFR3PlateBoxLiftEnvCfg_P51):
 @configclass
 class DualFR3PlateBoxLiftEnvCfg_P51_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P51_PLAY):
     """P51 robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P52(DualFR3PlateBoxLiftEnvCfg_P47):
+    """P52 = P47 + box_anti_yaw 페널티 (G-gate + lifted gate, curriculum).
+
+    변경 사항 (2026-08-25):
+      P51 play: 들기 중 box yaw 회전 관찰. P49~P51 face_alignment 계열은 EE 자세를
+      건드리며 grip-axis를 왜곡(P47 3.3° → P51 46.1°)하는 구조적 문제를 확인.
+
+      새 접근: 박스 결과(yaw deviation)를 직접 페널티 — EE geometry 비개입.
+        `box_anti_yaw` = _box_yaw_error (rad) × G-gate × lifted gate
+        G-gate: 양판 접촉 중에만 → 접근 phase 무해
+        lifted gate: 들린 이후에만 → 바닥 안착 중 yaw DR 간섭 없음
+
+      face_alignment와의 차이:
+        face_alignment: EE z축이 box face normal을 향하게 → TCP 자세 변화 → grip-axis 왜곡
+        box_anti_yaw:   box 결과만 측정 → EE 자세 미관여 → grip-axis 영향 최소화 예상
+
+    curriculum: -1e-4 → lifting EMA>10 이후 -2.0.
+    P47 전 항목 불변 (plate_height_symmetry -8.0, yawtrack trigger=1.5 포함).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.box_anti_yaw = RewTerm(
+            func=box_anti_yaw, weight=-1e-4
+        )
+        self.curriculum.box_anti_yaw = CurrTerm(
+            func=modify_reward_weight_on_lifting_learned,
+            params={"term_name": "box_anti_yaw", "weight": -2.0, "threshold": 10.0},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P52_PLAY(DualFR3PlateBoxLiftEnvCfg_P52):
+    """P52 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P52_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P52_PLAY):
+    """P52 robustness-evaluation cfg with training observation corruption enabled."""
 
     def __post_init__(self):
         super().__post_init__()

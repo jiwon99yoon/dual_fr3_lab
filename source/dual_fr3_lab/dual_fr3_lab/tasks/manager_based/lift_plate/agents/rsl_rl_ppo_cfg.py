@@ -168,3 +168,12 @@ class LiftPlateP51PPORunnerCfg(LiftPlateV2PPORunnerCfg):
     max_iterations = 10000
     experiment_name = "dual_fr3_plate_lift_p51"
 
+
+@configclass
+class LiftPlateP52PPORunnerCfg(LiftPlateV2PPORunnerCfg):
+    """P52 scratch training: P47 + box_anti_yaw penalty (G+lifted gate, curriculum), dedicated log namespace."""
+
+    seed = 42
+    max_iterations = 10000
+    experiment_name = "dual_fr3_plate_lift_p52"
+
