@@ -18,7 +18,8 @@ import torch
 import isaaclab.sim as sim_utils
 from isaaclab.assets import AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.envs.mdp.commands import UniformPoseCommand
+from isaaclab.envs.mdp.commands.commands_cfg import UniformPoseCommandCfg
+from isaaclab.envs.mdp.commands.pose_command import UniformPoseCommand
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -31,7 +32,8 @@ from isaaclab.sensors import ContactSensorCfg, FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import combine_frame_transforms
-from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as Gnoise
+from isaaclab.utils.noise import GaussianNoiseCfg as Gnoise
+from isaaclab_physx.physics import PhysxCfg
 
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 from dual_fr3_lab.robots.dual_fr3_plate_ee import DUAL_FR3_PLATE_EE_CFG, PLATE_TCP_OFFSET_POS  # isort: skip
@@ -79,15 +81,20 @@ def dual_ee_reach(
     ri = names.index("right_ee")
 
     cmd = env.command_manager.get_command(command_name)[:, :3]
-    center_w, _ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, cmd)
+    center_w, _ = combine_frame_transforms(
+        robot.data.root_pos_w.torch,
+        robot.data.root_quat_w.torch,
+        cmd,
+    )
 
     off = torch.zeros_like(center_w)
     off[:, 1] = offset_y
     left_target = center_w + off   # 왼팔: +y쪽
     right_target = center_w - off  # 오른팔: -y쪽
 
-    d_l = torch.norm(ee_frame.data.target_pos_w[:, li] - left_target, dim=-1)
-    d_r = torch.norm(ee_frame.data.target_pos_w[:, ri] - right_target, dim=-1)
+    ee_pos_w = ee_frame.data.target_pos_w.torch
+    d_l = torch.linalg.vector_norm(ee_pos_w[:, li] - left_target, dim=-1)
+    d_r = torch.linalg.vector_norm(ee_pos_w[:, ri] - right_target, dim=-1)
     return torch.minimum(1.0 - torch.tanh(d_l / std), 1.0 - torch.tanh(d_r / std))
 
 
@@ -156,7 +163,7 @@ class DualArmReachCommand(UniformPoseCommand):
 
 
 @configclass
-class DualArmReachCommandCfg(mdp.UniformPoseCommandCfg):
+class DualArmReachCommandCfg(UniformPoseCommandCfg):
     class_type: type = DualArmReachCommand
 
 
@@ -169,7 +176,7 @@ class CommandsCfg:
         body_name="base",
         resampling_time_range=(4.0, 8.0),
         debug_vis=True,
-        ranges=mdp.UniformPoseCommandCfg.Ranges(
+        ranges=UniformPoseCommandCfg.Ranges(
             pos_x=(0.40, 0.60),
             pos_y=(-0.10, 0.10),
             pos_z=(0.10, 0.35),   # base frame → world 0.555~0.755m
@@ -302,7 +309,11 @@ class DualFR3ReachEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.sim.dt = 0.01  # 100 Hz
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 64 * 1024
+        self.sim.render_interval = self.decimation
+        # Isaac Lab 3.0부터 solver 설정은 ``sim.physx``가 아니라 backend-neutral
+        # ``sim.physics``에 둔다. 이 cfg는 ManagerBasedRLEnvCfg를 직접 상속하므로
+        # LiftEnvCfg처럼 physics preset을 부모에게서 받지 않아 PhysX를 명시한다.
+        self.sim.physics = PhysxCfg()
 
         # ── EE frame transformer (plate env와 동일 패턴: __post_init__에서 scene에 추가) ──
         marker_cfg = FRAME_MARKER_CFG.copy()
