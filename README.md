@@ -78,6 +78,11 @@ python scripts/rsl_rl/train.py --task Isaac-Lift-Cube-DualFR3-v0 --headless --ma
 python scripts/rsl_rl/play.py --task Isaac-Lift-Cube-DualFR3-Play-v0 --num_envs 16 \
     --checkpoint logs/rsl_rl/dual_fr3_lift/<run>/model_XXXX.pt --viz kit
 
+# Reach: 명시적으로 지정한 goal sequence 재생
+python scripts/rsl_rl/play.py --task Isaac-Reach-DualFR3-Play-v0 --num_envs 1 \
+    --checkpoint logs/rsl_rl/dual_fr3_reach/<run>/model_XXXX.pt \
+    --reach_goal_sequence config/reach_goal_sequence.example.json --viz kit
+
 # 강건성 평가 (baseline vs noisy, 축 분리 스위치 --no_obs_noise / --no_physics_dr)
 python scripts/tools/eval_dual_fr3_lift_robustness.py \
     --task Isaac-Lift-Cube-DualFR3-Play-Noisy-v0 --checkpoint <ckpt> --headless
@@ -147,6 +152,36 @@ Cube lift는 sim2real 목표로 v0→v3까지 진화했다. **각 버전은 한 
 | `...-P{N}-Play-v0` / `...-P{N}-Play-Noisy-v0` | 각 P-series play/강건성 평가용. `eval_dual_fr3_plate_robustness.py`와 세트 |
 | `Isaac-Reach-DualFR3-v0` | **sim2real gap 분석용 양팔 EE reach.** 물체 없이 goal center ± 0.2m(y축) 목표점으로 양팔 동시 도달. **obs 58D = plate task와 완전 동일 구조** (plate_forces·object_orientation 슬롯은 0으로 채움). action semantics(delta joint pos × 0.1, 20Hz)도 plate와 동일 — 두 정책의 관절 궤적 특성 비교로 제어 지연·tracking 오차 분리 가능 |
 | `Isaac-Reach-DualFR3-Play-v0` | reach play용 (50 envs, corruption off) |
+
+### Reach 고정 goal sequence inference
+
+play.py의 --reach_goal_sequence 옵션을 사용하면 seed 기반 random sampling 대신
+JSON에 적힌 goal center를 순서대로 사용한다. 각 goal은 base frame 기준 위치와 유지
+시간을 가진다.
+
+~~~json
+{
+  "goals": [
+    {"label": "first", "position": [0.50, 0.00, 0.15], "duration_s": 4.0},
+    {"label": "second", "position": [0.45, 0.05, 0.25], "duration_s": 3.0}
+  ]
+}
+~~~
+
+~~~bash
+python scripts/rsl_rl/play.py \
+  --task Isaac-Reach-DualFR3-Play-v0 \
+  --num_envs 1 \
+  --checkpoint /absolute/path/to/model_4999.pt \
+  --reach_goal_sequence config/reach_goal_sequence.example.json \
+  --viz kit
+~~~
+
+sequence 모드에서는 random goal resampling과 8초 episode timeout이 비활성화된다.
+마지막 goal의 duration_s가 끝나면 inference가 종료된다. 계속 반복하려면
+--reach_goal_sequence_loop를 추가한다. 모든 position은 학습 범위
+x=[0.40,0.60], y=[-0.10,0.10], z=[0.10,0.35] 안에 있어야 하며, 범위를
+벗어나면 environment 생성 전에 오류를 낸다.
 
 각 버전의 **배포 스펙**(obs 순서·ready pose·action 규약·배포 루프·TODO)은 `docs/dual_fr3_lift_v{1,2,3}.md`.
 **현재 배포 후보 = v3** (`docs/dual_fr3_lift_v3.md`). 설계 이력·판단 근거는

@@ -8,15 +8,71 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import json
+import math
 import sys
+from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
 # local imports
 import cli_args  # isort: skip
 
+
+def _load_reach_goal_sequence(path: str) -> list[dict]:
+    """Load and validate an explicit Reach goal sequence from JSON."""
+
+    sequence_path = Path(path).expanduser().resolve()
+    try:
+        payload = json.loads(sequence_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"failed to load goal sequence '{sequence_path}': {error}") from error
+
+    goals = payload.get("goals") if isinstance(payload, dict) else payload
+    if not isinstance(goals, list) or not goals:
+        raise ValueError(
+            "goal sequence must be a non-empty JSON list or an object with a 'goals' list"
+        )
+
+    validated = []
+    for index, goal in enumerate(goals):
+        if not isinstance(goal, dict):
+            raise ValueError(f"goal {index} must be a JSON object")
+        position = goal.get("position")
+        duration_s = goal.get("duration_s")
+        if (
+            not isinstance(position, list)
+            or len(position) != 3
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in position
+            )
+        ):
+            raise ValueError(f"goal {index} position must contain three finite numbers")
+        if (
+            isinstance(duration_s, bool)
+            or not isinstance(duration_s, (int, float))
+            or not math.isfinite(duration_s)
+            or duration_s <= 0.0
+        ):
+            raise ValueError(f"goal {index} duration_s must be a positive finite number")
+        label = goal.get("label", f"goal_{index}")
+        if not isinstance(label, str):
+            raise ValueError(f"goal {index} label must be a string")
+        validated.append(
+            {
+                "position": [float(value) for value in position],
+                "duration_s": float(duration_s),
+                "label": label,
+            }
+        )
+    return validated
+
+
 # add argparse arguments
-parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
+parser = argparse.ArgumentParser(description="Play a checkpoint with an RSL-RL agent.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument(
@@ -29,6 +85,19 @@ parser.add_argument(
 )
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument(
+    "--reach_goal_sequence",
+    type=str,
+    default=None,
+    metavar="JSON",
+    help="Reach-only JSON file containing explicit positions and durations; disables random goal sampling.",
+)
+parser.add_argument(
+    "--reach_goal_sequence_loop",
+    action="store_true",
+    default=False,
+    help="Repeat the explicit Reach goal sequence instead of exiting after its final duration.",
+)
+parser.add_argument(
     "--use_pretrained_checkpoint",
     action="store_true",
     help="Use the pre-trained checkpoint from Nucleus.",
@@ -40,6 +109,18 @@ cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli, hydra_args = parser.parse_known_args()
+try:
+    reach_goal_sequence = (
+        _load_reach_goal_sequence(args_cli.reach_goal_sequence)
+        if args_cli.reach_goal_sequence
+        else None
+    )
+except ValueError as error:
+    parser.error(str(error))
+if reach_goal_sequence and (
+    args_cli.task is None or "Isaac-Reach-DualFR3" not in args_cli.task
+):
+    parser.error("--reach_goal_sequence is supported only for Isaac-Reach-DualFR3 tasks")
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -105,6 +186,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, metadata.version("rsl-rl-lib"))
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+
+    if reach_goal_sequence:
+        command_cfg = env_cfg.commands.target_pose
+        ranges = command_cfg.ranges
+        limits = (ranges.pos_x, ranges.pos_y, ranges.pos_z)
+        for index, goal in enumerate(reach_goal_sequence):
+            for axis, value, (lower, upper) in zip("xyz", goal["position"], limits):
+                if value < lower or value > upper:
+                    raise ValueError(
+                        f"goal {index} {axis}={value} is outside the training range [{lower}, {upper}]"
+                    )
+        # The script owns command transitions in this mode. Prevent both timed random
+        # resampling and the normal eight-second episode timeout from replacing/resetting it.
+        command_cfg.resampling_time_range = (1.0e9, 1.0e9)
+        env_cfg.episode_length_s = 1.0e9
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
@@ -208,11 +304,49 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     dt = env.unwrapped.step_dt
 
+    sequence_term = None
+    sequence_index = 0
+    next_sequence_switch_s = math.inf
+
+    def apply_sequence_goal(index: int, current_time_s: float):
+        nonlocal next_sequence_switch_s
+        goal = reach_goal_sequence[index]
+        command = env.unwrapped.command_manager.get_command("target_pose")
+        command[:, :3] = torch.tensor(
+            goal["position"], device=command.device, dtype=command.dtype
+        )
+        command[:, 3:].zero_()
+        command[:, 3] = 1.0
+        sequence_term.time_left.fill_(1.0e9)
+        sequence_term._update_metrics()
+        next_sequence_switch_s = current_time_s + goal["duration_s"]
+        print(
+            f"[REACH SEQUENCE] {index + 1}/{len(reach_goal_sequence)} "
+            f"{goal['label']}: position={goal['position']} "
+            f"duration={goal['duration_s']:.3f}s"
+        )
+
+    if reach_goal_sequence:
+        sequence_term = env.unwrapped.command_manager.get_term("target_pose")
+        apply_sequence_goal(sequence_index, 0.0)
+
     # reset environment
     obs = env.get_observations()
     timestep = 0
     # simulate environment
     while simulation_app.is_running():
+        elapsed_s = timestep * dt
+        if reach_goal_sequence and elapsed_s + 1.0e-9 >= next_sequence_switch_s:
+            sequence_index += 1
+            if sequence_index >= len(reach_goal_sequence):
+                if args_cli.reach_goal_sequence_loop:
+                    sequence_index = 0
+                else:
+                    print("[REACH SEQUENCE] completed")
+                    break
+            apply_sequence_goal(sequence_index, elapsed_s)
+            obs = env.get_observations()
+
         start_time = time.time()
         # run everything in inference mode
         with torch.inference_mode():
@@ -220,8 +354,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             actions = policy(obs)
             # env stepping
             obs, _, _, _ = env.step(actions)
+        timestep += 1
         if args_cli.video:
-            timestep += 1
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
                 break
