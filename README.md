@@ -83,6 +83,10 @@ python scripts/rsl_rl/play.py --task Isaac-Reach-DualFR3-Play-v0 --num_envs 1 \
     --checkpoint logs/rsl_rl/dual_fr3_reach/<run>/model_XXXX.pt \
     --reach_goal_sequence config/reach_goal_sequence.example.json --viz kit
 
+# Reach Sim2Real v1 학습 (tanh-bounded actor + FR3 torque/rate limits)
+python scripts/rsl_rl/train.py --task Isaac-Reach-DualFR3-Sim2Real-v1 \
+    --headless --max_iterations 5000
+
 # 강건성 평가 (baseline vs noisy, 축 분리 스위치 --no_obs_noise / --no_physics_dr)
 python scripts/tools/eval_dual_fr3_lift_robustness.py \
     --task Isaac-Lift-Cube-DualFR3-Play-Noisy-v0 --checkpoint <ckpt> --headless
@@ -127,6 +131,7 @@ dual_fr3_lab/
 │   ├── dual_fr3_lift_v1.md                  # cube v1 스펙 (50Hz, 히스토리)
 │   ├── dual_fr3_lift_v2.md                  # cube v2 스펙 (20Hz 정육면체, 히스토리)
 │   ├── dual_fr3_lift_v3.md                  # cube v3 스펙 (20Hz 세로 cube — 현재 배포 후보)
+│   ├── dual_fr3_reach_v1.md                 # Reach Sim2Real v1 액션·액추에이터·배포 계약
 │   ├── sim2real_gap.md                      # 공통 sim2real 원칙
 │   ├── system_pc.md                         # PC 환경·역할 분리·ROS2 workspace·로드맵
 │   └── log_per_task.txt                     # 전체 run 기록 (학습 결과·판정·설계 메모)
@@ -152,6 +157,7 @@ Cube lift는 sim2real 목표로 v0→v3까지 진화했다. **각 버전은 한 
 | `...-P{N}-Play-v0` / `...-P{N}-Play-Noisy-v0` | 각 P-series play/강건성 평가용. `eval_dual_fr3_plate_robustness.py`와 세트 |
 | `Isaac-Reach-DualFR3-v0` | **sim2real gap 분석용 양팔 EE reach.** 물체 없이 goal center ± 0.2m(y축) 목표점으로 양팔 동시 도달. **obs 58D = plate task와 완전 동일 구조** (plate_forces·object_orientation 슬롯은 0으로 채움). action semantics(delta joint pos × 0.1, 20Hz)도 plate와 동일 — 두 정책의 관절 궤적 특성 비교로 제어 지연·tracking 오차 분리 가능 |
 | `Isaac-Reach-DualFR3-Play-v0` | reach play용 (50 envs, corruption off) |
+| `Isaac-Reach-DualFR3-Sim2Real-v1` | Reach v0의 unbounded Gaussian을 **tanh-squashed bounded actor**로 교체하고, explicit PD 뒤 FR3 **torque saturation(87/12 Nm)** 및 **torque-rate limit(1000 Nm/s)** 적용. wrapper clipping은 수치적 safety guard로만 유지하며 별도 velocity/acceleration trajectory limiter는 사용하지 않음 |
 
 ### Reach 고정 goal sequence inference
 

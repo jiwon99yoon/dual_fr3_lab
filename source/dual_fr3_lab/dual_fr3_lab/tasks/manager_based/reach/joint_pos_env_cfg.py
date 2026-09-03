@@ -36,11 +36,20 @@ from isaaclab.utils.noise import GaussianNoiseCfg as Gnoise
 from isaaclab_physx.physics import PhysxCfg
 
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
-from dual_fr3_lab.robots.dual_fr3_plate_ee import DUAL_FR3_PLATE_EE_CFG, PLATE_TCP_OFFSET_POS  # isort: skip
+from dual_fr3_lab.robots.dual_fr3_plate_ee import (  # isort: skip
+    DUAL_FR3_PLATE_EE_CFG,
+    DUAL_FR3_PLATE_EE_SIM2REAL_CFG,
+    PLATE_TCP_OFFSET_POS,
+)
 from dual_fr3_lab.tasks.manager_based.lift_cube import mdp  # isort: skip
 
 ROOT_Z = 0.405       # base frame 높이 (plate task와 동일)
 REACH_OFFSET_Y = 0.20  # 각 팔 EE target = center ± 0.20m (y축)
+DUAL_ARM_JOINT_NAMES = [
+    f"{side}_fr3_joint{joint}"
+    for side in ("left", "right") for joint in range(1, 8)
+]
+DUAL_ARM_JOINT_IDS = list(range(0, 14, 2)) + list(range(1, 14, 2))
 
 
 # ──────────────────────────── custom obs ─────────────────────────────
@@ -197,6 +206,18 @@ class ActionsCfg:
 
 
 @configclass
+class Sim2RealActionsCfg:
+    arm_action = mdp.RelativeJointPositionActionCfg(
+        asset_name="robot",
+        joint_names=DUAL_ARM_JOINT_NAMES,
+        preserve_order=True,
+        scale=0.1,
+        # JointAction applies clip after scale: this is raw [-1, 1] -> offset [-0.1, 0.1] rad.
+        clip={".*": (-0.1, 0.1)},
+    )
+
+
+@configclass
 class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
@@ -346,7 +367,57 @@ class DualFR3ReachEnvCfg(ManagerBasedRLEnvCfg):
 
 
 @configclass
-class DualFR3ReachEnvCfg_PLAY(DualFR3ReachEnvCfg):
+class DualFR3ReachEnvCfgPlay(DualFR3ReachEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# Backwards-compatible entry point used by Isaac-Reach-DualFR3-Play-v0.
+DualFR3ReachEnvCfg_PLAY = DualFR3ReachEnvCfgPlay
+
+
+@configclass
+class Sim2RealObservationsCfg(ObservationsCfg):
+    @configclass
+    class PolicyCfg(ObservationsCfg.PolicyCfg):
+        joint_pos = ObsTerm(
+            func=mdp.joint_pos_rel,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_ids=DUAL_ARM_JOINT_IDS)
+            },
+            noise=Gnoise(std=0.005),
+        )
+        joint_vel = ObsTerm(
+            func=mdp.joint_vel_rel,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_ids=DUAL_ARM_JOINT_IDS)
+            },
+            noise=Gnoise(std=0.05),
+        )
+
+    policy: PolicyCfg = PolicyCfg()
+
+@configclass
+class DualFR3ReachSim2RealSceneCfg(DualFR3ReachSceneCfg):
+    robot = DUAL_FR3_PLATE_EE_SIM2REAL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+
+
+@configclass
+class DualFR3ReachSim2RealEnvCfg(DualFR3ReachEnvCfg):
+    """v0 + bounded actions + explicit torque saturation/rate limiting."""
+
+    scene: DualFR3ReachSim2RealSceneCfg = DualFR3ReachSim2RealSceneCfg(
+        num_envs=4096, env_spacing=2.5
+    )
+    actions: Sim2RealActionsCfg = Sim2RealActionsCfg()
+    observations: Sim2RealObservationsCfg = Sim2RealObservationsCfg()
+
+
+@configclass
+class DualFR3ReachSim2RealEnvCfgPlay(DualFR3ReachSim2RealEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 50

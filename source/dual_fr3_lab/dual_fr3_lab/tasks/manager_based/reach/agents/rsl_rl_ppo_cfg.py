@@ -7,6 +7,18 @@ from isaaclab_rl.rsl_rl import RslRlMLPModelCfg, RslRlOnPolicyRunnerCfg, RslRlPp
 
 
 @configclass
+class TanhSquashedGaussianDistributionCfg(RslRlMLPModelCfg.GaussianDistributionCfg):
+    """Configuration for the task-local bounded Gaussian policy."""
+
+    class_name = (
+        "dual_fr3_lab.tasks.manager_based.reach.agents.tanh_squashed_gaussian:"
+        "TanhSquashedGaussianDistribution"
+    )
+    std_type = "log"
+    epsilon: float = 1.0e-6
+
+
+@configclass
 class DualFR3ReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     """Dual FR3 reach — plate task와 동일 네트워크/하이퍼파라미터.
 
@@ -45,3 +57,19 @@ class DualFR3ReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class DualFR3ReachSim2RealPPORunnerCfg(DualFR3ReachPPORunnerCfg):
+    """Reach v1 runner using a tanh-squashed bounded Gaussian actor."""
+
+    experiment_name = "dual_fr3_reach_sim2real_v1"
+    actor = RslRlMLPModelCfg(
+        hidden_dims=[256, 128, 64],
+        activation="elu",
+        obs_normalization=False,
+        distribution_cfg=TanhSquashedGaussianDistributionCfg(init_std=1.0),
+    )
+    # The actor is already in (-1, 1); retain the wrapper clip as a numerical safety guard.
+    clip_actions = 1.0
+    max_iterations = 5000

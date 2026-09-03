@@ -19,6 +19,8 @@ plate_ee_140x140x25.usd(볼트 인터페이스 유지, 박스 collider)를 부�
 
 import os
 
+from dual_fr3_lab.actuators import TorqueRateLimitedPDActuatorCfg
+
 from .dual_fr3 import DUAL_FR3_CFG
 
 ##
@@ -44,6 +46,28 @@ del DUAL_FR3_PLATE_EE_CFG.init_state.joint_pos[".*_fr3_finger_joint.*"]
 # 둘 다 학습해 실로봇 transfer 성능을 비교하고, 실물에서 더 나은 쪽으로 최종 고정할 것.
 DUAL_FR3_PLATE_EE_CFG.spawn.rigid_props.disable_gravity = True
 """Dual FR3 arms with flat-plate end-effectors on a husky base (base fixed)."""
+
+
+DUAL_FR3_PLATE_EE_SIM2REAL_CFG = DUAL_FR3_PLATE_EE_CFG.copy()
+DUAL_FR3_PLATE_EE_SIM2REAL_CFG.actuators["arms_shoulder"] = TorqueRateLimitedPDActuatorCfg(
+    joint_names_expr=[".*_fr3_joint[1-4]"],
+    effort_limit=87.0,
+    effort_limit_sim=87.0,
+    stiffness=80.0,
+    damping=4.0,
+    torque_rate_limit=1000.0,
+    control_dt=0.01,
+)
+DUAL_FR3_PLATE_EE_SIM2REAL_CFG.actuators["arms_forearm"] = TorqueRateLimitedPDActuatorCfg(
+    joint_names_expr=[".*_fr3_joint[5-7]"],
+    effort_limit=12.0,
+    effort_limit_sim=12.0,
+    stiffness=80.0,
+    damping=4.0,
+    torque_rate_limit=1000.0,
+    control_dt=0.01,
+)
+"""Reach Sim2Real v1: explicit PD + FR3 effort and torque-rate limits."""
 
 
 DUAL_FR3_PLATE_EE_HIGH_PD_CFG = DUAL_FR3_PLATE_EE_CFG.copy()
