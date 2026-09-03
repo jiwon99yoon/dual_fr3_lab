@@ -109,7 +109,7 @@ Delay를 넣은 뒤에는 actor가 stale 상태를 구분할 `frame_age/dt` 또�
 
 #### 측정 방법 — step-response 실측
 
-자유 공간(free-space) task에서 RL policy를 실기 배포한 뒤 다음 데이터를 수집한다.
+자유 공간(free-space) task에서 RL policy를 실로봇 배포한 뒤 다음 데이터를 수집한다.
 
 ```text
 columns: t, q_target(j1..j6), q_real(j1..j6), q_ref(j1..j6)
@@ -141,13 +141,13 @@ q_actual[t+1] = q_actual[t] + alpha × (q_target[t] − q_actual[t])
 IsaacLab 구현: `LagDRRelJointPosActionCfg(alpha_range=(0.17, 0.33))`
 
 - 단순하고 학습이 빠르다.
-- Rate limiter 포화가 없는 구간(작은 delta)에서는 실기와 잘 맞는다.
-- HDR35-20 ep7000 free-space task 실기 배포 성공 (SR ≈ 99% sim → 실기 자유공간 통과).
+- Rate limiter 포화가 없는 구간(작은 delta)에서는 실로봇과 잘 맞는다.
+- HDR35-20 ep7000 free-space task 실로봇 배포 성공 (SR ≈ 99% sim → 실로봇 자유공간 통과).
 
 **Stage 2 — RateLimitedLagDR** (rate limiter + 서보 지연 모두 반영)
 
 ```python
-# 1) rate limiter (실기 RLActionServer와 동일 v_max)
+# 1) rate limiter (실로봇 RLActionServer와 동일 v_max)
 delta_max = v_max × dt          # v_max=0.4 rad/s, dt=1/60 s → 0.00667 rad/step
 q_ref[t]  = q_ref[t-1] + clip(q_target[t] − q_ref[t-1], −delta_max, +delta_max)
 
@@ -160,7 +160,7 @@ IsaacLab 구현: `LagDRRelJointPosActionCfg(alpha_range=(0.17, 0.33), v_max=0.4)
 
 - **v_max는 배포 시 `rl_max_joint_vel` 파라미터와 반드시 일치시켜야 한다.**
 - Rate limiter가 dominant한 관절(큰 delta 요구)에서 sim-real 괴리를 추가로 해소한다.
-- EasyReach free-space task 실기 배포 성공 (자유공간 궤적 sim-real 정합 확인).
+- EasyReach free-space task 실로봇 배포 성공 (자유공간 궤적 sim-real 정합 확인).
 
 #### 어떤 모델을 언제 쓰나
 
@@ -173,8 +173,8 @@ IsaacLab 구현: `LagDRRelJointPosActionCfg(alpha_range=(0.17, 0.33), v_max=0.4)
 #### HDR35-20에서 확인한 physics Hz 의존성
 
 - **900 Hz** (dt=1/900, decimation=15): 기본 설정. 세밀한 contact 시뮬레이션에 유리.
-- **120 Hz** (dt=1/120, decimation=2): chassis task 일부 실험. LagDR과 조합 시 실기 통과.
-- 어느 Hz든 **LagDR 없이는 실기 자유공간조차 실패**했다. Physics Hz보다 actuator 모델 유무가 더 critical.
+- **120 Hz** (dt=1/120, decimation=2): chassis task 일부 실험. LagDR과 조합 시 실로봇 통과.
+- 어느 Hz든 **LagDR 없이는 실로봇 자유공간조차 실패**했다. Physics Hz보다 actuator 모델 유무가 더 critical.
 
 #### dual_fr3 적용 전 확인 사항
 
@@ -188,7 +188,7 @@ IsaacLab 구현: `LagDRRelJointPosActionCfg(alpha_range=(0.17, 0.33), v_max=0.4)
    달라지므로 rate limiter 포화 구간이 다르다. task별로 alpha 범위와 v_max를 독립 측정한다.
 
 4. **action rate penalty 병행 검토**: HDR35-20에서 `action_rate_l2 weight = −0.015`(기본 −0.005의 3배)가
-   실기 oscillation 억제에 효과적이었다. LagDR 도입 시 함께 적용 권장.
+   실로봇 oscillation 억제에 효과적이었다. LagDR 도입 시 함께 적용 권장.
 
 ### 2-5. Bias, drift, white noise를 분리
 

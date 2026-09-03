@@ -44,7 +44,7 @@
 
 - **P47의 14D delta policy output은 유지**한다. 다만 현재 sim은 같은 delta를 100 Hz physics
   substep마다 최신 `q_current`에 다시 더하므로, 이를 50 Hz held target으로 해석해 바로 배포하지 않는다.
-- **actor는 실기에 존재하는 56D 관측만 사용**한다.
+- **actor는 실로봇에 존재하는 56D 관측만 사용**한다.
 - **actor에 plate force를 넣지 않는다.** contact sensor truth는 reward/curriculum 전용이다.
 - retry를 보존하기 위해 time/phase clock이나 late-contact termination을 넣지 않는다.
 - 새로운 DR·history·critic·reward를 한 run에서 동시에 바꾸지 않는다. 실패 시 직전 합격 기준점(P47)에서 분기한다.
@@ -118,7 +118,7 @@ Isaac `wxyz`로 변환한 뒤 object quaternion의 부호를 `w>=0`으로 맞춘
 **P38 actor는 `tau_ext`, contact force, true grasp flag를 보지 않는다.** Contact sensor truth는 reward,
 curriculum, 향후 critic에서만 사용할 수 있다.
 
-### 1-3. Action과 실기 의미
+### 1-3. Action과 실로봇 의미
 
 ```text
 policy @ 50 Hz: processed_delta = 0.1 * a              # 20 ms 동안 같은 delta
@@ -175,7 +175,7 @@ position/velocity/acceleration/jerk hard limit을 둔다. Physics-substep `q`, p
 |---|---|---|---|
 | [Lin et al., Sim-to-Real RL for Vision-Based Dexterous Manipulation on Humanoids, 2025](https://proceedings.mlr.press/v305/lin25c.html) | bimanual box lift 실물 80%; joint-target trajectory로 4분 미만 real-to-sim tuning; deployable actor + privileged critic; action/frame lag DR | 후속 asymmetric critic, FR3 tracking autotune, pose/action lag 분리의 가장 직접적인 근거 | 저가 humanoid hand의 DR 수치와 5 Hz policy를 FR3에 복사하지 않음 |
 | [Dao et al., Sim-to-Real Learning for Humanoid Box Loco-Manipulation, 2023](https://arxiv.org/abs/2310.03191) | 1~10 kg box 학습; current-q relative action이 neutral-offset보다 빠르고 덜 forceful; hand waypoint가 sample efficiency 향상 | 현 relative action 유지, contact geometry prior와 state-reset curriculum | fixed clock contact/lift choreography와 strict late termination은 retry 목표와 충돌 |
-| [Kataoka et al., Bi-Manual Block Assembly via Sim-to-Real RL, 2023](https://arxiv.org/abs/2303.14870) | dual xArm에서 noise와 action interpolation을 함께 맞춰야 실기 성공; current+previous observation 사용 | command hold/interpolation/latency와 observation history를 물성 DR보다 먼저 검증 | 논문의 force limit 단위·control rate를 FR3에 직접 이식하지 않음 |
+| [Kataoka et al., Bi-Manual Block Assembly via Sim-to-Real RL, 2023](https://arxiv.org/abs/2303.14870) | dual xArm에서 noise와 action interpolation을 함께 맞춰야 실로봇 성공; current+previous observation 사용 | command hold/interpolation/latency와 observation history를 물성 DR보다 먼저 검증 | 논문의 force limit 단위·control rate를 FR3에 직접 이식하지 않음 |
 | [DemoStart, 2024](https://arxiv.org/html/2409.06613) | demo action 대신 full simulator state를 reset seed로 사용; action space가 달라도 됨 | rule-based trajectory의 near-contact/stable-squeeze/early-lift state 사용 가능 | closest box-lift 연구에서는 generic human-init 이득이 90% vs 90%였으므로 1순위로 과대평가하지 않음 |
 | [DeXtreme, 2023](https://arxiv.org/html/2210.13702) | deployable actor, large privileged critic, delay/bias/noise 분리, ADR와 memory | critic state 설계, persistent bias와 white noise 분리, reversible DR | dexterous in-hand cube의 DR 폭을 large box에 복사하지 않음 |
 | [Learning Dexterous In-Hand Manipulation, 2018](https://arxiv.org/abs/1808.00177) | recurrent policy와 dynamics/vision randomization으로 zero-shot transfer; hard-to-model sensors는 actor에서 제외 | force-free actor와 history/GRU 방향 지지 | 막대한 randomization을 calibration 없이 먼저 적용하지 않음 |

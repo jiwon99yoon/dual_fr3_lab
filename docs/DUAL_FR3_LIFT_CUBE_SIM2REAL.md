@@ -68,7 +68,7 @@ v2 정육면체 정책은 tall cube zero-shot에서 파지는 했지만 160/128 
 | 합계 |  | **36** | |
 
 Actor에는 object orientation/velocity, contact truth, joint torque, `tau_ext`가 없다. v1 ablation에서 torque
-관측 제거가 채택됐으므로 실기 actor에 다시 추가하지 않는다. 현재 corruption은 joint position 0.005 rad,
+관측 제거가 채택됐으므로 실로봇 actor에 다시 추가하지 않는다. 현재 corruption은 joint position 0.005 rad,
 joint velocity 0.05 rad/s, object position 0.01 m iid Gaussian이다.
 
 실물 gripper API가 total width와 width velocity 한 개씩만 주면, policy가 요구하는 두 finger position·velocity로

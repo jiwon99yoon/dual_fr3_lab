@@ -11,9 +11,9 @@ DYROS dual-FR3 (Husky 베이스 + 양팔 Franka FR3) 로봇의 RL 태스크 모�
 
 ## Demo
 
-| Cube Lift v3 (오른팔 단독, 배포 후보) | Plate Box Lift P47 (양팔 판형 EE, 현재 최선) |
-|:---:|:---:|
-| ![cube lift v3](demos/dual_fr3_lift_v3.gif) | ![plate lift P47](demos/dual_fr3_plate_p47.gif) |
+| Cube Lift v3 (오른팔 단독, 배포 후보) | Plate Box Lift P47 (양팔 판형 EE, 현재 최선) | Reach (양팔 EE, sim2real gap 분석용) |
+|:---:|:---:|:---:|
+| ![cube lift v3](demos/dual_fr3_lift_v3.gif) | ![plate lift P47](demos/dual_fr3_plate_p47.gif) | ![reach](demos/dual_fr3_reach.gif) |
 
 ---
 
@@ -201,4 +201,4 @@ run 기록 시 PC 표기(`[2.2.1/5.0]` / `[2.3.2/5.1]`)를 붙일 것.
   재생성 시 링크 구조(merge-joints, link7에 hand 병합)와 robots/ cfg의 TCP 오프셋 정합을 반드시 확인할 것.
 - **git-lfs**: `*.usd`, `*.stl`, `*.step`, `*.gif`는 LFS로 추적한다 (`git lfs track` 설정 후 커밋).
 - 실물 FR3에는 F/T·촉각 센서가 없다는 전제로 설계됨 — 접촉 정보는 reward 전용(sim-only),
-  actor obs는 실기 획득 가능 신호(관절 상태, 내장 토크 τ_ext, 물체 pose)만 사용.
+  actor obs는 실로봇 획득 가능 신호(관절 상태, 내장 토크 τ_ext, 물체 pose)만 사용.
