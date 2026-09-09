@@ -87,6 +87,10 @@ python scripts/rsl_rl/play.py --task Isaac-Reach-DualFR3-Play-v0 --num_envs 1 \
 python scripts/rsl_rl/train.py --task Isaac-Reach-DualFR3-Sim2Real-v1 \
     --headless --max_iterations 5000
 
+# Reach Sim2Real v2 학습 (1 kHz physics/PD, 20 Hz policy)
+python scripts/rsl_rl/train.py --task Isaac-Reach-DualFR3-Sim2Real-v2 \
+    --headless --max_iterations 5000
+
 # 강건성 평가 (baseline vs noisy, 축 분리 스위치 --no_obs_noise / --no_physics_dr)
 python scripts/tools/eval_dual_fr3_lift_robustness.py \
     --task Isaac-Lift-Cube-DualFR3-Play-Noisy-v0 --checkpoint <ckpt> --headless
@@ -158,6 +162,7 @@ Cube lift는 sim2real 목표로 v0→v3까지 진화했다. **각 버전은 한 
 | `Isaac-Reach-DualFR3-v0` | **sim2real gap 분석용 양팔 EE reach.** 물체 없이 goal center ± 0.2m(y축) 목표점으로 양팔 동시 도달. **obs 58D = plate task와 완전 동일 구조** (plate_forces·object_orientation 슬롯은 0으로 채움). action semantics(delta joint pos × 0.1, 20Hz)도 plate와 동일 — 두 정책의 관절 궤적 특성 비교로 제어 지연·tracking 오차 분리 가능 |
 | `Isaac-Reach-DualFR3-Play-v0` | reach play용 (50 envs, corruption off) |
 | `Isaac-Reach-DualFR3-Sim2Real-v1` | Reach v0의 unbounded Gaussian을 **tanh-squashed bounded actor**로 교체하고, explicit PD 뒤 FR3 **torque saturation(87/12 Nm)** 및 **torque-rate limit(1000 Nm/s)** 적용. wrapper clipping은 수치적 safety guard로만 유지하며 별도 velocity/acceleration trajectory limiter는 사용하지 않음 |
+| `Isaac-Reach-DualFR3-Sim2Real-v2` | v1의 obs/action/actor와 20 Hz policy 주기는 유지하고, **physics + explicit PD를 1 kHz**로 변경. torque-rate limit은 매 1 ms마다 최대 **1 Nm/update**로 적용 |
 
 ### Reach 고정 goal sequence inference
 

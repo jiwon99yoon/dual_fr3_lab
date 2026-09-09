@@ -50,3 +50,27 @@ gym.register(
     },
     disable_env_checker=True,
 )
+
+gym.register(
+    id="Isaac-Reach-DualFR3-Sim2Real-v2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3ReachSim2RealV2EnvCfg",
+        "rsl_rl_cfg_entry_point": (
+            f"{agents.__name__}.rsl_rl_ppo_cfg:DualFR3ReachSim2RealV2PPORunnerCfg"
+        ),
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Reach-DualFR3-Sim2Real-Play-v2",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3ReachSim2RealV2EnvCfgPlay",
+        "rsl_rl_cfg_entry_point": (
+            f"{agents.__name__}.rsl_rl_ppo_cfg:DualFR3ReachSim2RealV2PPORunnerCfg"
+        ),
+    },
+    disable_env_checker=True,
+)

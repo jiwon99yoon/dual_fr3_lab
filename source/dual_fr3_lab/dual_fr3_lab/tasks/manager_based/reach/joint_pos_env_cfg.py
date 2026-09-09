@@ -39,6 +39,7 @@ from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 from dual_fr3_lab.robots.dual_fr3_plate_ee import (  # isort: skip
     DUAL_FR3_PLATE_EE_CFG,
     DUAL_FR3_PLATE_EE_SIM2REAL_CFG,
+    DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG,
     PLATE_TCP_OFFSET_POS,
 )
 from dual_fr3_lab.tasks.manager_based.lift_cube import mdp  # isort: skip
@@ -418,6 +419,40 @@ class DualFR3ReachSim2RealEnvCfg(DualFR3ReachEnvCfg):
 
 @configclass
 class DualFR3ReachSim2RealEnvCfgPlay(DualFR3ReachSim2RealEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3ReachSim2RealV2SceneCfg(DualFR3ReachSceneCfg):
+    """Reach v2 scene using the 1kHz explicit torque actuator."""
+
+    robot = DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG.replace(
+        prim_path="{ENV_REGEX_NS}/Robot"
+    )
+
+
+@configclass
+class DualFR3ReachSim2RealV2EnvCfg(DualFR3ReachSim2RealEnvCfg):
+    """Reach v2: 1kHz physics/PD, 20Hz policy, bounded relative actions."""
+
+    scene: DualFR3ReachSim2RealV2SceneCfg = DualFR3ReachSim2RealV2SceneCfg(
+        num_envs=4096, env_spacing=2.5
+    )
+    # 50 physics steps x 1ms = one 50ms policy step (20Hz).
+    decimation = 50
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.sim.dt = 0.001  # 1kHz physics and explicit PD actuator update
+        self.sim.render_interval = self.decimation
+
+
+@configclass
+class DualFR3ReachSim2RealV2EnvCfgPlay(DualFR3ReachSim2RealV2EnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 50

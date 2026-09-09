@@ -73,3 +73,10 @@ class DualFR3ReachSim2RealPPORunnerCfg(DualFR3ReachPPORunnerCfg):
     # The actor is already in (-1, 1); retain the wrapper clip as a numerical safety guard.
     clip_actions = 1.0
     max_iterations = 5000
+
+
+@configclass
+class DualFR3ReachSim2RealV2PPORunnerCfg(DualFR3ReachSim2RealPPORunnerCfg):
+    """Reach v2 runner for 1kHz physics/PD and a 20Hz bounded actor."""
+
+    experiment_name = "dual_fr3_reach_sim2real_v2"

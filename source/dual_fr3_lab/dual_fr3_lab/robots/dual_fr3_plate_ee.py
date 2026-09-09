@@ -8,6 +8,8 @@
 The following configurations are available:
 
 * :obj:`DUAL_FR3_PLATE_EE_CFG`: dual FR3 arms (gripper 없음) + 140x140x25mm 판 EE.
+* :obj:`DUAL_FR3_PLATE_EE_SIM2REAL_CFG`: reach v1, 100Hz explicit PD.
+* :obj:`DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG`: reach v2, 1kHz explicit PD.
 * :obj:`DUAL_FR3_PLATE_EE_HIGH_PD_CFG`: task-space(diff IK) 제어용 고게인 버전.
 
 USD: dual_fr3_flat_no_handeye.usd(그리퍼 제거) 양쪽 link7 플랜지에
@@ -55,6 +57,10 @@ DUAL_FR3_PLATE_EE_SIM2REAL_CFG.actuators["arms_shoulder"] = TorqueRateLimitedPDA
     effort_limit_sim=87.0,
     stiffness=80.0,
     damping=4.0,
+    armature=0.1,
+    friction=0.2,          # static friction effort [Nm]
+    dynamic_friction=0.2,  # dynamic friction effort [Nm]
+    viscous_friction=0.003, # [Nm·s/rad]
     torque_rate_limit=1000.0,
     control_dt=0.01,
 )
@@ -64,10 +70,20 @@ DUAL_FR3_PLATE_EE_SIM2REAL_CFG.actuators["arms_forearm"] = TorqueRateLimitedPDAc
     effort_limit_sim=12.0,
     stiffness=80.0,
     damping=4.0,
+    armature=0.1,
+    friction=0.2,          # static friction effort [Nm]
+    dynamic_friction=0.2,  # dynamic friction effort [Nm]
+    viscous_friction=0.003, # [Nm·s/rad]
     torque_rate_limit=1000.0,
     control_dt=0.01,
 )
 """Reach Sim2Real v1: explicit PD + FR3 effort and torque-rate limits."""
+
+
+DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG = DUAL_FR3_PLATE_EE_SIM2REAL_CFG.copy()
+DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG.actuators["arms_shoulder"].control_dt = 0.001
+DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG.actuators["arms_forearm"].control_dt = 0.001
+"""Reach Sim2Real v2: 1kHz explicit PD with a 1Nm/update torque-rate limit."""
 
 
 DUAL_FR3_PLATE_EE_HIGH_PD_CFG = DUAL_FR3_PLATE_EE_CFG.copy()
