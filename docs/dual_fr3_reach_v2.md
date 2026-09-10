@@ -200,26 +200,6 @@ python scripts/rsl_rl/train.py \
 logs/rsl_rl/dual_fr3_reach_sim2real_v2/<run>/model_XXXX.pt
 ```
 
-## 현재 학습 상태 (2026-09-09)
-
-현재 확인되는 첫 v2 run은 다음과 같다.
-
-```text
-logs/rsl_rl/dual_fr3_reach_sim2real_v2/2026-09-09_11-05-39/
-```
-
-이 run의 `params/env.yaml`에서 `dt=0.001`, `decimation=50`,
-`control_dt=0.001`, armature/friction 값과 gravity OFF를 확인했다.
-`params/agent.yaml`에서도 tanh-squashed distribution과
-`experiment_name=dual_fr3_reach_sim2real_v2`를 확인했다. 따라서 저장된 실행
-설정은 현재 v2 설계와 일치한다.
-
-다만 이 run은 iteration 77까지만 기록되고 checkpoint도 `model_50.pt`까지만
-존재하는 초기 실행이다. 5000 iteration을 완료한 최종 성능 검증 run이나 v2
-reference checkpoint로 간주하지 않는다. 학습 완료 후 마지막 50 iteration
-평균 reward, reach coarse/fine, action-rate, joint velocity, mean std와 entropy를
-v1 reference와 비교해야 한다.
-
 ## 영상 검증
 
 v2의 완료된 5000-iteration checkpoint에 대한 play 영상 검증은 아직 수행되지

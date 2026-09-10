@@ -162,8 +162,11 @@ from isaaclab_rl.rsl_rl import (
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
+from isaaclab.utils.math import quat_apply_inverse
 
 import dual_fr3_lab.tasks  # noqa: F401
+from dual_fr3_lab.tasks.manager_based.reach.joint_pos_env_cfg import REACH_OFFSET_Y
+from reach_play_logger import IsaacReachRunLogger
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
@@ -172,6 +175,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # grab task name for checkpoint path
     task_name = args_cli.task.split(":")[-1]
     train_task_name = task_name.replace("-Play", "")
+    is_reach_task = "Isaac-Reach-DualFR3" in task_name
 
     # override configurations with non-hydra CLI arguments
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
@@ -321,43 +325,154 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         sequence_term = env.unwrapped.command_manager.get_term("target_pose")
         apply_sequence_goal(sequence_index, 0.0)
 
+    reach_logger = None
+    reach_log_context = None
+    if is_reach_task:
+        uenv = env.unwrapped
+        robot = uenv.scene["robot"]
+        ee_frame = uenv.scene["ee_frame"]
+        target_frame_names = ee_frame.data.target_frame_names
+        left_ee_index = target_frame_names.index("left_ee")
+        right_ee_index = target_frame_names.index("right_ee")
+
+        joint_names = robot.data.joint_names
+        left_joint_ids = sorted(
+            [index for index, name in enumerate(joint_names) if name.startswith("left_fr3_joint")],
+            key=lambda index: int(joint_names[index].rsplit("joint", 1)[1]),
+        )
+        right_joint_ids = sorted(
+            [index for index, name in enumerate(joint_names) if name.startswith("right_fr3_joint")],
+            key=lambda index: int(joint_names[index].rsplit("joint", 1)[1]),
+        )
+        if len(left_joint_ids) != 7 or len(right_joint_ids) != 7:
+            raise RuntimeError(
+                "Reach logger expected seven joints per arm, got "
+                f"left={left_joint_ids}, right={right_joint_ids}"
+            )
+        arm_joint_ids = left_joint_ids + right_joint_ids
+
+        action_term = uenv.action_manager.get_term("arm_action")
+        if not isinstance(action_term.cfg.scale, (int, float)):
+            raise TypeError(
+                "Reach logger requires a scalar arm action scale, got "
+                f"{action_term.cfg.scale!r}"
+            )
+        action_scale = float(action_term.cfg.scale)
+        result_root = Path(__file__).resolve().parents[2] / "result"
+        reach_logger = IsaacReachRunLogger(
+            result_root=result_root,
+            task_name=task_name,
+            checkpoint_path=resume_path,
+            sample_rate_hz=1.0 / dt,
+            physics_dt_s=float(uenv.cfg.sim.dt),
+            action_scale=action_scale,
+            reach_offset_y=REACH_OFFSET_Y,
+            logged_env_index=0,
+            goal_sequence=reach_goal_sequence,
+        )
+        reach_log_context = {
+            "uenv": uenv,
+            "robot": robot,
+            "ee_frame": ee_frame,
+            "left_ee_index": left_ee_index,
+            "right_ee_index": right_ee_index,
+            "arm_joint_ids": arm_joint_ids,
+            "action_scale": action_scale,
+        }
+        print(f"[REACH LOG] Recording env 0 to: {reach_logger.run_dir}")
+        if uenv.num_envs > 1:
+            print(
+                f"[REACH LOG] num_envs={uenv.num_envs}; only env 0 is written to CSV."
+            )
+
+    def _tensor(value):
+        return value.torch if hasattr(value, "torch") else value
+
+    def record_reach_sample(actions: torch.Tensor, elapsed_s: float):
+        context = reach_log_context
+        uenv = context["uenv"]
+        robot = context["robot"]
+        ee_frame = context["ee_frame"]
+
+        root_position_w = _tensor(robot.data.root_pos_w)[0]
+        root_quaternion_w = _tensor(robot.data.root_quat_w)[0]
+        ee_position_w = _tensor(ee_frame.data.target_pos_w)[0]
+        left_eef_root = quat_apply_inverse(
+            root_quaternion_w.unsqueeze(0),
+            (ee_position_w[context["left_ee_index"]] - root_position_w).unsqueeze(0),
+        )[0]
+        right_eef_root = quat_apply_inverse(
+            root_quaternion_w.unsqueeze(0),
+            (ee_position_w[context["right_ee_index"]] - root_position_w).unsqueeze(0),
+        )[0]
+
+        joint_position = _tensor(robot.data.joint_pos)[0, context["arm_joint_ids"]]
+        joint_velocity = _tensor(robot.data.joint_vel)[0, context["arm_joint_ids"]]
+        bounded_action = torch.clamp(actions[0], -1.0, 1.0)
+        q_target = joint_position + context["action_scale"] * bounded_action
+        target_center = uenv.command_manager.get_command("target_pose")[0, :3]
+
+        reach_logger.append(
+            elapsed_s=elapsed_s,
+            goal_index=sequence_index if reach_goal_sequence else -1,
+            target_center=target_center.detach().cpu().numpy(),
+            left_eef=left_eef_root.detach().cpu().numpy(),
+            right_eef=right_eef_root.detach().cpu().numpy(),
+            action=bounded_action.detach().cpu().numpy(),
+            joint_position=joint_position.detach().cpu().numpy(),
+            joint_velocity=joint_velocity.detach().cpu().numpy(),
+            q_target=q_target.detach().cpu().numpy(),
+        )
+
     # reset environment
     obs = env.get_observations()
     timestep = 0
-    # simulate environment
-    while simulation_app.is_running():
-        elapsed_s = timestep * dt
-        if reach_goal_sequence and elapsed_s + 1.0e-9 >= next_sequence_switch_s:
-            sequence_index += 1
-            if sequence_index >= len(reach_goal_sequence):
-                if args_cli.reach_goal_sequence_loop:
-                    sequence_index = 0
-                else:
-                    print("[REACH SEQUENCE] completed")
+    try:
+        # simulate environment
+        while simulation_app.is_running():
+            elapsed_s = timestep * dt
+            if reach_goal_sequence and elapsed_s + 1.0e-9 >= next_sequence_switch_s:
+                sequence_index += 1
+                if sequence_index >= len(reach_goal_sequence):
+                    if args_cli.reach_goal_sequence_loop:
+                        sequence_index = 0
+                    else:
+                        print("[REACH SEQUENCE] completed")
+                        break
+                apply_sequence_goal(sequence_index, elapsed_s)
+                obs = env.get_observations()
+
+            start_time = time.time()
+            # run everything in inference mode
+            with torch.inference_mode():
+                # agent stepping
+                actions = policy(obs)
+                if reach_logger is not None:
+                    record_reach_sample(actions, elapsed_s)
+                # env stepping
+                obs, _, _, _ = env.step(actions)
+            timestep += 1
+            if args_cli.video:
+                # Exit the play loop after recording one video
+                if timestep == args_cli.video_length:
                     break
-            apply_sequence_goal(sequence_index, elapsed_s)
-            obs = env.get_observations()
 
-        start_time = time.time()
-        # run everything in inference mode
-        with torch.inference_mode():
-            # agent stepping
-            actions = policy(obs)
-            # env stepping
-            obs, _, _, _ = env.step(actions)
-        timestep += 1
-        if args_cli.video:
-            # Exit the play loop after recording one video
-            if timestep == args_cli.video_length:
-                break
-
-        # time delay for real-time evaluation
-        sleep_time = dt - (time.time() - start_time)
-        if args_cli.real_time and sleep_time > 0:
-            time.sleep(sleep_time)
-
-    # close the simulator
-    env.close()
+            # time delay for real-time evaluation
+            sleep_time = dt - (time.time() - start_time)
+            if args_cli.real_time and sleep_time > 0:
+                time.sleep(sleep_time)
+    finally:
+        if reach_logger is not None:
+            try:
+                run_dir, plot_paths = reach_logger.finalize()
+                print(
+                    f"[REACH LOG] Saved {reach_logger.sample_count} samples and "
+                    f"{len(plot_paths)} plots to: {run_dir}"
+                )
+            except Exception as error:
+                print(f"[REACH LOG] Failed to finalize plots: {error}")
+        # close the simulator
+        env.close()
 
 
 if __name__ == "__main__":
