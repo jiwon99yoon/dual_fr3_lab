@@ -18,7 +18,6 @@ from isaaclab.app import AppLauncher
 # local imports
 import cli_args  # isort: skip
 
-
 def _load_reach_goal_sequence(path: str) -> list[dict]:
     """Load and validate an explicit Reach goal sequence from JSON."""
 
@@ -30,9 +29,7 @@ def _load_reach_goal_sequence(path: str) -> list[dict]:
 
     goals = payload.get("goals") if isinstance(payload, dict) else payload
     if not isinstance(goals, list) or not goals:
-        raise ValueError(
-            "goal sequence must be a non-empty JSON list or an object with a 'goals' list"
-        )
+        raise ValueError("goal sequence must be a non-empty JSON list or an object with a 'goals' list")
 
     validated = []
     for index, goal in enumerate(goals):
@@ -43,17 +40,11 @@ def _load_reach_goal_sequence(path: str) -> list[dict]:
         if (
             not isinstance(position, list)
             or len(position) != 3
-            or any(
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(value)
-                for value in position
-            )
+            or any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in position)
         ):
             raise ValueError(f"goal {index} position must contain three finite numbers")
         if (
-            isinstance(duration_s, bool)
-            or not isinstance(duration_s, (int, float))
+            not isinstance(duration_s, (int, float))
             or not math.isfinite(duration_s)
             or duration_s <= 0.0
         ):
@@ -316,7 +307,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             goal["position"], device=command.device, dtype=command.dtype
         )
         command[:, 3:].zero_()
-        command[:, 3] = 1.0
+        command[:, 6] = 1.0  # quaternion xyzw = [0, 0, 0, 1]
         sequence_term.time_left.fill_(1.0e9)
         sequence_term._update_metrics()
         next_sequence_switch_s = current_time_s + goal["duration_s"]
