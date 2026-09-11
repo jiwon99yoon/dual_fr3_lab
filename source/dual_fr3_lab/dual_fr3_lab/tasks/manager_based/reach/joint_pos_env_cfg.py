@@ -38,6 +38,8 @@ from isaaclab_physx.physics import PhysxCfg
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 from dual_fr3_lab.robots.dual_fr3_plate_ee import (  # isort: skip
     DUAL_FR3_PLATE_EE_CFG,
+    DUAL_FR3_PLATE_EE_SIM2REAL_100HZ_FRICTION_CFG,
+    DUAL_FR3_PLATE_EE_SIM2REAL_1KHZ_NO_FRICTION_CFG,
     DUAL_FR3_PLATE_EE_SIM2REAL_CFG,
     DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG,
     PLATE_TCP_OFFSET_POS,
@@ -427,8 +429,37 @@ class DualFR3ReachSim2RealEnvCfgPlay(DualFR3ReachSim2RealEnvCfg):
 
 
 @configclass
+class DualFR3ReachSim2Real100HzFrictionSceneCfg(DualFR3ReachSceneCfg):
+    """100Hz Reach scene with MuJoCo-matched passive joint dynamics."""
+
+    robot = DUAL_FR3_PLATE_EE_SIM2REAL_100HZ_FRICTION_CFG.replace(
+        prim_path="{ENV_REGEX_NS}/Robot"
+    )
+
+
+@configclass
+class DualFR3ReachSim2Real100HzFrictionEnvCfg(DualFR3ReachSim2RealEnvCfg):
+    """100Hz physics/PD with explicit MuJoCo-matched armature and friction."""
+
+    scene: DualFR3ReachSim2Real100HzFrictionSceneCfg = (
+        DualFR3ReachSim2Real100HzFrictionSceneCfg(num_envs=4096, env_spacing=2.5)
+    )
+
+
+@configclass
+class DualFR3ReachSim2Real100HzFrictionEnvCfgPlay(
+    DualFR3ReachSim2Real100HzFrictionEnvCfg
+):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
 class DualFR3ReachSim2RealV2SceneCfg(DualFR3ReachSceneCfg):
-    """Reach v2 scene using the 1kHz explicit torque actuator."""
+    """Reach v2 scene using 1kHz torque and MuJoCo-matched passive dynamics."""
 
     robot = DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG.replace(
         prim_path="{ENV_REGEX_NS}/Robot"
@@ -453,6 +484,35 @@ class DualFR3ReachSim2RealV2EnvCfg(DualFR3ReachSim2RealEnvCfg):
 
 @configclass
 class DualFR3ReachSim2RealV2EnvCfgPlay(DualFR3ReachSim2RealV2EnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3ReachSim2Real1kHzNoFrictionSceneCfg(DualFR3ReachSceneCfg):
+    """1kHz Reach scene with no explicit passive joint-property override."""
+
+    robot = DUAL_FR3_PLATE_EE_SIM2REAL_1KHZ_NO_FRICTION_CFG.replace(
+        prim_path="{ENV_REGEX_NS}/Robot"
+    )
+
+
+@configclass
+class DualFR3ReachSim2Real1kHzNoFrictionEnvCfg(DualFR3ReachSim2RealV2EnvCfg):
+    """1kHz physics/PD with the no-passive-override checkpoint semantics."""
+
+    scene: DualFR3ReachSim2Real1kHzNoFrictionSceneCfg = (
+        DualFR3ReachSim2Real1kHzNoFrictionSceneCfg(num_envs=4096, env_spacing=2.5)
+    )
+
+
+@configclass
+class DualFR3ReachSim2Real1kHzNoFrictionEnvCfgPlay(
+    DualFR3ReachSim2Real1kHzNoFrictionEnvCfg
+):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 50

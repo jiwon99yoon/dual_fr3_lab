@@ -63,6 +63,7 @@ controller도 같은 measured-relative semantics를 구현해야 한다.
 | torque magnitude | joint1~4: 87 Nm, joint5~7: 12 Nm | 동일 |
 | observation/action 차원 | 58 / 14 | 동일 |
 | episode 길이 | 8 s = 160 policy steps | 동일 |
+| passive override | 없음 | **armature/friction 명시** |
 | RSL-RL 로그 | `dual_fr3_reach_sim2real_v1` | `dual_fr3_reach_sim2real_v2` |
 
 v1과 v2 모두 50 ms마다 새 policy action을 받는다. 차이는 그 사이에 v1은
@@ -136,6 +137,42 @@ solver 구현이 다르므로 위 값이 같아도 stick-slip 거동까지 완�
 armature와 friction 값은 현재 MuJoCo 모델과의 sim-to-sim 정합을 위한 값이며,
 실제 FR3에서 관절별로 식별된 물리 파라미터는 아니다.
 
+## 고정된 dynamics별 task ID
+
+Checkpoint와 현재 Python 설정이 어긋나는 것을 막기 위해 physics/PD 주기와
+passive joint parameter 조합을 다음과 같이 독립된 Gym ID로 등록한다. 앞으로
+학습과 inference에는 아래 명시적 ID 사용을 권장한다.
+
+| 환경 | Train task ID | Play task ID | 로그 namespace |
+|---|---|---|---|
+| 100 Hz, no-friction | `Isaac-Reach-DualFR3-Sim2Real-100Hz-NoFriction-v0` | `Isaac-Reach-DualFR3-Sim2Real-100Hz-NoFriction-Play-v0` | `dual_fr3_reach_sim2real_100hz_nofriction` |
+| 100 Hz, friction | `Isaac-Reach-DualFR3-Sim2Real-100Hz-Friction-v0` | `Isaac-Reach-DualFR3-Sim2Real-100Hz-Friction-Play-v0` | `dual_fr3_reach_sim2real_100hz_friction` |
+| 1 kHz, no-friction | `Isaac-Reach-DualFR3-Sim2Real-1kHz-NoFriction-v0` | `Isaac-Reach-DualFR3-Sim2Real-1kHz-NoFriction-Play-v0` | `dual_fr3_reach_sim2real_1khz_nofriction` |
+| 1 kHz, friction | `Isaac-Reach-DualFR3-Sim2Real-1kHz-Friction-v0` | `Isaac-Reach-DualFR3-Sim2Real-1kHz-Friction-Play-v0` | `dual_fr3_reach_sim2real_1khz_friction` |
+
+여기서 `NoFriction`은 과거 v1 및 `2026-09-10_17-25-26` run과 동일하게
+actuator config의 `armature`, `friction`, `dynamic_friction`,
+`viscous_friction`을 `None`으로 두어 **명시적으로 override하지 않는다**는
+뜻이다. USD/PhysX의 기존 property를 강제로 0으로 쓰는 환경이라는 뜻은 아니다.
+
+기존 ID는 다음 의미로 고정해 호환성을 유지한다.
+
+- `Isaac-Reach-DualFR3-Sim2Real[-Play]-v1`: 100 Hz/no-friction 별칭
+- `Isaac-Reach-DualFR3-Sim2Real[-Play]-v2`: 1 kHz/friction 별칭
+
+네 환경 모두 policy 20 Hz, action scale 0.1, Kp=80, Kd=4, effort limit과
+1000 Nm/s torque-rate limit은 같다. 100 Hz 환경은 `dt=0.01`,
+`decimation=5`, `control_dt=0.01`이고, 1 kHz 환경은 `dt=0.001`,
+`decimation=50`, `control_dt=0.001`이다. Friction 환경만 다음 네 값을
+명시한다.
+
+```text
+armature=0.1
+friction=0.2
+dynamic_friction=0.2
+viscous_friction=0.003
+```
+
 중력 OFF는 실제 로봇에 중력이 존재하지 않는다는 뜻이 아니다. 실제 Franka
 hardware의 내부 중력보상 이후 외부 torque controller가 보는 관절 동역학을
 근사하기 위한 설정이다. payload 오차, 내부 보상 오차와 motor dynamics는
@@ -177,16 +214,18 @@ policy rate가 v1과 같은 20 Hz이므로 rollout 24 step의 물리 시간은 �
 - tanh-squashed distribution: `tasks/manager_based/reach/agents/tanh_squashed_gaussian.py`
 - torque saturation/rate limiter: `dual_fr3_lab/actuators/torque_rate_limited_pd.py`
 - armature/friction 및 v2 actuator dt: `dual_fr3_lab/robots/dual_fr3_plate_ee.py`
+- 네 dynamics 조합의 Gym ID: `tasks/manager_based/reach/__init__.py`
 - PhysX open-loop 비교 도구: `scripts/tools/record_reach_v2_torque_response.py`
 
 ## 학습
 
 v2는 physics/actuator dt와 passive joint dynamics가 v1 checkpoint의 학습환경과
-다르므로 v1 checkpoint에서 resume하지 않고 처음부터 학습한다.
+다르므로 v1 checkpoint에서 resume하지 않고 처음부터 학습한다. 권장 명령은
+명시적인 1 kHz/friction ID를 사용한다.
 
 ```bash
 python scripts/rsl_rl/train.py \
-  --task Isaac-Reach-DualFR3-Sim2Real-v2 \
+  --task Isaac-Reach-DualFR3-Sim2Real-1kHz-Friction-v0 \
   --headless \
   --max_iterations 5000
 ```
@@ -197,7 +236,7 @@ python scripts/rsl_rl/train.py \
 학습 결과는 다음 위치에 저장된다.
 
 ```text
-logs/rsl_rl/dual_fr3_reach_sim2real_v2/<run>/model_XXXX.pt
+logs/rsl_rl/dual_fr3_reach_sim2real_1khz_friction/<run>/model_XXXX.pt
 ```
 
 ## 영상 검증
@@ -218,9 +257,41 @@ orientation 안정성은 영상으로 관찰할 수 있지만 현재 position-on
 
 ```bash
 python scripts/rsl_rl/play.py \
-  --task Isaac-Reach-DualFR3-Sim2Real-Play-v2 \
+  --task Isaac-Reach-DualFR3-Sim2Real-1kHz-Friction-Play-v0 \
   --num_envs 1 \
-  --checkpoint logs/rsl_rl/dual_fr3_reach_sim2real_v2/<run>/model_4999.pt \
+  --checkpoint logs/rsl_rl/dual_fr3_reach_sim2real_1khz_friction/<run>/model_4999.pt \
+  --viz kit
+```
+
+기존 checkpoint를 학습 당시 dynamics로 재생하는 명령은 다음과 같다.
+
+```bash
+# 100 Hz / no explicit passive override
+python scripts/rsl_rl/play.py \
+  --task Isaac-Reach-DualFR3-Sim2Real-100Hz-NoFriction-Play-v0 \
+  --num_envs 1 \
+  --checkpoint logs/rsl_rl/dual_fr3_reach_sim2real_v2/2026-09-10_17-25-26/model_4999.pt \
+  --viz kit
+
+# 100 Hz / MuJoCo-matched passive dynamics
+python scripts/rsl_rl/play.py \
+  --task Isaac-Reach-DualFR3-Sim2Real-100Hz-Friction-Play-v0 \
+  --num_envs 1 \
+  --checkpoint logs/rsl_rl/dual_fr3_reach_sim2real_v2/2026-09-10_17-26-13/model_4999.pt \
+  --viz kit
+
+# 1 kHz / MuJoCo-matched passive dynamics
+python scripts/rsl_rl/play.py \
+  --task Isaac-Reach-DualFR3-Sim2Real-1kHz-Friction-Play-v0 \
+  --num_envs 1 \
+  --checkpoint 'logs/rsl_rl/dual_fr3_reach_sim2real_v2/2026-09-09_11-05-39(success)/model_4999.pt' \
+  --viz kit
+
+# 1 kHz / no explicit passive override
+python scripts/rsl_rl/play.py \
+  --task Isaac-Reach-DualFR3-Sim2Real-1kHz-NoFriction-Play-v0 \
+  --num_envs 1 \
+  --checkpoint logs/rsl_rl/dual_fr3_reach_sim2real_v2/2026-09-10_19-33-09/model_4999.pt \
   --viz kit
 ```
 

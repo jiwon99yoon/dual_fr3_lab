@@ -87,8 +87,8 @@ python scripts/rsl_rl/play.py --task Isaac-Reach-DualFR3-Play-v0 --num_envs 1 \
 python scripts/rsl_rl/train.py --task Isaac-Reach-DualFR3-Sim2Real-v1 \
     --headless --max_iterations 5000
 
-# Reach Sim2Real v2 학습 (1 kHz physics/PD, 20 Hz policy)
-python scripts/rsl_rl/train.py --task Isaac-Reach-DualFR3-Sim2Real-v2 \
+# Reach Sim2Real 학습 (권장 배포 조합: 1 kHz + MuJoCo-matched friction)
+python scripts/rsl_rl/train.py --task Isaac-Reach-DualFR3-Sim2Real-1kHz-Friction-v0 \
     --headless --max_iterations 5000
 
 # 강건성 평가 (baseline vs noisy, 축 분리 스위치 --no_obs_noise / --no_physics_dr)
@@ -161,8 +161,13 @@ Cube lift는 sim2real 목표로 v0→v3까지 진화했다. **각 버전은 한 
 | `...-P{N}-Play-v0` / `...-P{N}-Play-Noisy-v0` | 각 P-series play/강건성 평가용. `eval_dual_fr3_plate_robustness.py`와 세트 |
 | `Isaac-Reach-DualFR3-v0` | **sim2real gap 분석용 양팔 EE reach.** 물체 없이 goal center ± 0.2m(y축) 목표점으로 양팔 동시 도달. **obs 58D = plate task와 완전 동일 구조** (plate_forces·object_orientation 슬롯은 0으로 채움). action semantics(delta joint pos × 0.1, 20Hz)도 plate와 동일 — 두 정책의 관절 궤적 특성 비교로 제어 지연·tracking 오차 분리 가능 |
 | `Isaac-Reach-DualFR3-Play-v0` | reach play용 (50 envs, corruption off) |
-| `Isaac-Reach-DualFR3-Sim2Real-v1` | Reach v0의 unbounded Gaussian을 **tanh-squashed bounded actor**로 교체하고, explicit PD 뒤 FR3 **torque saturation(87/12 Nm)** 및 **torque-rate limit(1000 Nm/s)** 적용. wrapper clipping은 수치적 safety guard로만 유지하며 별도 velocity/acceleration trajectory limiter는 사용하지 않음 |
-| `Isaac-Reach-DualFR3-Sim2Real-v2` | v1의 obs/action/actor와 20 Hz policy 주기는 유지하고, **physics + explicit PD를 1 kHz**로 변경. torque-rate limit은 매 1 ms마다 최대 **1 Nm/update**로 적용 |
+| `Isaac-Reach-DualFR3-Sim2Real-v1` | 100 Hz/no-passive-override 호환 ID. Reach v0의 unbounded Gaussian을 **tanh-squashed bounded actor**로 교체하고, explicit PD 뒤 FR3 **torque saturation(87/12 Nm)** 및 **torque-rate limit(1000 Nm/s)** 적용 |
+| `Isaac-Reach-DualFR3-Sim2Real-v2` | 1 kHz/MuJoCo-matched-friction 호환 ID. v1의 obs/action/actor와 20 Hz policy 주기를 유지하고 physics + explicit PD를 **1 kHz**로 변경 |
+| `Isaac-Reach-DualFR3-Sim2Real-100Hz-NoFriction-v0` | 100 Hz physics/PD, armature/friction을 명시적으로 override하지 않는 과거 v1/nofriction 재현 환경 |
+| `Isaac-Reach-DualFR3-Sim2Real-100Hz-Friction-v0` | 100 Hz physics/PD + armature 0.1, static/dynamic friction 0.2, viscous friction 0.003 |
+| `Isaac-Reach-DualFR3-Sim2Real-1kHz-NoFriction-v0` | 1 kHz physics/PD, armature/friction을 명시적으로 override하지 않는 `2026-09-10_19-33-09` 재현 환경 |
+| `Isaac-Reach-DualFR3-Sim2Real-1kHz-Friction-v0` | 1 kHz physics/PD + 동일 passive dynamics. 현재 MuJoCo 배포 정합용 권장 환경 |
+| `...-NoFriction-Play-v0` / `...-Friction-Play-v0` | 각 dynamics별 inference ID. checkpoint 학습에 사용한 rate/friction 조합과 같은 Play ID를 선택해야 함 |
 
 ### Reach 고정 goal sequence inference
 

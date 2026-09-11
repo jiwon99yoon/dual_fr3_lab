@@ -80,3 +80,31 @@ class DualFR3ReachSim2RealV2PPORunnerCfg(DualFR3ReachSim2RealPPORunnerCfg):
     """Reach v2 runner for 1kHz physics/PD and a 20Hz bounded actor."""
 
     experiment_name = "dual_fr3_reach_sim2real_v2"
+
+
+@configclass
+class DualFR3Reach100HzNoFrictionPPORunnerCfg(DualFR3ReachSim2RealPPORunnerCfg):
+    """Runner with an explicit log namespace for the legacy 100Hz/no-friction setup."""
+
+    experiment_name = "dual_fr3_reach_sim2real_100hz_nofriction"
+
+
+@configclass
+class DualFR3Reach100HzFrictionPPORunnerCfg(DualFR3ReachSim2RealPPORunnerCfg):
+    """Runner for 100Hz physics/PD with MuJoCo-matched passive dynamics."""
+
+    experiment_name = "dual_fr3_reach_sim2real_100hz_friction"
+
+
+@configclass
+class DualFR3Reach1kHzFrictionPPORunnerCfg(DualFR3ReachSim2RealPPORunnerCfg):
+    """Runner for 1kHz physics/PD with MuJoCo-matched passive dynamics."""
+
+    experiment_name = "dual_fr3_reach_sim2real_1khz_friction"
+
+
+@configclass
+class DualFR3Reach1kHzNoFrictionPPORunnerCfg(DualFR3ReachSim2RealPPORunnerCfg):
+    """Runner for 1kHz physics/PD with no explicit passive-property override."""
+
+    experiment_name = "dual_fr3_reach_sim2real_1khz_nofriction"

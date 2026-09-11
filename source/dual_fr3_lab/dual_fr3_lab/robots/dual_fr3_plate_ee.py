@@ -8,8 +8,12 @@
 The following configurations are available:
 
 * :obj:`DUAL_FR3_PLATE_EE_CFG`: dual FR3 arms (gripper 없음) + 140x140x25mm 판 EE.
-* :obj:`DUAL_FR3_PLATE_EE_SIM2REAL_CFG`: reach v1, 100Hz explicit PD.
-* :obj:`DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG`: reach v2, 1kHz explicit PD.
+* :obj:`DUAL_FR3_PLATE_EE_SIM2REAL_100HZ_NO_FRICTION_CFG`: 100Hz, passive override 없음.
+* :obj:`DUAL_FR3_PLATE_EE_SIM2REAL_100HZ_FRICTION_CFG`: 100Hz, MuJoCo-matched passive dynamics.
+* :obj:`DUAL_FR3_PLATE_EE_SIM2REAL_1KHZ_NO_FRICTION_CFG`: 1kHz, passive override 없음.
+* :obj:`DUAL_FR3_PLATE_EE_SIM2REAL_1KHZ_FRICTION_CFG`: 1kHz, MuJoCo-matched passive dynamics.
+* :obj:`DUAL_FR3_PLATE_EE_SIM2REAL_CFG`: v1 호환 별칭(100Hz/no-friction).
+* :obj:`DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG`: v2 호환 별칭(1kHz/friction).
 * :obj:`DUAL_FR3_PLATE_EE_HIGH_PD_CFG`: task-space(diff IK) 제어용 고게인 버전.
 
 USD: dual_fr3_flat_no_handeye.usd(그리퍼 제거) 양쪽 link7 플랜지에
@@ -50,40 +54,75 @@ DUAL_FR3_PLATE_EE_CFG.spawn.rigid_props.disable_gravity = True
 """Dual FR3 arms with flat-plate end-effectors on a husky base (base fixed)."""
 
 
-DUAL_FR3_PLATE_EE_SIM2REAL_CFG = DUAL_FR3_PLATE_EE_CFG.copy()
-DUAL_FR3_PLATE_EE_SIM2REAL_CFG.actuators["arms_shoulder"] = TorqueRateLimitedPDActuatorCfg(
-    joint_names_expr=[".*_fr3_joint[1-4]"],
-    effort_limit=87.0,
-    effort_limit_sim=87.0,
-    stiffness=80.0,
-    damping=4.0,
-    armature=0.1,
-    friction=0.2,          # static friction effort [Nm]
-    dynamic_friction=0.2,  # dynamic friction effort [Nm]
-    viscous_friction=0.003, # [Nm·s/rad]
-    torque_rate_limit=1000.0,
-    control_dt=0.01,
-)
-DUAL_FR3_PLATE_EE_SIM2REAL_CFG.actuators["arms_forearm"] = TorqueRateLimitedPDActuatorCfg(
-    joint_names_expr=[".*_fr3_joint[5-7]"],
-    effort_limit=12.0,
-    effort_limit_sim=12.0,
-    stiffness=80.0,
-    damping=4.0,
-    armature=0.1,
-    friction=0.2,          # static friction effort [Nm]
-    dynamic_friction=0.2,  # dynamic friction effort [Nm]
-    viscous_friction=0.003, # [Nm·s/rad]
-    torque_rate_limit=1000.0,
-    control_dt=0.01,
-)
-"""Reach Sim2Real v1: explicit PD + FR3 effort and torque-rate limits."""
+_MUJOCO_MATCHED_PASSIVE_DYNAMICS = {
+    "armature": 0.1,
+    "friction": 0.2,
+    "dynamic_friction": 0.2,
+    "viscous_friction": 0.003,
+}
 
 
-DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG = DUAL_FR3_PLATE_EE_SIM2REAL_CFG.copy()
-DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG.actuators["arms_shoulder"].control_dt = 0.001
-DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG.actuators["arms_forearm"].control_dt = 0.001
-"""Reach Sim2Real v2: 1kHz explicit PD with a 1Nm/update torque-rate limit."""
+def _make_reach_sim2real_cfg(*, control_dt: float, match_mujoco_passive_dynamics: bool):
+    """Build an independent Reach actuator configuration for one dynamics variant."""
+
+    cfg = DUAL_FR3_PLATE_EE_CFG.copy()
+    passive_dynamics = (
+        _MUJOCO_MATCHED_PASSIVE_DYNAMICS if match_mujoco_passive_dynamics else {}
+    )
+    cfg.actuators["arms_shoulder"] = TorqueRateLimitedPDActuatorCfg(
+        joint_names_expr=[".*_fr3_joint[1-4]"],
+        effort_limit=87.0,
+        effort_limit_sim=87.0,
+        stiffness=80.0,
+        damping=4.0,
+        torque_rate_limit=1000.0,
+        control_dt=control_dt,
+        **passive_dynamics,
+    )
+    cfg.actuators["arms_forearm"] = TorqueRateLimitedPDActuatorCfg(
+        joint_names_expr=[".*_fr3_joint[5-7]"],
+        effort_limit=12.0,
+        effort_limit_sim=12.0,
+        stiffness=80.0,
+        damping=4.0,
+        torque_rate_limit=1000.0,
+        control_dt=control_dt,
+        **passive_dynamics,
+    )
+    return cfg
+
+
+DUAL_FR3_PLATE_EE_SIM2REAL_100HZ_NO_FRICTION_CFG = _make_reach_sim2real_cfg(
+    control_dt=0.01,
+    match_mujoco_passive_dynamics=False,
+)
+"""100Hz Reach setup with no explicit armature/friction override (legacy v1/nofriction runs)."""
+
+DUAL_FR3_PLATE_EE_SIM2REAL_100HZ_FRICTION_CFG = _make_reach_sim2real_cfg(
+    control_dt=0.01,
+    match_mujoco_passive_dynamics=True,
+)
+"""100Hz Reach setup with the passive joint dynamics used by the MuJoCo model."""
+
+DUAL_FR3_PLATE_EE_SIM2REAL_1KHZ_NO_FRICTION_CFG = _make_reach_sim2real_cfg(
+    control_dt=0.001,
+    match_mujoco_passive_dynamics=False,
+)
+"""1kHz Reach setup with no explicit armature/friction override."""
+
+DUAL_FR3_PLATE_EE_SIM2REAL_1KHZ_FRICTION_CFG = _make_reach_sim2real_cfg(
+    control_dt=0.001,
+    match_mujoco_passive_dynamics=True,
+)
+"""1kHz Reach setup with the passive joint dynamics used by the MuJoCo model."""
+
+# Backwards-compatible names.  Keep their semantics fixed so loading an old task ID
+# never depends on manually commenting/uncommenting actuator fields.
+DUAL_FR3_PLATE_EE_SIM2REAL_CFG = DUAL_FR3_PLATE_EE_SIM2REAL_100HZ_NO_FRICTION_CFG
+"""Reach Sim2Real v1 compatibility alias: 100Hz/no explicit passive override."""
+
+DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG = DUAL_FR3_PLATE_EE_SIM2REAL_1KHZ_FRICTION_CFG
+"""Reach Sim2Real v2 compatibility alias: 1kHz/MuJoCo-matched passive dynamics."""
 
 
 DUAL_FR3_PLATE_EE_HIGH_PD_CFG = DUAL_FR3_PLATE_EE_CFG.copy()
