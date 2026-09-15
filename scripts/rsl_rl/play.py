@@ -8,15 +8,62 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import json
+import math
 import sys
+from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
 # local imports
 import cli_args  # isort: skip
 
+def _load_reach_goal_sequence(path: str) -> list[dict]:
+    """Load and validate an explicit Reach goal sequence from JSON."""
+
+    sequence_path = Path(path).expanduser().resolve()
+    try:
+        payload = json.loads(sequence_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"failed to load goal sequence '{sequence_path}': {error}") from error
+
+    goals = payload.get("goals") if isinstance(payload, dict) else payload
+    if not isinstance(goals, list) or not goals:
+        raise ValueError("goal sequence must be a non-empty JSON list or an object with a 'goals' list")
+
+    validated = []
+    for index, goal in enumerate(goals):
+        if not isinstance(goal, dict):
+            raise ValueError(f"goal {index} must be a JSON object")
+        position = goal.get("position")
+        duration_s = goal.get("duration_s")
+        if (
+            not isinstance(position, list)
+            or len(position) != 3
+            or any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in position)
+        ):
+            raise ValueError(f"goal {index} position must contain three finite numbers")
+        if (
+            not isinstance(duration_s, (int, float))
+            or not math.isfinite(duration_s)
+            or duration_s <= 0.0
+        ):
+            raise ValueError(f"goal {index} duration_s must be a positive finite number")
+        label = goal.get("label", f"goal_{index}")
+        if not isinstance(label, str):
+            raise ValueError(f"goal {index} label must be a string")
+        validated.append(
+            {
+                "position": [float(value) for value in position],
+                "duration_s": float(duration_s),
+                "label": label,
+            }
+        )
+    return validated
+
+
 # add argparse arguments
-parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
+parser = argparse.ArgumentParser(description="Play a checkpoint with an RSL-RL agent.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument(
@@ -29,6 +76,19 @@ parser.add_argument(
 )
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument(
+    "--reach_goal_sequence",
+    type=str,
+    default=None,
+    metavar="JSON",
+    help="Reach-only JSON file containing explicit positions and durations; disables random goal sampling.",
+)
+parser.add_argument(
+    "--reach_goal_sequence_loop",
+    action="store_true",
+    default=False,
+    help="Repeat the explicit Reach goal sequence instead of exiting after its final duration.",
+)
+parser.add_argument(
     "--use_pretrained_checkpoint",
     action="store_true",
     help="Use the pre-trained checkpoint from Nucleus.",
@@ -40,6 +100,18 @@ cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli, hydra_args = parser.parse_known_args()
+try:
+    reach_goal_sequence = (
+        _load_reach_goal_sequence(args_cli.reach_goal_sequence)
+        if args_cli.reach_goal_sequence
+        else None
+    )
+except ValueError as error:
+    parser.error(str(error))
+if reach_goal_sequence and (
+    args_cli.task is None or "Isaac-Reach-DualFR3" not in args_cli.task
+):
+    parser.error("--reach_goal_sequence is supported only for Isaac-Reach-DualFR3 tasks")
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -54,6 +126,7 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
+import importlib.metadata as metadata
 import os
 import time
 import torch
@@ -78,13 +151,22 @@ except ImportError:
     def get_published_pretrained_checkpoint(*args, **kwargs):
         raise RuntimeError("IsaacLab 2.3+에서는 --use_pretrained_checkpoint 미지원 (모듈 제거됨)")
 
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper, export_policy_as_jit, export_policy_as_onnx
+from isaaclab_rl.rsl_rl import (
+    RslRlBaseRunnerCfg,
+    RslRlVecEnvWrapper,
+    export_policy_as_jit,
+    export_policy_as_onnx,
+    handle_deprecated_rsl_rl_cfg,
+)
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
+from isaaclab.utils.math import quat_apply_inverse
 
 import dual_fr3_lab.tasks  # noqa: F401
+from dual_fr3_lab.tasks.manager_based.reach.joint_pos_env_cfg import REACH_OFFSET_Y
+from reach_play_logger import IsaacReachRunLogger
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
@@ -93,10 +175,27 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # grab task name for checkpoint path
     task_name = args_cli.task.split(":")[-1]
     train_task_name = task_name.replace("-Play", "")
+    is_reach_task = "Isaac-Reach-DualFR3" in task_name
 
     # override configurations with non-hydra CLI arguments
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, metadata.version("rsl-rl-lib"))
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+
+    if reach_goal_sequence:
+        command_cfg = env_cfg.commands.target_pose
+        ranges = command_cfg.ranges
+        limits = (ranges.pos_x, ranges.pos_y, ranges.pos_z)
+        for index, goal in enumerate(reach_goal_sequence):
+            for axis, value, (lower, upper) in zip("xyz", goal["position"], limits):
+                if value < lower or value > upper:
+                    raise ValueError(
+                        f"goal {index} {axis}={value} is outside the training range [{lower}, {upper}]"
+                    )
+        # The script owns command transitions in this mode. Prevent both timed random
+        # resampling and the normal eight-second episode timeout from replacing/resetting it.
+        command_cfg.resampling_time_range = (1.0e9, 1.0e9)
+        env_cfg.episode_length_s = 1.0e9
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
@@ -145,25 +244,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+
     # load previously trained model
     if agent_cfg.class_name == "OnPolicyRunner":
-        agent_dict = agent_cfg.to_dict()
-        # rsl_rl 버전 호환: isaaclab_rl(2.3+) cfg의 미지 키(optimizer 등)를 PPO 시그니처 기준 제거
-        try:
-            import inspect as _inspect
-
-            from rsl_rl.algorithms import PPO as _PPO
-
-            _allowed = set(_inspect.signature(_PPO.__init__).parameters) | {"class_name"}
-            _alg = agent_dict.get("algorithm", {})
-            _dropped = [k for k in list(_alg) if k not in _allowed]
-            for _k in _dropped:
-                _alg.pop(_k)
-            if _dropped:
-                print(f"[compat] rsl_rl PPO가 모르는 cfg 키 제거: {_dropped}")
-        except Exception:
-            pass
-        runner = OnPolicyRunner(env, agent_dict, log_dir=None, device=agent_cfg.device)
+        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     else:
@@ -173,55 +257,222 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # obtain the trained policy for inference
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
-    # extract the neural network module
-    # we do this in a try-except to maintain backwards compatibility.
-    try:
-        # version 2.3 onwards
-        policy_nn = runner.alg.policy
-    except AttributeError:
-        # version 2.2 and below
-        policy_nn = runner.alg.actor_critic
-
-    # extract the normalizer
-    if hasattr(policy_nn, "actor_obs_normalizer"):
-        normalizer = policy_nn.actor_obs_normalizer
-    elif hasattr(policy_nn, "student_obs_normalizer"):
-        normalizer = policy_nn.student_obs_normalizer
-    else:
-        normalizer = None
-
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    os.makedirs(export_model_dir, exist_ok=True)
+
+    # rsl_rl 3.x stores separate actor/critic MLPModel instances. The actor returned by
+    # get_inference_policy() owns its observation normalizer and distribution export logic.
+    if hasattr(policy, "as_jit") and hasattr(policy, "as_onnx"):
+        jit_policy = policy.as_jit().cpu().eval()
+        torch.jit.script(jit_policy).save(os.path.join(export_model_dir, "policy.pt"))
+
+        onnx_policy = policy.as_onnx(verbose=False).cpu().eval()
+        dummy_obs = torch.zeros(1, policy.obs_dim)
+        torch.onnx.export(
+            onnx_policy,
+            dummy_obs,
+            os.path.join(export_model_dir, "policy.onnx"),
+            export_params=True,
+            opset_version=18,
+            input_names=["obs"],
+            output_names=["actions"],
+        )
+    else:
+        # Legacy rsl_rl actor-critic/student containers (Isaac Lab 2.x).
+        if hasattr(runner.alg, "policy"):
+            policy_nn = runner.alg.policy
+        elif hasattr(runner.alg, "actor_critic"):
+            policy_nn = runner.alg.actor_critic
+        else:
+            raise AttributeError("Unable to locate the policy module in the loaded rsl_rl runner.")
+
+        if hasattr(policy_nn, "actor_obs_normalizer"):
+            normalizer = policy_nn.actor_obs_normalizer
+        elif hasattr(policy_nn, "student_obs_normalizer"):
+            normalizer = policy_nn.student_obs_normalizer
+        else:
+            normalizer = None
+
+        export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+        export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
 
     dt = env.unwrapped.step_dt
+
+    sequence_term = None
+    sequence_index = 0
+    next_sequence_switch_s = math.inf
+
+    def apply_sequence_goal(index: int, current_time_s: float):
+        nonlocal next_sequence_switch_s
+        goal = reach_goal_sequence[index]
+        command = env.unwrapped.command_manager.get_command("target_pose")
+        command[:, :3] = torch.tensor(
+            goal["position"], device=command.device, dtype=command.dtype
+        )
+        command[:, 3:].zero_()
+        command[:, 6] = 1.0  # quaternion xyzw = [0, 0, 0, 1]
+        sequence_term.time_left.fill_(1.0e9)
+        sequence_term._update_metrics()
+        next_sequence_switch_s = current_time_s + goal["duration_s"]
+        print(
+            f"[REACH SEQUENCE] {index + 1}/{len(reach_goal_sequence)} "
+            f"{goal['label']}: position={goal['position']} "
+            f"duration={goal['duration_s']:.3f}s"
+        )
+
+    if reach_goal_sequence:
+        sequence_term = env.unwrapped.command_manager.get_term("target_pose")
+        apply_sequence_goal(sequence_index, 0.0)
+
+    reach_logger = None
+    reach_log_context = None
+    if is_reach_task:
+        uenv = env.unwrapped
+        robot = uenv.scene["robot"]
+        ee_frame = uenv.scene["ee_frame"]
+        target_frame_names = ee_frame.data.target_frame_names
+        left_ee_index = target_frame_names.index("left_ee")
+        right_ee_index = target_frame_names.index("right_ee")
+
+        joint_names = robot.data.joint_names
+        left_joint_ids = sorted(
+            [index for index, name in enumerate(joint_names) if name.startswith("left_fr3_joint")],
+            key=lambda index: int(joint_names[index].rsplit("joint", 1)[1]),
+        )
+        right_joint_ids = sorted(
+            [index for index, name in enumerate(joint_names) if name.startswith("right_fr3_joint")],
+            key=lambda index: int(joint_names[index].rsplit("joint", 1)[1]),
+        )
+        if len(left_joint_ids) != 7 or len(right_joint_ids) != 7:
+            raise RuntimeError(
+                "Reach logger expected seven joints per arm, got "
+                f"left={left_joint_ids}, right={right_joint_ids}"
+            )
+        arm_joint_ids = left_joint_ids + right_joint_ids
+
+        action_term = uenv.action_manager.get_term("arm_action")
+        if not isinstance(action_term.cfg.scale, (int, float)):
+            raise TypeError(
+                "Reach logger requires a scalar arm action scale, got "
+                f"{action_term.cfg.scale!r}"
+            )
+        action_scale = float(action_term.cfg.scale)
+        result_root = Path(__file__).resolve().parents[2] / "result"
+        reach_logger = IsaacReachRunLogger(
+            result_root=result_root,
+            task_name=task_name,
+            checkpoint_path=resume_path,
+            sample_rate_hz=1.0 / dt,
+            physics_dt_s=float(uenv.cfg.sim.dt),
+            action_scale=action_scale,
+            reach_offset_y=REACH_OFFSET_Y,
+            logged_env_index=0,
+            goal_sequence=reach_goal_sequence,
+        )
+        reach_log_context = {
+            "uenv": uenv,
+            "robot": robot,
+            "ee_frame": ee_frame,
+            "left_ee_index": left_ee_index,
+            "right_ee_index": right_ee_index,
+            "arm_joint_ids": arm_joint_ids,
+            "action_scale": action_scale,
+        }
+        print(f"[REACH LOG] Recording env 0 to: {reach_logger.run_dir}")
+        if uenv.num_envs > 1:
+            print(
+                f"[REACH LOG] num_envs={uenv.num_envs}; only env 0 is written to CSV."
+            )
+
+    def _tensor(value):
+        return value.torch if hasattr(value, "torch") else value
+
+    def record_reach_sample(actions: torch.Tensor, elapsed_s: float):
+        context = reach_log_context
+        uenv = context["uenv"]
+        robot = context["robot"]
+        ee_frame = context["ee_frame"]
+
+        root_position_w = _tensor(robot.data.root_pos_w)[0]
+        root_quaternion_w = _tensor(robot.data.root_quat_w)[0]
+        ee_position_w = _tensor(ee_frame.data.target_pos_w)[0]
+        left_eef_root = quat_apply_inverse(
+            root_quaternion_w.unsqueeze(0),
+            (ee_position_w[context["left_ee_index"]] - root_position_w).unsqueeze(0),
+        )[0]
+        right_eef_root = quat_apply_inverse(
+            root_quaternion_w.unsqueeze(0),
+            (ee_position_w[context["right_ee_index"]] - root_position_w).unsqueeze(0),
+        )[0]
+
+        joint_position = _tensor(robot.data.joint_pos)[0, context["arm_joint_ids"]]
+        joint_velocity = _tensor(robot.data.joint_vel)[0, context["arm_joint_ids"]]
+        bounded_action = torch.clamp(actions[0], -1.0, 1.0)
+        q_target = joint_position + context["action_scale"] * bounded_action
+        target_center = uenv.command_manager.get_command("target_pose")[0, :3]
+
+        reach_logger.append(
+            elapsed_s=elapsed_s,
+            goal_index=sequence_index if reach_goal_sequence else -1,
+            target_center=target_center.detach().cpu().numpy(),
+            left_eef=left_eef_root.detach().cpu().numpy(),
+            right_eef=right_eef_root.detach().cpu().numpy(),
+            action=bounded_action.detach().cpu().numpy(),
+            joint_position=joint_position.detach().cpu().numpy(),
+            joint_velocity=joint_velocity.detach().cpu().numpy(),
+            q_target=q_target.detach().cpu().numpy(),
+        )
 
     # reset environment
     obs = env.get_observations()
     timestep = 0
-    # simulate environment
-    while simulation_app.is_running():
-        start_time = time.time()
-        # run everything in inference mode
-        with torch.inference_mode():
-            # agent stepping
-            actions = policy(obs)
-            # env stepping
-            obs, _, _, _ = env.step(actions)
-        if args_cli.video:
+    try:
+        # simulate environment
+        while simulation_app.is_running():
+            elapsed_s = timestep * dt
+            if reach_goal_sequence and elapsed_s + 1.0e-9 >= next_sequence_switch_s:
+                sequence_index += 1
+                if sequence_index >= len(reach_goal_sequence):
+                    if args_cli.reach_goal_sequence_loop:
+                        sequence_index = 0
+                    else:
+                        print("[REACH SEQUENCE] completed")
+                        break
+                apply_sequence_goal(sequence_index, elapsed_s)
+                obs = env.get_observations()
+
+            start_time = time.time()
+            # run everything in inference mode
+            with torch.inference_mode():
+                # agent stepping
+                actions = policy(obs)
+                if reach_logger is not None:
+                    record_reach_sample(actions, elapsed_s)
+                # env stepping
+                obs, _, _, _ = env.step(actions)
             timestep += 1
-            # Exit the play loop after recording one video
-            if timestep == args_cli.video_length:
-                break
+            if args_cli.video:
+                # Exit the play loop after recording one video
+                if timestep == args_cli.video_length:
+                    break
 
-        # time delay for real-time evaluation
-        sleep_time = dt - (time.time() - start_time)
-        if args_cli.real_time and sleep_time > 0:
-            time.sleep(sleep_time)
-
-    # close the simulator
-    env.close()
+            # time delay for real-time evaluation
+            sleep_time = dt - (time.time() - start_time)
+            if args_cli.real_time and sleep_time > 0:
+                time.sleep(sleep_time)
+    finally:
+        if reach_logger is not None:
+            try:
+                run_dir, plot_paths = reach_logger.finalize()
+                print(
+                    f"[REACH LOG] Saved {reach_logger.sample_count} samples and "
+                    f"{len(plot_paths)} plots to: {run_dir}"
+                )
+            except Exception as error:
+                print(f"[REACH LOG] Failed to finalize plots: {error}")
+        # close the simulator
+        env.close()
 
 
 if __name__ == "__main__":

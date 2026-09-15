@@ -3,7 +3,19 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import RslRlMLPModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
+
+
+@configclass
+class TanhSquashedGaussianDistributionCfg(RslRlMLPModelCfg.GaussianDistributionCfg):
+    """Configuration for the task-local bounded Gaussian policy."""
+
+    class_name = (
+        "dual_fr3_lab.tasks.manager_based.reach.agents.tanh_squashed_gaussian:"
+        "TanhSquashedGaussianDistribution"
+    )
+    std_type = "log"
+    epsilon: float = 1.0e-6
 
 
 @configclass
@@ -18,14 +30,18 @@ class DualFR3ReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 50
     experiment_name = "dual_fr3_reach"
     seed = 42
+    obs_groups = {"actor": ["policy"], "critic": ["policy"]}
 
-    policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_obs_normalization=False,
-        critic_obs_normalization=False,
-        actor_hidden_dims=[256, 128, 64],
-        critic_hidden_dims=[256, 128, 64],
+    actor = RslRlMLPModelCfg(
+        hidden_dims=[256, 128, 64],
         activation="elu",
+        obs_normalization=False,
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(init_std=1.0),
+    )
+    critic = RslRlMLPModelCfg(
+        hidden_dims=[256, 128, 64],
+        activation="elu",
+        obs_normalization=False,
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
@@ -41,3 +57,54 @@ class DualFR3ReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class DualFR3ReachSim2RealPPORunnerCfg(DualFR3ReachPPORunnerCfg):
+    """Reach v1 runner using a tanh-squashed bounded Gaussian actor."""
+
+    experiment_name = "dual_fr3_reach_sim2real_v1"
+    actor = RslRlMLPModelCfg(
+        hidden_dims=[256, 128, 64],
+        activation="elu",
+        obs_normalization=False,
+        distribution_cfg=TanhSquashedGaussianDistributionCfg(init_std=1.0),
+    )
+    # The actor is already in (-1, 1); retain the wrapper clip as a numerical safety guard.
+    clip_actions = 1.0
+    max_iterations = 5000
+
+
+@configclass
+class DualFR3ReachSim2RealV2PPORunnerCfg(DualFR3ReachSim2RealPPORunnerCfg):
+    """Reach v2 runner for 1kHz physics/PD and a 20Hz bounded actor."""
+
+    experiment_name = "dual_fr3_reach_sim2real_v2"
+
+
+@configclass
+class DualFR3Reach100HzNoFrictionPPORunnerCfg(DualFR3ReachSim2RealPPORunnerCfg):
+    """Runner with an explicit log namespace for the legacy 100Hz/no-friction setup."""
+
+    experiment_name = "dual_fr3_reach_sim2real_100hz_nofriction"
+
+
+@configclass
+class DualFR3Reach100HzFrictionPPORunnerCfg(DualFR3ReachSim2RealPPORunnerCfg):
+    """Runner for 100Hz physics/PD with MuJoCo-matched passive dynamics."""
+
+    experiment_name = "dual_fr3_reach_sim2real_100hz_friction"
+
+
+@configclass
+class DualFR3Reach1kHzFrictionPPORunnerCfg(DualFR3ReachSim2RealPPORunnerCfg):
+    """Runner for 1kHz physics/PD with MuJoCo-matched passive dynamics."""
+
+    experiment_name = "dual_fr3_reach_sim2real_1khz_friction"
+
+
+@configclass
+class DualFR3Reach1kHzNoFrictionPPORunnerCfg(DualFR3ReachSim2RealPPORunnerCfg):
+    """Runner for 1kHz physics/PD with no explicit passive-property override."""
+
+    experiment_name = "dual_fr3_reach_sim2real_1khz_nofriction"

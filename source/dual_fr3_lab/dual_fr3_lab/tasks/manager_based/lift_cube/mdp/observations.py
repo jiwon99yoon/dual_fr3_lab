@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import torch
+import warp as wp
 from typing import TYPE_CHECKING
 
 from isaaclab.assets import Articulation, RigidObject
@@ -30,7 +31,10 @@ def object_orientation_in_robot_root_frame(
     robot: RigidObject = env.scene[robot_cfg.name]
     obj: RigidObject = env.scene[object_cfg.name]
     _, quat = subtract_frame_transforms(
-        robot.data.root_pos_w, robot.data.root_quat_w, obj.data.root_pos_w, obj.data.root_quat_w
+        robot.data.root_pos_w.torch,
+        robot.data.root_quat_w.torch,
+        obj.data.root_pos_w.torch,
+        obj.data.root_quat_w.torch,
     )
     sign = torch.where(quat[:, 0:1] >= 0.0, 1.0, -1.0)
     return quat * sign
@@ -47,5 +51,5 @@ def joint_measured_torques(
     성격이 맞는다. 접촉/payload/동역학 성분이 담기므로 contact-aware 정책 학습용.
     """
     asset: Articulation = env.scene[asset_cfg.name]
-    measured = asset.root_physx_view.get_dof_projected_joint_forces()
+    measured = wp.to_torch(asset.root_physx_view.get_dof_projected_joint_forces())
     return measured[:, asset_cfg.joint_ids]

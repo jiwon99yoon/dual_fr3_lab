@@ -2146,3 +2146,134 @@ obs: P1~P4는 54 (joint 28 + box pos 3 + goal 7 + action 14 + 양판 접촉력 2
         실물 배포 시 step-response로 FR3 alpha 실측 후 LagDR 범위 결정할 것 (sim2real_gap.md §2-4).
         현재 target DR (x:0.40~0.60, y:±0.10, z:0.10~0.35)은 임의 설정 — 실측 workspace 대비 검토 필요.
 
+=== [0831] dual_fr3_reach v0 — 5000 iter 재학습 결과 ===
+  목적:
+    0830 v0 3000 iter run을 동일 task/reward로 5000 iter까지 재학습해 수렴값과
+    play 거동을 기준선으로 확정. seed42, 4096 env, 20Hz policy / 100Hz physics,
+    obs 58D, action 14D relative joint position(×0.1), unbounded Gaussian, wrapper clip 없음,
+    PhysX implicit PD(Kp=80, Kd=4, effort_limit_sim=87/12Nm).
+
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Reach-DualFR3-v0 --headless --max_iterations 5000
+
+  run: logs/rsl_rl/dual_fr3_reach/2026-08-31_17-11-10
+    checkpoint: model_4999.pt (5000 iter 완주)
+    params 확인: clip_actions=null, Gaussian init_std=1.0/scalar, entropy_coef=0.006,
+                 episode 8s=160 control steps.
+
+  결과 (TB tail-50 mean, 별도 표시는 final):
+    mean_reward: 47.34 (final 47.39, max 47.51)
+    reach_coarse: 1.900 / 2.0 (95.0%)
+    reach_fine:   4.098 / 5.0 (82.0%)
+    action_rate: -0.0739 / joint_vel: -0.00702 / undesired_contact: 0.0
+    policy mean_std: 0.993 -> 0.250 (tail 0.250), entropy: 19.82 -> -1.70
+    LR: tail 2.76e-05, final 1.00e-05. time_out=1.0, episode length=160 정상 수렴.
+    play(사용자 확인): 양팔이 target에 도달하며 v1에서 본 심한 진동·EEF
+      orientation 뒤틀림은 관찰되지 않음.
+
+  판정: 성공, reach 기준 policy로 채택. std·entropy가 계속 감소하고 fine reward가
+        4.10 근처에 안착해 연속 action 표현에서 부드러운 해를 학습한 정상 run.
+
+=== [0903] dual_fr3_reach Sim2Real v1 — hard-clipped Gaussian + explicit torque limits ===
+  목적/변경 (v0 대비):
+    실로봇 power-limit 문제를 줄이기 위해 raw action을 RSL-RL wrapper에서 [-1,1]로
+    hard clipping하고 processed offset을 ±0.1rad로 제한. 관절 순서를 left j1~7,
+    right j1~7로 고정. implicit PD를 explicit PD(Kp=80, Kd=4)로 교체하고
+    torque magnitude 87/12Nm + torque-rate 1000Nm/s(100Hz에서 ±10Nm/step) 적용.
+    reward/obs/goal/20Hz policy/PPO entropy_coef=0.006은 v0와 동일.
+
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Reach-DualFR3-Sim2Real-v1 --headless --max_iterations 5000
+
+  run: logs/rsl_rl/dual_fr3_reach_sim2real_v1/2026-09-03_17-28-54
+    checkpoint: model_4999.pt (5000 iter 완주)
+    ⚠ 이 run은 현재 tanh-squashed actor 수정 전의 run.
+       저장된 params/agent.yaml은 GaussianDistribution(init_std=1.0, scalar) + clip_actions=1.0.
+
+  결과 (TB tail-50 mean, 별도 표시는 final):
+    mean_reward: 20.92 (final 21.01, max 22.46) — v0 47.34의 44%
+    reach_coarse: 1.289 / 2.0 (v0 1.900)
+    reach_fine:   1.446 / 5.0 (v0 4.098, 65% 감소)
+    action_rate: -0.1235 (v0 -0.0739보다 67% 악화)
+    joint_vel: -0.00141 / undesired_contact: -0.00217
+    policy mean_std: 0.997 -> 20.575 (tail 20.471, final=max) — 단조 폭주
+    entropy: 19.85 -> 62.05 (final=max), LR: max 1.00e-02 / final 3.90e-04.
+    checkpoint 직접 확인: joint별 std 15.23~25.79, mean 20.58; actor last-layer norm
+      14.15(v0 5.98). 대표적인 initial/goal observation을 구성해 확인했을 때
+      deterministic raw mean의 98.4%가 [-1,1] 밖이어서 wrapper 후 거의 모든 축이 ±1로 포화.
+    play: target position에는 도달하지만 이동/유지 중 진동이
+      심하고 wrist/plate orientation이 크게 뒤틀림. 몇 차례 큰 자세 전환은
+      random goal resampling(4~8s) + episode timeout/reset(8s)도 일부 포함.
+
+  원인 분석:
+    1) 주원인 = hard clipping × unbounded Gaussian × entropy bonus의 퇴화.
+       wrapper가 policy sample을 먼저 ±1로 자르므로 환경·action_rate reward는 clipping 전
+       크기를 못 봄. mean/std를 같이 키워 clipped sign 분포는 유지하면서 latent
+       Gaussian entropy만 늘릴 수 있어, PPO가 std 20.6의 saturation policy로 수렴.
+       play는 deterministic mean을 ±1로 자른 bang-bang command가 되어 부호 반전 시 chatter 발생.
+    2) EEF orientation/null-space는 학습 목표가 아님. dual_ee_reach는 position 3D만
+       reward하고 command quaternion을 무시. object_orientation obs도 EEF quat가 아닌 0으로
+       채우며 orientation/home-pose/joint-deviation reward가 없음. 7DoF null-space의 뒤틀림은
+       보상상 무죄; v0의 좋은 자세는 implicit PD·비포화 policy의 암묵적 규제 결과.
+    3) explicit PD + torque-rate limiter는 증폭 요인. relative target이 physics substep마다
+       q_target=q_current+delta로 rebase되어 포화 시 대략 ±8Nm-4qdot의 torque-like
+       command가 됨. ±8Nm 부호 반전에 torque-rate 지연이 추가되어 진동을 키움.
+       torque magnitude limit 자체는 P항이 약 8Nm라 1차 원인은 아님.
+    4) joint order 변경은 action과 joint_pos/vel obs를 모두 같은 left7/right7로 맞춰
+       사용했으므로 이번 실패의 원인으로 보지 않음.
+
+  판정: 실패. 목표 위치 도달은 학습했지만 v0보다 reward/fine accuracy가 크게
+        낮고 actor가 saturation regime으로 붕괴. model_4999.pt는 실로봇 배포 후보에서 제외.
+
+  후속 수정 (2026-09-03, 본 run 진단 후):
+    v1 actor를 tanh-squashed Gaussian으로 교체. sampling/inference를 (-1,1)에 내재화하고
+    PPO log-prob에 tanh Jacobian correction, entropy에 squashed-distribution 추정을 적용.
+    wrapper clip은 numerical safety guard로만 유지. std parameterization은 log를 사용.
+    ⚠ 17-28-54 checkpoint는 새 distribution과 호환되지 않으므로 resume 금지, scratch 재학습.
+    다음 판정: mean_std/entropy 폭주 소멸 + action_rate/v0 수준 회복 + play 진동 감소.
+
+=== [0903] dual_fr3_reach Sim2Real v1 — tanh-squashed actor 재학습 성공 ===
+  목적/설정:
+    초기 v1의 hard-clipped unbounded Gaussian saturation을 제거하기 위해 actor를
+    tanh-squashed Gaussian으로 교체하고 scratch에서 5000 iter 재학습.
+    tanh Jacobian-corrected log-prob, squashed entropy 추정, log-std 사용.
+    환경 측 wrapper clip ±1은 numerical guard로 유지. explicit PD(Kp=80, Kd=4),
+    torque magnitude 87/12Nm, torque-rate 1000Nm/s, 20Hz policy / 100Hz physics,
+    action/obs joint 순서 left j1~7 + right j1~7은 이전 v1과 동일.
+
+  학습 명령:
+    python scripts/rsl_rl/train.py --task Isaac-Reach-DualFR3-Sim2Real-v1 --headless --max_iterations 5000
+
+  run: logs/rsl_rl/dual_fr3_reach_sim2real_v1/2026-09-03_18-57-37
+    checkpoint: model_4999.pt (5000 iter 완주, 현재 simulation v1 reference)
+    params 확인: TanhSquashedGaussianDistribution, std_type=log, clip_actions=1.0,
+                 episode 8s=160 control steps.
+
+  결과 (TB tail-50 mean, 별도 표시는 final):
+    mean_reward: 37.74 (final 37.83, max 38.81)
+      — 초기 clipped v1 20.92 대비 80% 증가, v0 47.34의 79.7%
+    reach_coarse: 1.663 / 2.0 (초기 v1 1.289 대비 29% 증가)
+    reach_fine:   3.083 / 5.0 (초기 v1 1.446 대비 113% 증가)
+    action_rate: -0.0246 (초기 v1 -0.1235 대비 penalty 크기 80% 감소,
+                         v0 -0.0739보다도 작음)
+    joint_vel: -0.000834 / undesired_contact: -0.000001(사실상 0)
+    policy mean_std: 0.990 -> 0.297 (final 0.296, checkpoint exp(log_std) 평균 0.296)
+    transformed entropy: 9.36 -> -3.53 (final -3.62) — 폭주 없이 감소·수렴.
+    LR: tail 1.01e-04, final 1.14e-04. time_out=1.0, episode length=160 정상.
+
+  play 검증:
+    여러 random target에 양팔 EE가 반복 도달하고 안정적으로 유지. 17-28-54 영상의
+    지속적인 고주파 진동과 큰 wrist/plate orientation 뒤틀림은 관찰되지 않음.
+    4~8s goal resampling과 8s timeout/reset에 따른 의도된 자세 전환은 별도.
+
+  해석:
+    tanh가 actor action을 처음부터 (-1,1)에 두고 PPO가 실제 bounded distribution의
+    log-prob/entropy를 최적화하면서, clipping 밖 mean/std를 키우던 loophole이 제거됨.
+    std 20.58 saturation과 bang-bang chatter가 사라진 것이 reward/action-rate/영상에서 일치.
+    단, reward는 EE position만 사용하고 orientation·home posture를 직접 규제하지 않으므로
+    영상에서의 안정된 orientation은 확인 결과이지 task가 보장하는 성질은 아님.
+
+  판정: 성공. explicit torque magnitude/rate limit 조건에서 목표 도달과 안정적 유지 확인.
+        model_4999.pt를 현재 simulation v1 reference 및 sim2real 검증 후보로 채택.
+        다음 단계는 shadow mode에서 joint/action 순서, tanh 포함 export, 실제 torque·rate와
+        tool orientation 요구조건을 확인한 뒤 실로봇 step-response를 검증하는 것.

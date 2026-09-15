@@ -18,7 +18,8 @@ import torch
 import isaaclab.sim as sim_utils
 from isaaclab.assets import AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.envs.mdp.commands import UniformPoseCommand
+from isaaclab.envs.mdp.commands.commands_cfg import UniformPoseCommandCfg
+from isaaclab.envs.mdp.commands.pose_command import UniformPoseCommand
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -31,14 +32,27 @@ from isaaclab.sensors import ContactSensorCfg, FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import combine_frame_transforms
-from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as Gnoise
+from isaaclab.utils.noise import GaussianNoiseCfg as Gnoise
+from isaaclab_physx.physics import PhysxCfg
 
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
-from dual_fr3_lab.robots.dual_fr3_plate_ee import DUAL_FR3_PLATE_EE_CFG, PLATE_TCP_OFFSET_POS  # isort: skip
+from dual_fr3_lab.robots.dual_fr3_plate_ee import (  # isort: skip
+    DUAL_FR3_PLATE_EE_CFG,
+    DUAL_FR3_PLATE_EE_SIM2REAL_100HZ_FRICTION_CFG,
+    DUAL_FR3_PLATE_EE_SIM2REAL_1KHZ_NO_FRICTION_CFG,
+    DUAL_FR3_PLATE_EE_SIM2REAL_CFG,
+    DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG,
+    PLATE_TCP_OFFSET_POS,
+)
 from dual_fr3_lab.tasks.manager_based.lift_cube import mdp  # isort: skip
 
 ROOT_Z = 0.405       # base frame 높이 (plate task와 동일)
 REACH_OFFSET_Y = 0.20  # 각 팔 EE target = center ± 0.20m (y축)
+DUAL_ARM_JOINT_NAMES = [
+    f"{side}_fr3_joint{joint}"
+    for side in ("left", "right") for joint in range(1, 8)
+]
+DUAL_ARM_JOINT_IDS = list(range(0, 14, 2)) + list(range(1, 14, 2))
 
 
 # ──────────────────────────── custom obs ─────────────────────────────
@@ -79,15 +93,20 @@ def dual_ee_reach(
     ri = names.index("right_ee")
 
     cmd = env.command_manager.get_command(command_name)[:, :3]
-    center_w, _ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, cmd)
+    center_w, _ = combine_frame_transforms(
+        robot.data.root_pos_w.torch,
+        robot.data.root_quat_w.torch,
+        cmd,
+    )
 
     off = torch.zeros_like(center_w)
     off[:, 1] = offset_y
     left_target = center_w + off   # 왼팔: +y쪽
     right_target = center_w - off  # 오른팔: -y쪽
 
-    d_l = torch.norm(ee_frame.data.target_pos_w[:, li] - left_target, dim=-1)
-    d_r = torch.norm(ee_frame.data.target_pos_w[:, ri] - right_target, dim=-1)
+    ee_pos_w = ee_frame.data.target_pos_w.torch
+    d_l = torch.linalg.vector_norm(ee_pos_w[:, li] - left_target, dim=-1)
+    d_r = torch.linalg.vector_norm(ee_pos_w[:, ri] - right_target, dim=-1)
     return torch.minimum(1.0 - torch.tanh(d_l / std), 1.0 - torch.tanh(d_r / std))
 
 
@@ -156,7 +175,7 @@ class DualArmReachCommand(UniformPoseCommand):
 
 
 @configclass
-class DualArmReachCommandCfg(mdp.UniformPoseCommandCfg):
+class DualArmReachCommandCfg(UniformPoseCommandCfg):
     class_type: type = DualArmReachCommand
 
 
@@ -169,7 +188,7 @@ class CommandsCfg:
         body_name="base",
         resampling_time_range=(4.0, 8.0),
         debug_vis=True,
-        ranges=mdp.UniformPoseCommandCfg.Ranges(
+        ranges=UniformPoseCommandCfg.Ranges(
             pos_x=(0.40, 0.60),
             pos_y=(-0.10, 0.10),
             pos_z=(0.10, 0.35),   # base frame → world 0.555~0.755m
@@ -186,6 +205,18 @@ class ActionsCfg:
         asset_name="robot",
         joint_names=[".*_fr3_joint[1-7]"],
         scale=0.1,
+    )
+
+
+@configclass
+class Sim2RealActionsCfg:
+    arm_action = mdp.RelativeJointPositionActionCfg(
+        asset_name="robot",
+        joint_names=DUAL_ARM_JOINT_NAMES,
+        preserve_order=True,
+        scale=0.1,
+        # JointAction applies clip after scale: this is raw [-1, 1] -> offset [-0.1, 0.1] rad.
+        clip={".*": (-0.1, 0.1)},
     )
 
 
@@ -302,7 +333,11 @@ class DualFR3ReachEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.sim.dt = 0.01  # 100 Hz
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 64 * 1024
+        self.sim.render_interval = self.decimation
+        # Isaac Lab 3.0부터 solver 설정은 ``sim.physx``가 아니라 backend-neutral
+        # ``sim.physics``에 둔다. 이 cfg는 ManagerBasedRLEnvCfg를 직접 상속하므로
+        # LiftEnvCfg처럼 physics preset을 부모에게서 받지 않아 PhysX를 명시한다.
+        self.sim.physics = PhysxCfg()
 
         # ── EE frame transformer (plate env와 동일 패턴: __post_init__에서 scene에 추가) ──
         marker_cfg = FRAME_MARKER_CFG.copy()
@@ -335,7 +370,149 @@ class DualFR3ReachEnvCfg(ManagerBasedRLEnvCfg):
 
 
 @configclass
-class DualFR3ReachEnvCfg_PLAY(DualFR3ReachEnvCfg):
+class DualFR3ReachEnvCfgPlay(DualFR3ReachEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# Backwards-compatible entry point used by Isaac-Reach-DualFR3-Play-v0.
+DualFR3ReachEnvCfg_PLAY = DualFR3ReachEnvCfgPlay
+
+
+@configclass
+class Sim2RealObservationsCfg(ObservationsCfg):
+    @configclass
+    class PolicyCfg(ObservationsCfg.PolicyCfg):
+        joint_pos = ObsTerm(
+            func=mdp.joint_pos_rel,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_ids=DUAL_ARM_JOINT_IDS)
+            },
+            noise=Gnoise(std=0.005),
+        )
+        joint_vel = ObsTerm(
+            func=mdp.joint_vel_rel,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_ids=DUAL_ARM_JOINT_IDS)
+            },
+            noise=Gnoise(std=0.05),
+        )
+
+    policy: PolicyCfg = PolicyCfg()
+
+@configclass
+class DualFR3ReachSim2RealSceneCfg(DualFR3ReachSceneCfg):
+    robot = DUAL_FR3_PLATE_EE_SIM2REAL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+
+
+@configclass
+class DualFR3ReachSim2RealEnvCfg(DualFR3ReachEnvCfg):
+    """v0 + bounded actions + explicit torque saturation/rate limiting."""
+
+    scene: DualFR3ReachSim2RealSceneCfg = DualFR3ReachSim2RealSceneCfg(
+        num_envs=4096, env_spacing=2.5
+    )
+    actions: Sim2RealActionsCfg = Sim2RealActionsCfg()
+    observations: Sim2RealObservationsCfg = Sim2RealObservationsCfg()
+
+
+@configclass
+class DualFR3ReachSim2RealEnvCfgPlay(DualFR3ReachSim2RealEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3ReachSim2Real100HzFrictionSceneCfg(DualFR3ReachSceneCfg):
+    """100Hz Reach scene with MuJoCo-matched passive joint dynamics."""
+
+    robot = DUAL_FR3_PLATE_EE_SIM2REAL_100HZ_FRICTION_CFG.replace(
+        prim_path="{ENV_REGEX_NS}/Robot"
+    )
+
+
+@configclass
+class DualFR3ReachSim2Real100HzFrictionEnvCfg(DualFR3ReachSim2RealEnvCfg):
+    """100Hz physics/PD with explicit MuJoCo-matched armature and friction."""
+
+    scene: DualFR3ReachSim2Real100HzFrictionSceneCfg = (
+        DualFR3ReachSim2Real100HzFrictionSceneCfg(num_envs=4096, env_spacing=2.5)
+    )
+
+
+@configclass
+class DualFR3ReachSim2Real100HzFrictionEnvCfgPlay(
+    DualFR3ReachSim2Real100HzFrictionEnvCfg
+):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3ReachSim2RealV2SceneCfg(DualFR3ReachSceneCfg):
+    """Reach v2 scene using 1kHz torque and MuJoCo-matched passive dynamics."""
+
+    robot = DUAL_FR3_PLATE_EE_SIM2REAL_V2_CFG.replace(
+        prim_path="{ENV_REGEX_NS}/Robot"
+    )
+
+
+@configclass
+class DualFR3ReachSim2RealV2EnvCfg(DualFR3ReachSim2RealEnvCfg):
+    """Reach v2: 1kHz physics/PD, 20Hz policy, bounded relative actions."""
+
+    scene: DualFR3ReachSim2RealV2SceneCfg = DualFR3ReachSim2RealV2SceneCfg(
+        num_envs=4096, env_spacing=2.5
+    )
+    # 50 physics steps x 1ms = one 50ms policy step (20Hz).
+    decimation = 50
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.sim.dt = 0.001  # 1kHz physics and explicit PD actuator update
+        self.sim.render_interval = self.decimation
+
+
+@configclass
+class DualFR3ReachSim2RealV2EnvCfgPlay(DualFR3ReachSim2RealV2EnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3ReachSim2Real1kHzNoFrictionSceneCfg(DualFR3ReachSceneCfg):
+    """1kHz Reach scene with no explicit passive joint-property override."""
+
+    robot = DUAL_FR3_PLATE_EE_SIM2REAL_1KHZ_NO_FRICTION_CFG.replace(
+        prim_path="{ENV_REGEX_NS}/Robot"
+    )
+
+
+@configclass
+class DualFR3ReachSim2Real1kHzNoFrictionEnvCfg(DualFR3ReachSim2RealV2EnvCfg):
+    """1kHz physics/PD with the no-passive-override checkpoint semantics."""
+
+    scene: DualFR3ReachSim2Real1kHzNoFrictionSceneCfg = (
+        DualFR3ReachSim2Real1kHzNoFrictionSceneCfg(num_envs=4096, env_spacing=2.5)
+    )
+
+
+@configclass
+class DualFR3ReachSim2Real1kHzNoFrictionEnvCfgPlay(
+    DualFR3ReachSim2Real1kHzNoFrictionEnvCfg
+):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 50

@@ -4,8 +4,7 @@ DYROS dual-FR3 (Husky 베이스 + 양팔 Franka FR3) 로봇의 RL 태스크 모�
 [Isaac Lab](https://github.com/isaac-sim/IsaacLab) **external project** 방식 — Isaac Lab 본체는 import로만 사용하고,
 로봇 cfg·태스크·에셋·실험 기록을 이 repo에서 독립 관리한다.
 
-> **버전 고정: Isaac Lab 2.2.1 / Isaac Sim 5.0.0** (conda env `env_isaaclab`, Python 3.11, Ubuntu 24.04)
-> Isaac Lab 3.0(beta)/Isaac Sim 6.0은 Python 3.12 + 물리 백엔드 변경이 있으므로 마이그레이션 시 이 기준 코드임을 참고.
+> **최신 버전 브랜치: Isaac Lab 3.0.0 Beta 2 / Isaac Sim 6.0.1** (conda env `isaac_601_300b2`, Python 3.12, Ubuntu 24.04)
 
 ---
 
@@ -19,44 +18,49 @@ DYROS dual-FR3 (Husky 베이스 + 양팔 Franka FR3) 로봇의 RL 태스크 모�
 
 ## Installation
 
-> **기준 환경: 5090-v2** (Ubuntu 24.04, Python 3.11, Isaac Sim 5.0.0 / Isaac Lab 2.2.1, conda pip 방식)
-> 5090-v3(Isaac Sim 5.1.0 바이너리)는 아래 Multi-PC 셋업 참조.
+> **기준 환경: RTX 5070 Ti** (Ubuntu 24.04, Python 3.12, Isaac Sim 6.0.1 / Isaac Lab 3.0.0 Beta 2, conda pip 방식)
+> PyPI 패키지는 호환 패치가 포함된 `isaacsim 6.0.1.0` / `isaaclab 3.0.0b2.post1`로 고정한다.
 
-### 1. conda 환경 생성
-
-```bash
-conda create -n env_isaaclab python=3.11 -y
-conda activate env_isaaclab
-```
-
-### 2. Isaac Sim 5.0.0 + Isaac Lab 2.2.1 pip 설치
+### 1. mamba 환경 생성
 
 ```bash
-# Isaac Sim 5.0.0 (NVIDIA PyPI)
-pip install isaacsim==5.0.0.0 --extra-index-url https://pypi.nvidia.com
-
-# Isaac Lab (설치 당시 최신 버전 = 2.2.1, pip 패키지명 기준 0.46.2)
-pip install isaaclab --extra-index-url https://pypi.nvidia.com
+mamba create -n isaac_601_300b2 python=3.12 -y
+mamba activate isaac_601_300b2
 ```
 
-> 설치 후 `pip show isaacsim isaaclab`으로 버전 확인: `isaacsim 5.0.0.0`, `isaaclab 0.46.2`
-
-### 3. rsl-rl-lib 버전 고정 (필수)
-
-Isaac Lab 기본 설치 시 rsl-rl-lib 최신 버전이 딸려 올 수 있다. **반드시 3.0.1로 맞춰야 한다.**
+### 2. PyTorch 2.11.0 (CUDA 13.0) 설치
 
 ```bash
-pip install rsl-rl-lib==3.0.1
+python -m pip install --upgrade pip
+
+python -m pip install \
+  torch==2.11.0 \
+  torchvision==0.26.0 \
+  --index-url https://download.pytorch.org/whl/cu130
 ```
+
+### 3. Isaac Sim 6.0.1 + Isaac Lab 3.0.0 Beta 2 설치
+
+```bash
+python -m pip install \
+  "isaaclab[isaacsim,all]==3.0.0b2.post1" \
+  --extra-index-url https://pypi.nvidia.com
+```
+
+> `isaacsim[all,extscache] 6.0.1.0`과 Isaac Lab의 RL 의존성이 함께 설치된다.
 
 ### 4. dual_fr3_lab 설치
 
 ```bash
-cd ~/dual_fr3_lab   # 이 repo 루트
-pip install -e source/dual_fr3_lab
+cd ~/etri_ws/src/dual_fr3_lab
+python -m pip install -e source/dual_fr3_lab
+
+# 설치 버전 및 의존성 확인
+python -m pip show isaacsim isaaclab torch torchvision
+python -m pip check
 
 # 정상 설치 확인
-python scripts/list_envs.py   # Isaac-Lift-Cube-DualFR3-v3 등이 보이면 성공
+python scripts/list_envs.py
 ```
 
 ---
@@ -72,7 +76,20 @@ python scripts/rsl_rl/train.py --task Isaac-Lift-Cube-DualFR3-v0 --headless --ma
 
 # 재생 (checkpoint 절대경로 지정)
 python scripts/rsl_rl/play.py --task Isaac-Lift-Cube-DualFR3-Play-v0 --num_envs 16 \
-    --checkpoint logs/rsl_rl/dual_fr3_lift/<run>/model_XXXX.pt
+    --checkpoint logs/rsl_rl/dual_fr3_lift/<run>/model_XXXX.pt --viz kit
+
+# Reach: 명시적으로 지정한 goal sequence 재생
+python scripts/rsl_rl/play.py --task Isaac-Reach-DualFR3-Play-v0 --num_envs 1 \
+    --checkpoint logs/rsl_rl/dual_fr3_reach/<run>/model_XXXX.pt \
+    --reach_goal_sequence config/reach_goal_sequence.example.json --viz kit
+
+# Reach Sim2Real v1 학습 (tanh-bounded actor + FR3 torque/rate limits)
+python scripts/rsl_rl/train.py --task Isaac-Reach-DualFR3-Sim2Real-v1 \
+    --headless --max_iterations 5000
+
+# Reach Sim2Real 학습 (권장 배포 조합: 1 kHz + MuJoCo-matched friction)
+python scripts/rsl_rl/train.py --task Isaac-Reach-DualFR3-Sim2Real-1kHz-Friction-v0 \
+    --headless --max_iterations 5000
 
 # 강건성 평가 (baseline vs noisy, 축 분리 스위치 --no_obs_noise / --no_physics_dr)
 python scripts/tools/eval_dual_fr3_lift_robustness.py \
@@ -118,6 +135,7 @@ dual_fr3_lab/
 │   ├── dual_fr3_lift_v1.md                  # cube v1 스펙 (50Hz, 히스토리)
 │   ├── dual_fr3_lift_v2.md                  # cube v2 스펙 (20Hz 정육면체, 히스토리)
 │   ├── dual_fr3_lift_v3.md                  # cube v3 스펙 (20Hz 세로 cube — 현재 배포 후보)
+│   ├── dual_fr3_reach_v1.md                 # Reach Sim2Real v1 액션·액추에이터·배포 계약
 │   ├── sim2real_gap.md                      # 공통 sim2real 원칙
 │   ├── system_pc.md                         # PC 환경·역할 분리·ROS2 workspace·로드맵
 │   └── log_per_task.txt                     # 전체 run 기록 (학습 결과·판정·설계 메모)
@@ -143,6 +161,43 @@ Cube lift는 sim2real 목표로 v0→v3까지 진화했다. **각 버전은 한 
 | `...-P{N}-Play-v0` / `...-P{N}-Play-Noisy-v0` | 각 P-series play/강건성 평가용. `eval_dual_fr3_plate_robustness.py`와 세트 |
 | `Isaac-Reach-DualFR3-v0` | **sim2real gap 분석용 양팔 EE reach.** 물체 없이 goal center ± 0.2m(y축) 목표점으로 양팔 동시 도달. **obs 58D = plate task와 완전 동일 구조** (plate_forces·object_orientation 슬롯은 0으로 채움). action semantics(delta joint pos × 0.1, 20Hz)도 plate와 동일 — 두 정책의 관절 궤적 특성 비교로 제어 지연·tracking 오차 분리 가능 |
 | `Isaac-Reach-DualFR3-Play-v0` | reach play용 (50 envs, corruption off) |
+| `Isaac-Reach-DualFR3-Sim2Real-v1` | 100 Hz/no-passive-override 호환 ID. Reach v0의 unbounded Gaussian을 **tanh-squashed bounded actor**로 교체하고, explicit PD 뒤 FR3 **torque saturation(87/12 Nm)** 및 **torque-rate limit(1000 Nm/s)** 적용 |
+| `Isaac-Reach-DualFR3-Sim2Real-v2` | 1 kHz/MuJoCo-matched-friction 호환 ID. v1의 obs/action/actor와 20 Hz policy 주기를 유지하고 physics + explicit PD를 **1 kHz**로 변경 |
+| `Isaac-Reach-DualFR3-Sim2Real-100Hz-NoFriction-v0` | 100 Hz physics/PD, armature/friction을 명시적으로 override하지 않는 과거 v1/nofriction 재현 환경 |
+| `Isaac-Reach-DualFR3-Sim2Real-100Hz-Friction-v0` | 100 Hz physics/PD + armature 0.1, static/dynamic friction 0.2, viscous friction 0.003 |
+| `Isaac-Reach-DualFR3-Sim2Real-1kHz-NoFriction-v0` | 1 kHz physics/PD, armature/friction을 명시적으로 override하지 않는 `2026-09-10_19-33-09` 재현 환경 |
+| `Isaac-Reach-DualFR3-Sim2Real-1kHz-Friction-v0` | 1 kHz physics/PD + 동일 passive dynamics. 현재 MuJoCo 배포 정합용 권장 환경 |
+| `...-NoFriction-Play-v0` / `...-Friction-Play-v0` | 각 dynamics별 inference ID. checkpoint 학습에 사용한 rate/friction 조합과 같은 Play ID를 선택해야 함 |
+
+### Reach 고정 goal sequence inference
+
+play.py의 --reach_goal_sequence 옵션을 사용하면 seed 기반 random sampling 대신
+JSON에 적힌 goal center를 순서대로 사용한다. 각 goal은 base frame 기준 위치와 유지
+시간을 가진다.
+
+~~~json
+{
+  "goals": [
+    {"label": "first", "position": [0.50, 0.00, 0.15], "duration_s": 4.0},
+    {"label": "second", "position": [0.45, 0.05, 0.25], "duration_s": 3.0}
+  ]
+}
+~~~
+
+~~~bash
+python scripts/rsl_rl/play.py \
+  --task Isaac-Reach-DualFR3-Play-v0 \
+  --num_envs 1 \
+  --checkpoint /absolute/path/to/model_4999.pt \
+  --reach_goal_sequence config/reach_goal_sequence.example.json \
+  --viz kit
+~~~
+
+sequence 모드에서는 random goal resampling과 8초 episode timeout이 비활성화된다.
+마지막 goal의 duration_s가 끝나면 inference가 종료된다. 계속 반복하려면
+--reach_goal_sequence_loop를 추가한다. 모든 position은 학습 범위
+x=[0.40,0.60], y=[-0.10,0.10], z=[0.10,0.35] 안에 있어야 하며, 범위를
+벗어나면 environment 생성 전에 오류를 낸다.
 
 각 버전의 **배포 스펙**(obs 순서·ready pose·action 규약·배포 루프·TODO)은 `docs/dual_fr3_lift_v{1,2,3}.md`.
 **현재 배포 후보 = v3** (`docs/dual_fr3_lift_v3.md`). 설계 이력·판단 근거는
