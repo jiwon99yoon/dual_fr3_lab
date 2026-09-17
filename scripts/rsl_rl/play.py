@@ -76,6 +76,15 @@ parser.add_argument(
 )
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument(
+    "--reach_policy_step_action",
+    action="store_true",
+    default=False,
+    help=(
+        "Reach only: snapshot q_target=q_measured+delta_q at each policy step and "
+        "hold that absolute target throughout physics decimation."
+    ),
+)
+parser.add_argument(
     "--reach_goal_sequence",
     type=str,
     default=None,
@@ -100,6 +109,10 @@ cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.reach_policy_step_action and (
+    args_cli.task is None or "Isaac-Reach-DualFR3" not in args_cli.task
+):
+    parser.error("--reach_policy_step_action is supported only for Isaac-Reach-DualFR3 tasks")
 try:
     reach_goal_sequence = (
         _load_reach_goal_sequence(args_cli.reach_goal_sequence)
@@ -181,6 +194,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg: RslRlBaseRunnerCfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, metadata.version("rsl-rl-lib"))
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+
+    if is_reach_task:
+        action_cfg = env_cfg.actions.arm_action
+        if not hasattr(action_cfg, "reference_mode"):
+            raise TypeError(
+                "Reach arm action configuration does not support selectable reference semantics."
+            )
+        if args_cli.reach_policy_step_action:
+            action_cfg.reference_mode = "policy_step"
+        print(f"[INFO] Reach action reference mode: {action_cfg.reference_mode}")
 
     if reach_goal_sequence:
         command_cfg = env_cfg.commands.target_pose
@@ -358,6 +381,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 f"{action_term.cfg.scale!r}"
             )
         action_scale = float(action_term.cfg.scale)
+        action_reference_mode = action_term.cfg.reference_mode
         result_root = Path(__file__).resolve().parents[2] / "result"
         reach_logger = IsaacReachRunLogger(
             result_root=result_root,
@@ -366,6 +390,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             sample_rate_hz=1.0 / dt,
             physics_dt_s=float(uenv.cfg.sim.dt),
             action_scale=action_scale,
+            action_reference_mode=action_reference_mode,
             reach_offset_y=REACH_OFFSET_Y,
             logged_env_index=0,
             goal_sequence=reach_goal_sequence,

@@ -27,6 +27,15 @@ parser.add_argument(
 )
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument(
+    "--reach_policy_step_action",
+    action="store_true",
+    default=False,
+    help=(
+        "Reach only: snapshot q_target=q_measured+delta_q at each policy step and "
+        "hold that absolute target throughout physics decimation."
+    ),
+)
+parser.add_argument(
     "--max_iterations",
     "--max_iteration",
     dest="max_iterations",
@@ -43,6 +52,10 @@ cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+if args_cli.reach_policy_step_action and (
+    args_cli.task is None or "Isaac-Reach-DualFR3" not in args_cli.task
+):
+    parser.error("--reach_policy_step_action is supported only for Isaac-Reach-DualFR3 tasks")
 
 # always enable cameras to record video
 if args_cli.video:
@@ -134,6 +147,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
+
+    if "Isaac-Reach-DualFR3" in args_cli.task:
+        action_cfg = env_cfg.actions.arm_action
+        if not hasattr(action_cfg, "reference_mode"):
+            raise TypeError(
+                "Reach arm action configuration does not support selectable reference semantics."
+            )
+        if args_cli.reach_policy_step_action:
+            action_cfg.reference_mode = "policy_step"
+        print(f"[INFO] Reach action reference mode: {action_cfg.reference_mode}")
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
