@@ -51,6 +51,7 @@ class IsaacReachRunLogger:
         sample_rate_hz: float,
         physics_dt_s: float,
         action_scale: float,
+        action_reference_mode: str,
         reach_offset_y: float,
         logged_env_index: int,
         goal_sequence: list[dict[str, Any]] | None,
@@ -76,6 +77,7 @@ class IsaacReachRunLogger:
         self.sample_rate_hz = float(sample_rate_hz)
         self.physics_dt_s = float(physics_dt_s)
         self.action_scale = float(action_scale)
+        self.action_reference_mode = str(action_reference_mode)
         self.reach_offset_y = float(reach_offset_y)
         self.logged_env_index = int(logged_env_index)
         self.goal_sequence = goal_sequence
@@ -190,10 +192,8 @@ class IsaacReachRunLogger:
             "coordinate_frame": "robot_root_local",
             "quaternion_order": "xyzw",
             "per_arm_target_offset_y_m": self.reach_offset_y,
-            "action_semantics": (
-                "bounded_action[-1,1]; "
-                f"q_target=q_measured+{self.action_scale:g}*action"
-            ),
+            "action_reference_mode": self.action_reference_mode,
+            "action_semantics": self._action_semantics_description(),
             "goal_sequence": self.goal_sequence,
             "eef_csv": self.eef_csv_path.name,
             "policy_trace_csv": self.policy_csv_path.name,
@@ -215,6 +215,18 @@ class IsaacReachRunLogger:
             self.run_dir / "policy_actions.png",
             self.run_dir / "joint_positions_vs_targets.png",
             self.run_dir / "joint_velocities.png",
+        )
+
+    def _action_semantics_description(self) -> str:
+        if self.action_reference_mode == "policy_step":
+            return (
+                "bounded_action[-1,1]; "
+                f"q_target[k]=q_measured(t_k)+{self.action_scale:g}*action[k]; "
+                "absolute q_target held until the next policy step"
+            )
+        return (
+            "bounded_action[-1,1]; "
+            f"q_target(t)=q_measured(t)+{self.action_scale:g}*action[k] at every physics step"
         )
 
     @staticmethod

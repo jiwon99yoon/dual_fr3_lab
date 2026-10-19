@@ -10,7 +10,8 @@ obs 58D = plate task와 완전 동일 구조:
   joint_pos(14) + joint_vel(14) + center_pos(3) + goal_cmd(7)
   + prev_action(14) + zeros_forces(2) + zeros_ori(4)
 plate_forces·object_orientation 슬롯은 0으로 채워 구조 호환 유지.
-action semantics (delta joint pos × 0.1, 20Hz) 도 plate와 동일.
+action은 delta joint pos × 0.1, 20Hz이며 reference update rate는 train/play
+플래그로 physics-step(기본값) 또는 policy-step snapshot을 선택할 수 있다.
 """
 
 import torch
@@ -30,7 +31,7 @@ from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg, FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
-from isaaclab.utils import configclass
+from isaaclab.utils.configclass import configclass
 from isaaclab.utils.math import combine_frame_transforms
 from isaaclab.utils.noise import GaussianNoiseCfg as Gnoise
 from isaaclab_physx.physics import PhysxCfg
@@ -45,6 +46,9 @@ from dual_fr3_lab.robots.dual_fr3_plate_ee import (  # isort: skip
     PLATE_TCP_OFFSET_POS,
 )
 from dual_fr3_lab.tasks.manager_based.lift_cube import mdp  # isort: skip
+from dual_fr3_lab.tasks.manager_based.reach.mdp import (  # isort: skip
+    ReachRelativeJointPositionActionCfg,
+)
 
 ROOT_Z = 0.405       # base frame 높이 (plate task와 동일)
 REACH_OFFSET_Y = 0.20  # 각 팔 EE target = center ± 0.20m (y축)
@@ -201,7 +205,7 @@ class CommandsCfg:
 
 @configclass
 class ActionsCfg:
-    arm_action = mdp.RelativeJointPositionActionCfg(
+    arm_action = ReachRelativeJointPositionActionCfg(
         asset_name="robot",
         joint_names=[".*_fr3_joint[1-7]"],
         scale=0.1,
@@ -210,7 +214,7 @@ class ActionsCfg:
 
 @configclass
 class Sim2RealActionsCfg:
-    arm_action = mdp.RelativeJointPositionActionCfg(
+    arm_action = ReachRelativeJointPositionActionCfg(
         asset_name="robot",
         joint_names=DUAL_ARM_JOINT_NAMES,
         preserve_order=True,

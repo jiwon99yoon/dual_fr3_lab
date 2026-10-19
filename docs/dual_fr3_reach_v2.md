@@ -178,6 +178,36 @@ hardware의 내부 중력보상 이후 외부 torque controller가 보는 관절
 근사하기 위한 설정이다. payload 오차, 내부 보상 오차와 motor dynamics는
 여전히 sim-to-real 차이로 남는다.
 
+## Relative action reference semantic 선택
+
+Reach의 기본 동작은 기존 checkpoint와의 호환성을 위해 physics-step reference를
+유지한다.
+
+```text
+q_target(t) = q_measured(t) + 0.1 * action[k]
+```
+
+첨부 실험 정의의 policy-step snapshot 방식처럼, 정책이 호출된 시점에 절대
+관절 목표를 한 번 만들고 다음 20 Hz 정책 호출까지 고정하려면 train/play에
+다음 플래그를 추가한다.
+
+```text
+--reach_policy_step_action
+```
+
+이때 적용되는 식은 다음과 같다.
+
+```text
+q_target[k] = q_measured(t_k) + 0.1 * action[k]
+```
+
+100 Hz에서는 이 절대 목표를 5개의 10 ms physics step 동안, 1 kHz에서는
+50개의 1 ms physics step 동안 유지한다. 이 플래그는 위 표의
+100 Hz/1 kHz 및 friction/no-friction task 모두에서 사용할 수 있다.
+Policy-step 방식으로 학습한 checkpoint는 play할 때도 반드시 같은 플래그를
+사용해야 한다. 플래그 없이 학습한 기존 checkpoint는 플래그 없이 재생해야
+학습 당시 action semantic이 유지된다.
+
 주의할 점은 검증된 v1 reference run
 `2026-09-03_18-57-37`의 저장된 `env.yaml`에는 armature/friction override가
 없다는 것이다. 이 passive dynamics 설정은 그 checkpoint 이후 현재 actuator
@@ -226,6 +256,7 @@ v2는 physics/actuator dt와 passive joint dynamics가 v1 checkpoint의 학습�
 ```bash
 python scripts/rsl_rl/train.py \
   --task Isaac-Reach-DualFR3-Sim2Real-1kHz-Friction-v0 \
+  --reach_policy_step_action \
   --headless \
   --max_iterations 5000
 ```
@@ -258,6 +289,7 @@ orientation 안정성은 영상으로 관찰할 수 있지만 현재 position-on
 ```bash
 python scripts/rsl_rl/play.py \
   --task Isaac-Reach-DualFR3-Sim2Real-1kHz-Friction-Play-v0 \
+  --reach_policy_step_action \
   --num_envs 1 \
   --checkpoint logs/rsl_rl/dual_fr3_reach_sim2real_1khz_friction/<run>/model_4999.pt \
   --viz kit
@@ -306,8 +338,11 @@ python scripts/rsl_rl/play.py \
 - v1 checkpoint를 v2 reference checkpoint 대신 사용하지 않는다.
 - 배포 NPZ는 actor 마지막의 tanh를 포함해야 한다.
 - 배포 노드의 `[-1, 1]` clipping은 수치적 safety guard로 유지한다.
-- policy action은 20 Hz로 생성하고 같은 offset을 50 ms 동안 유지한다.
-- controller는 1 kHz마다 `q_measured + held_offset` target을 다시 계산한다.
+- policy action은 20 Hz로 생성한다.
+- 기본 physics-step reference에서는 매 controller step마다
+  `q_measured + held_offset` target을 다시 계산한다.
+- `--reach_policy_step_action`에서는 policy 시점에 만든 절대 `q_target`을
+  50 ms 동안 유지한다.
 - explicit PD torque도 1 kHz마다 다시 계산하며 100 Hz torque gating은 사용하지 않는다.
 - torque는 PD 이후 joint1~4 87 Nm, joint5~7 12 Nm로 제한한다.
 - 1000 Nm/s torque-rate limiter는 1 kHz에서 최대 1 Nm/update로 적용한다.
