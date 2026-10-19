@@ -41,3 +41,10 @@ class DualFR3ReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class DualFR3ReachSnapshotPPORunnerCfg(DualFR3ReachPPORunnerCfg):
+    """Controller-1 target-hold ablation; only log namespace differs from v0."""
+
+    experiment_name = "dual_fr3_reach_snapshot"

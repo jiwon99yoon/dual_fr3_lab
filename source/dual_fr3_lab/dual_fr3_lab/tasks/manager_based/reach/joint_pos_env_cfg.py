@@ -36,6 +36,7 @@ from isaaclab.utils.noise import AdditiveGaussianNoiseCfg as Gnoise
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 from dual_fr3_lab.robots.dual_fr3_plate_ee import DUAL_FR3_PLATE_EE_CFG, PLATE_TCP_OFFSET_POS  # isort: skip
 from dual_fr3_lab.tasks.manager_based.lift_cube import mdp  # isort: skip
+from .snapshot_joint_action import SnapshotRelativeJointPositionActionCfg  # isort: skip
 
 ROOT_Z = 0.405       # base frame 높이 (plate task와 동일)
 REACH_OFFSET_Y = 0.20  # 각 팔 EE target = center ± 0.20m (y축)
@@ -190,6 +191,17 @@ class ActionsCfg:
 
 
 @configclass
+class SnapshotActionsCfg(ActionsCfg):
+    """Controller-1 ablation: snapshot q+delta once, then hold for 50 ms."""
+
+    arm_action = SnapshotRelativeJointPositionActionCfg(
+        asset_name="robot",
+        joint_names=[".*_fr3_joint[1-7]"],
+        scale=0.1,
+    )
+
+
+@configclass
 class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
@@ -336,6 +348,22 @@ class DualFR3ReachEnvCfg(ManagerBasedRLEnvCfg):
 
 @configclass
 class DualFR3ReachEnvCfg_PLAY(DualFR3ReachEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3ReachSnapshotEnvCfg(DualFR3ReachEnvCfg):
+    """Reach controller-1 ablation; all settings except target semantics match v0."""
+
+    actions: SnapshotActionsCfg = SnapshotActionsCfg()
+
+
+@configclass
+class DualFR3ReachSnapshotEnvCfg_PLAY(DualFR3ReachSnapshotEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 50

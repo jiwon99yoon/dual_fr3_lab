@@ -86,6 +86,16 @@ python scripts/tools/preview_dual_fr3_table.py --mjcf
 
 ---
 
+## Isaac-real SysID
+
+plate EE dual-FR3의 실물 관절 로그와 Isaac 응답을 비교하는 전용 runner가 있다. 학습용 implicit
+actuator 설정은 유지하되, SysID 실행 중에만 real controller와 같은 1 kHz torque path를 사용한다.
+real CSV의 시작 자세(`q0_*`)를 그대로 재사용해 ramp/step probe를 재생하고, A/B/마찰·tracking
+응답을 비교한다. 실행 순서와 real 로그 요구사항은
+[`scripts/sim2real/README.md`](scripts/sim2real/README.md)를 따른다.
+
+---
+
 ## Repository structure
 
 ```
@@ -143,6 +153,8 @@ Cube lift는 sim2real 목표로 v0→v3까지 진화했다. **각 버전은 한 
 | `...-P{N}-Play-v0` / `...-P{N}-Play-Noisy-v0` | 각 P-series play/강건성 평가용. `eval_dual_fr3_plate_robustness.py`와 세트 |
 | `Isaac-Reach-DualFR3-v0` | **sim2real gap 분석용 양팔 EE reach.** 물체 없이 goal center ± 0.2m(y축) 목표점으로 양팔 동시 도달. **obs 58D = plate task와 완전 동일 구조** (plate_forces·object_orientation 슬롯은 0으로 채움). action semantics(delta joint pos × 0.1, 20Hz)도 plate와 동일 — 두 정책의 관절 궤적 특성 비교로 제어 지연·tracking 오차 분리 가능 |
 | `Isaac-Reach-DualFR3-Play-v0` | reach play용 (50 envs, corruption off) |
+| `Isaac-Reach-DualFR3-Snapshot-v0` | **controller-1 action ablation.** policy tick의 `q_meas + delta`를 50 ms hold하는 snapshot-relative target. 기존 v0(controller-3)와 target semantics만 다르므로 checkpoint를 공유하지 않고 별도 from-scratch 학습·비교한다. |
+| `Isaac-Reach-DualFR3-Snapshot-Play-v0` | Snapshot ablation play용 (50 envs, corruption off) |
 
 각 버전의 **배포 스펙**(obs 순서·ready pose·action 규약·배포 루프·TODO)은 `docs/dual_fr3_lift_v{1,2,3}.md`.
 **현재 배포 후보 = v3** (`docs/dual_fr3_lift_v3.md`). 설계 이력·판단 근거는

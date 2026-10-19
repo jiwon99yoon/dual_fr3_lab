@@ -29,6 +29,34 @@ from isaaclab.assets.articulation import ArticulationCfg
 _ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 DUAL_FR3_USD_PATH = os.path.join(_ASSETS_DIR, "dual_fr3_no_handeye.usd")
 
+# -----------------------------------------------------------------------------
+# Arm controller and plant contract
+# -----------------------------------------------------------------------------
+#
+# The first two constants are the joint-side PD gains used by the real
+# PolicyControl path.  They are controller parameters -- in particular,
+# ``FR3_ARM_KD_NM_S_PER_RAD`` is *not* the physical viscous-friction value.
+FR3_ARM_KP_NM_PER_RAD = 80.0
+FR3_ARM_KD_NM_S_PER_RAD = 4.0
+FR3_SHOULDER_EFFORT_LIMIT_NM = 87.0
+FR3_FOREARM_EFFORT_LIMIT_NM = 12.0
+# This limiter belongs to the real control path, not to an implicit actuator.
+# SysID runners apply it explicitly after the PD calculation.
+FR3_TORQUE_RATE_LIMIT_NM_S = 1000.0
+
+# Identified joint-side plant parameters used by the current dual-FR3
+# sim-to-real baseline.  These are independent of whether the arm controller
+# is an implicit PhysX drive or an explicit/custom torque controller:
+#
+#   [M(q) + A] qdd + C(q, qd) + B qd + tau_dry = tau_applied.
+#
+# Isaac Lab authors these fields to PhysX joint properties during articulation
+# construction.  Keep the units explicit: the friction value is the Isaac Sim
+# 5.0+ joint static-friction effort used by the existing SysID recorder.
+FR3_ARMATURE_KG_M2 = 0.1
+FR3_DRY_FRICTION_NM = 0.2
+FR3_VISCOUS_FRICTION_NM_S_PER_RAD = 0.003
+
 DUAL_FR3_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=DUAL_FR3_USD_PATH,
@@ -68,15 +96,21 @@ DUAL_FR3_CFG = ArticulationCfg(
         # 게인은 공식 FRANKA_PANDA_CFG와 동일, effort limit은 fr3 joint_limits.yaml 기준
         "arms_shoulder": ImplicitActuatorCfg(
             joint_names_expr=[".*_fr3_joint[1-4]"],
-            effort_limit_sim=87.0,
-            stiffness=80.0,
-            damping=4.0,
+            effort_limit_sim=FR3_SHOULDER_EFFORT_LIMIT_NM,
+            stiffness=FR3_ARM_KP_NM_PER_RAD,
+            damping=FR3_ARM_KD_NM_S_PER_RAD,
+            armature=FR3_ARMATURE_KG_M2,
+            friction=FR3_DRY_FRICTION_NM,
+            viscous_friction=FR3_VISCOUS_FRICTION_NM_S_PER_RAD,
         ),
         "arms_forearm": ImplicitActuatorCfg(
             joint_names_expr=[".*_fr3_joint[5-7]"],
-            effort_limit_sim=12.0,
-            stiffness=80.0,
-            damping=4.0,
+            effort_limit_sim=FR3_FOREARM_EFFORT_LIMIT_NM,
+            stiffness=FR3_ARM_KP_NM_PER_RAD,
+            damping=FR3_ARM_KD_NM_S_PER_RAD,
+            armature=FR3_ARMATURE_KG_M2,
+            friction=FR3_DRY_FRICTION_NM,
+            viscous_friction=FR3_VISCOUS_FRICTION_NM_S_PER_RAD,
         ),
         "hands": ImplicitActuatorCfg(
             joint_names_expr=[".*_fr3_finger_joint.*"],

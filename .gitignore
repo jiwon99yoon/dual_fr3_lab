@@ -76,6 +76,9 @@ logs/
 outputs/
 *.pt
 
+# sysID 실측/시뮬 로그 정본 (real/mujoco/isaac CSV·overlay, 로컬 보관)
+data/sysid/
+
 # 완성품 로봇 USD는 예외적으로 추적 (git-lfs) — 위의 전역 *.usd 차단을 덮어씀
 !source/dual_fr3_lab/dual_fr3_lab/assets/*.usd
 !content/plate_ee/*.usd

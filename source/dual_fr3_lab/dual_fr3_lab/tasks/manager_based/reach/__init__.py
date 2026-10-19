@@ -26,3 +26,25 @@ gym.register(
     },
     disable_env_checker=True,
 )
+
+# Controller-1 ablation.  The original v0 keeps Isaac Lab's controller-3
+# RelativeJointPositionAction semantics and remains the baseline.
+gym.register(
+    id="Isaac-Reach-DualFR3-Snapshot-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3ReachSnapshotEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DualFR3ReachSnapshotPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Reach-DualFR3-Snapshot-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3ReachSnapshotEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DualFR3ReachSnapshotPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
