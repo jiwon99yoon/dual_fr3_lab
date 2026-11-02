@@ -413,6 +413,19 @@ run `dual_fr3_plate_lift_sim2real_100hz_light/2026-11-02_15-17-33_light`, 6000 i
   - x 0.45~0.50은 99%, 0.50~0.52는 92%가 유효하다. 관절 여유 중앙값은 0.089 rad다.
 - reset 확인: 판-면 간격 중앙값 4.1 cm(2.0~7.1), 판 높이는 박스 중심 + 5.3 cm다. 접촉 0, 박스 이동 0이었다.
 - 학습(01:25 시작, 두 run 동시, 각 3000 iter from scratch, 약 2.8 s/iter, 약 2시간 20분): run_name `pregrasp_box410`, `pregrasp_upright_box410`. stdout은 repo 루트 `box_pregrasp_box410.log`, `box_pregrasp_upright_box410.log`다.
+- 중간 평가(02:30, `pregrasp_box410` model_1200, 1024 env, 외란 1.0, 4 s):
+
+  | 항목 | 값 |
+  |---|---|
+  | 성공 | 99.9%(끝 시점 성공 구간 98.6%) |
+  | 성공까지 시간 | 중앙값 1.65 s (Light 3.75 s, rule-based 8 s) |
+  | 끝 기울기 | 6.5° |
+  | 판 높이차 | 1.2 cm (Light 2.7) |
+  | 끝 박스 yaw | **36.7°(p90 44°)** |
+
+  - 박스 yaw는 Light(38°)와 거의 같다. 접근을 분리해도 조이고 들면서 박스가 돌아간다. 이때 yaw 페널티 ramp(yawtrack)는 0.36이었다.
+  - 영상: `<run>/videos/model_1200_views_ep4.mp4`.
+- `pregrasp_upright_box410`은 1385 iter까지 한 번도 들지 못했다(들기·성공 보상 0). 자세 페널티를 처음부터 켜면 들기 발견을 막는다는 P7 교훈과 같다. 영상: `<run>/videos/model_1350_views_ep2.mp4`(판을 대기만 하고 가만히 있음).
 
 ## 학습
 

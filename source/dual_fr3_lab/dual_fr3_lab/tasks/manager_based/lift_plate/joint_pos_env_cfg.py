@@ -2726,17 +2726,56 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Margin_PLAY(DualFR3PlateBoxL
         self.observations.policy.enable_corruption = False
 
 
+# ---------- Box410: 실물 2차 박스 (2026-11-03 사용자) ----------
+# 가로 410 x 세로 310 x 높이 280 mm, 빈 박스 501~561 g, 잡는 방향(y) = 310 mm.
+# Light/Light-Margin(555 x 475 x 275, 0.5~1.0 kg)과 다르다. 그 task들과 체크포인트는 555 박스로 남겨 둔다.
+BOX410_SIZE = (0.41, 0.31, 0.28)  # (x 전후, y 잡는 방향, z 높이) [m]
+BOX410_MASS = 0.5  # kg, 명목값
+BOX410_MASS_RANGE = (0.4, 0.6)  # kg, 실측 501~561 g에 여유
+BOX410_X_RANGE = (-0.05, 0.02)  # 스폰 x 오프셋 [m] (박스 중심 x 0.45~0.52, Pregrasp 표와 같은 범위)
+
+
+def _apply_box410(cfg):
+    """박스 크기·질량 DR을 410 x 310 x 280 mm, 0.4~0.6 kg으로 바꾸고 외란을 Light처럼 질량에 비례해 줄인다."""
+    cfg.scene.object.spawn.size = BOX410_SIZE
+    cfg.scene.object.spawn.mass_props = sim_utils.MassPropertiesCfg(mass=BOX410_MASS)
+    cfg.scene.object.init_state.pos = (0.5, 0.0, BOX410_SIZE[2] / 2 + 0.0225)
+    cfg.events.randomize_box_density.params["mass_distribution_params"] = BOX410_MASS_RANGE
+    ratio = BOX410_MASS / V1_BOX_MASS
+    cfg.events.disturb_box.params.update(force=DISTURB_FORCE * ratio, torque=DISTURB_TORQUE * ratio)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Margin):
+    """Light-Margin(관절 한계 FCI - 0.05 rad)을 410 박스로 바꾼 것. 바닥의 박스에서 시작해 접근부터 들기까지 전부 RL.
+
+    Pregrasp(접근 분리)와 비교하는 기준선이다. 박스 x는 Pregrasp 표와 같은 0.45~0.52(y ±0.1, yaw ±0.1 그대로).
+    에피소드·보상·커리큘럼은 Light 그대로(5 s, 들기 습득 뒤 페널티 threshold 8).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_box410(self)
+        self.events.reset_object_position.params["pose_range"]["x"] = BOX410_X_RANGE
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_PLAY(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410):
+    """Sim2Real-100Hz-Light-Box410 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
 # ---------- Pregrasp: 접근은 rule-based/MoveIt, RL은 마지막 접근~조이기~들기 (2026-11-03) ----------
 # Light RL의 박스 yaw(38도)·판 높이차·j2 한계는 판을 어디에 대느냐(접근)에서 생긴다(P37 "kinematic placement").
 # 실물에서는 비전으로 박스 pose를 잡고 MoveIt/MoveToJoint로 판을 박스 면 4 cm 바깥, 잡는 높이에 놓은 뒤 정책을 켠다.
 # sim은 그 넘겨받는 상태를 표로 재현한다: scripts/tools/eval_dual_fr3_plate_rule_based.py --pregrasp_gap 0.04로
 # 박스 pose별 양팔 관절각을 미리 구해 두고(Light-Margin 관절 한계 안), reset마다 한 줄을 뽑아 박스와 팔을 같이 놓는다.
-# 인식·플래너 오차는 박스 pose 노이즈로 넣는다.
-# 박스는 실물 2차 박스(2026-11-03 사용자): 가로 410 x 세로 310 x 높이 280 mm, 빈 박스 501~561 g, 잡는 방향(y) = 310 mm.
-# Light/Light-Margin(555 x 475 x 275, 0.5~1.0 kg)과 다르다. 박스를 바꾸면 표도 그 크기로 다시 만든다(--box_size).
-BOX410_SIZE = (0.41, 0.31, 0.28)  # (x 전후, y 잡는 방향, z 높이) [m]
-BOX410_MASS = 0.5  # kg, 명목값
-BOX410_MASS_RANGE = (0.4, 0.6)  # kg, 실측 501~561 g에 여유
+# 인식·플래너 오차는 박스 pose 노이즈로 넣는다. 박스는 Box410이고, 박스를 바꾸면 표도 그 크기로 다시 만든다(--box_size).
 PREGRASP_TABLE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
     "assets", "pregrasp", "plate_box410_pregrasp_gap004_margin005.npz",
@@ -2808,12 +2847,7 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp(DualFR3PlateBoxLift
 
     def __post_init__(self):
         super().__post_init__()
-        self.scene.object.spawn.size = BOX410_SIZE
-        self.scene.object.spawn.mass_props = sim_utils.MassPropertiesCfg(mass=BOX410_MASS)
-        self.scene.object.init_state.pos = (0.5, 0.0, BOX410_SIZE[2] / 2 + 0.0225)
-        self.events.randomize_box_density.params["mass_distribution_params"] = BOX410_MASS_RANGE
-        ratio = BOX410_MASS / V1_BOX_MASS
-        self.events.disturb_box.params.update(force=DISTURB_FORCE * ratio, torque=DISTURB_TORQUE * ratio)
+        _apply_box410(self)
         self.episode_length_s = PREGRASP_EPISODE_S
         self.events.reset_from_pregrasp = EventTerm(
             func=reset_from_pregrasp_table,

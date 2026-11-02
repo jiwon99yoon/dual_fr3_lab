@@ -921,6 +921,28 @@ gym.register(
     disable_env_checker=True,
 )
 
+# Light-Margin + 실물 2차 박스(410 x 310 x 280 mm, 0.4~0.6 kg), 바닥부터 전부 RL — Pregrasp 비교 기준선
+# 로그 dual_fr3_plate_lift_sim2real_100hz_light_box410
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410PPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410PPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
 # Light-Margin을 접근 끝 자세(판이 박스 면 4 cm 바깥)에서 시작 — 접근은 rule-based/MoveIt, RL은 조이기~들기
 # 로그 dual_fr3_plate_lift_sim2real_100hz_light_pregrasp[_upright]
 gym.register(
