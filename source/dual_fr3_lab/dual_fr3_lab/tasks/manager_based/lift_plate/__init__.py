@@ -414,6 +414,46 @@ gym.register(
     disable_env_checker=True,
 )
 
+# ---------- P47-Friction: P47 + MuJoCo-matched 팔 관절 armature/friction/viscous ----------
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-P47-Friction-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_P47_Friction",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateP47FrictionPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "sb3_cfg_entry_point": f"{agents.__name__}:sb3_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-P47-Friction-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_P47_Friction_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateP47FrictionPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "sb3_cfg_entry_point": f"{agents.__name__}:sb3_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-P47-Friction-Play-Noisy-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_P47_Friction_PLAY_NOISY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateP47FrictionPPORunnerCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "sb3_cfg_entry_point": f"{agents.__name__}:sb3_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+
 # ---------- P46: P44 + box_upright curriculum weight -3.0 → -4.0 ----------
 gym.register(
     id="Isaac-Lift-Box-DualFR3-Plate-P46-v0",
@@ -704,6 +744,221 @@ gym.register(
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
         "sb3_cfg_entry_point": f"{agents.__name__}:sb3_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+
+
+# ---------- Sim2Real: P47 + Reach Sim2Real v2 제어 계약 (1 kHz explicit PD/토크 변화율 제한, 20 Hz 정책,
+# ±0.1 rad bounded action, policy-step target, 관절 순서 left1~7/right1~7, tanh actor) ----------
+# actor가 tanh-squashed Gaussian이라 rsl_rl 진입점만 등록 (skrl/rl_games/sb3 cfg는 무제한 Gaussian용)
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-1kHz-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real1kHz",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real1kHzPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-1kHz-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real1kHz_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real1kHzPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-1kHz-Play-Noisy-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real1kHz_PLAY_NOISY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real1kHzPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+
+# 100Hz: 물리/PD 100 Hz 대안 (1 kHz가 너무 느릴 때) — 로그 dual_fr3_plate_lift_sim2real_100hz
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Play-Noisy-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_PLAY_NOISY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+
+# 진단용 A/B: Sim2Real-100Hz에서 팔 action offset 상한만 ±0.1 -> ±0.3 rad — 로그 dual_fr3_plate_lift_sim2real_100hz_offset03
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Offset03-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzOffset03PPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Offset03-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzOffset03PPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+
+# Offset03 + 수평 들기 gate + FR3 관절 한계 여유 — 로그 dual_fr3_plate_lift_sim2real_100hz_offset03_level
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Offset03-Level-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_Level",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzOffset03LevelPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Offset03-Level-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_Level_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzOffset03LevelPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+# Offset03-Level + 판으로만 들기 + FR3 관절 한계 강제 — 로그 dual_fr3_plate_lift_sim2real_100hz_offset03_plateonly
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Offset03-PlateOnly-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_PlateOnly",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzOffset03PlateOnlyPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Offset03-PlateOnly-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_PlateOnly_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzOffset03PlateOnlyPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+# PlateOnly + ±0.1 rad(reach/cube 배포 기준 그대로) + 1 kg 미만 실물 박스 — 로그 dual_fr3_plate_lift_sim2real_100hz_light
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+# Light + 관절 한계 0.05 rad 안쪽 — Light model_5999에서 이어 학습하므로 로그도 같은 dual_fr3_plate_lift_sim2real_100hz_light
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Margin-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Margin",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Margin-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Margin_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+# Light-Margin을 접근 끝 자세(판이 박스 면 4 cm 바깥)에서 시작 — 접근은 rule-based/MoveIt, RL은 조이기~들기
+# 로그 dual_fr3_plate_lift_sim2real_100hz_light_pregrasp[_upright]
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightPregraspPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightPregraspPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Upright-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Upright",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightPregraspUprightPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Upright-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Upright_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightPregraspUprightPPORunnerCfg",
     },
     disable_env_checker=True,
 )

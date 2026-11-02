@@ -17,7 +17,9 @@ rule-based 검증: scripts/tutorials/05_controllers/run_dual_fr3_plate_lift.py
 """
 
 import os
+import numpy as np
 import torch
+import warp as wp
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import AssetBaseCfg, RigidObjectCfg
@@ -31,7 +33,14 @@ from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.sensors import ContactSensorCfg, FrameTransformerCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import OffsetCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import combine_frame_transforms, quat_apply, subtract_frame_transforms
+from isaaclab.utils.math import (
+    combine_frame_transforms,
+    quat_apply,
+    quat_apply_inverse,
+    quat_from_angle_axis,
+    quat_mul,
+    subtract_frame_transforms,
+)
 from isaaclab.utils.noise import GaussianNoiseCfg as Gnoise
 
 from dual_fr3_lab.tasks.manager_based.lift_cube import mdp
@@ -42,11 +51,15 @@ from isaaclab_tasks.manager_based.manipulation.lift.lift_env_cfg import LiftEnvC
 ##
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 from dual_fr3_lab.robots.dual_fr3_plate_ee import DUAL_FR3_PLATE_EE_CFG, PLATE_TCP_OFFSET_POS  # isort: skip
+from dual_fr3_lab.robots.dual_fr3 import with_arm_passive_dynamics  # isort: skip
 
 # 성능 기반 커리큘럼 (스텝 고정 커리큘럼은 들기 발견 전 발동 시 정책 붕괴 -> dual_fr3에서 검증됨)
 from dual_fr3_lab.tasks.manager_based.lift_cube.joint_pos_env_cfg import (  # isort: skip
+    apply_sim2real_control,
     modify_reward_weight_on_lifting_learned,
 )
+# Reach Sim2Real 관절 순서 계약 (left joint1~7, right joint1~7)
+from dual_fr3_lab.tasks.manager_based.reach.joint_pos_env_cfg import DUAL_ARM_JOINT_NAMES  # isort: skip
 
 
 # ---------- 배치 상수 (world 기준) ----------
@@ -104,13 +117,13 @@ def _face_dists(env, object_cfg: SceneEntityCfg, ee_frame_cfg: SceneEntityCfg):
     ee_frame = env.scene[ee_frame_cfg.name]
     li, ri = _ee_lr_indices(ee_frame)
     half = _box_halves(env, object_cfg)[0].unsqueeze(-1)  # 잡는 방향(y) 반폭
-    y_axis = torch.zeros_like(obj.data.root_pos_w)
+    y_axis = torch.zeros_like(obj.data.root_pos_w.torch)
     y_axis[:, 1] = 1.0
-    y_axis_w = quat_apply(obj.data.root_quat_w, y_axis)  # 박스 +y면 법선 (world)
-    face_l = obj.data.root_pos_w + y_axis_w * half
-    face_r = obj.data.root_pos_w - y_axis_w * half
-    d_l = torch.norm(ee_frame.data.target_pos_w[:, li] - face_l, dim=-1)
-    d_r = torch.norm(ee_frame.data.target_pos_w[:, ri] - face_r, dim=-1)
+    y_axis_w = quat_apply(obj.data.root_quat_w.torch, y_axis)  # 박스 +y면 법선 (world)
+    face_l = obj.data.root_pos_w.torch + y_axis_w * half
+    face_r = obj.data.root_pos_w.torch - y_axis_w * half
+    d_l = torch.norm(ee_frame.data.target_pos_w.torch[:, li] - face_l, dim=-1)
+    d_r = torch.norm(ee_frame.data.target_pos_w.torch[:, ri] - face_r, dim=-1)
     return li, ri, y_axis_w, face_l, face_r, d_l, d_r
 
 
@@ -167,10 +180,10 @@ def reaching_aligned(
     obj = env.scene[object_cfg.name]
     ee_frame = env.scene[ee_frame_cfg.name]
     li, ri, y_axis_w, _, _, d_l, d_r = _face_dists(env, object_cfg, ee_frame_cfg)
-    z_axis = torch.zeros_like(obj.data.root_pos_w)
+    z_axis = torch.zeros_like(obj.data.root_pos_w.torch)
     z_axis[:, 2] = 1.0
-    n_l = quat_apply(ee_frame.data.target_quat_w[:, li], z_axis)  # 왼판 작업면 법선
-    n_r = quat_apply(ee_frame.data.target_quat_w[:, ri], z_axis)
+    n_l = quat_apply(ee_frame.data.target_quat_w.torch[:, li], z_axis)  # 왼판 작업면 법선
+    n_r = quat_apply(ee_frame.data.target_quat_w.torch[:, ri], z_axis)
     a_l = (-(n_l * y_axis_w).sum(dim=-1)).clamp(0.0, 1.0)  # 왼판: -y 방향 (박스 +y면 반평행)
     a_r = ((n_r * y_axis_w).sum(dim=-1)).clamp(0.0, 1.0)  # 오른판: +y 방향
     v_l = (1 - torch.tanh(d_l / std)) * a_l  # 팔별: 거리 kernel × 평행
@@ -198,10 +211,10 @@ def plate_alignment_min(
     obj = env.scene[object_cfg.name]
     ee_frame = env.scene[ee_frame_cfg.name]
     li, ri, y_axis_w, _, _, _, _ = _face_dists(env, object_cfg, ee_frame_cfg)
-    z_axis = torch.zeros_like(obj.data.root_pos_w)
+    z_axis = torch.zeros_like(obj.data.root_pos_w.torch)
     z_axis[:, 2] = 1.0
-    n_l = quat_apply(ee_frame.data.target_quat_w[:, li], z_axis)  # 왼판 작업면 법선
-    n_r = quat_apply(ee_frame.data.target_quat_w[:, ri], z_axis)
+    n_l = quat_apply(ee_frame.data.target_quat_w.torch[:, li], z_axis)  # 왼판 작업면 법선
+    n_r = quat_apply(ee_frame.data.target_quat_w.torch[:, ri], z_axis)
     a_l = (-(n_l * y_axis_w).sum(dim=-1)).clamp(0.0, 1.0)  # 왼판: -y 방향 (박스 +y면 반평행)
     a_r = ((n_r * y_axis_w).sum(dim=-1)).clamp(0.0, 1.0)  # 오른판: +y 방향
     return torch.minimum(a_l, a_r)
@@ -235,10 +248,10 @@ def plate_face_alignment(
     obj = env.scene[object_cfg.name]
     ee_frame = env.scene[ee_frame_cfg.name]
     li, ri, y_axis_w, _, _, _, _ = _face_dists(env, object_cfg, ee_frame_cfg)
-    z_axis = torch.zeros_like(obj.data.root_pos_w)
+    z_axis = torch.zeros_like(obj.data.root_pos_w.torch)
     z_axis[:, 2] = 1.0
-    n_l = quat_apply(ee_frame.data.target_quat_w[:, li], z_axis)  # 왼판 작업면 법선
-    n_r = quat_apply(ee_frame.data.target_quat_w[:, ri], z_axis)
+    n_l = quat_apply(ee_frame.data.target_quat_w.torch[:, li], z_axis)  # 왼판 작업면 법선
+    n_r = quat_apply(ee_frame.data.target_quat_w.torch[:, ri], z_axis)
     a_l = (-(n_l * y_axis_w).sum(dim=-1)).clamp(0.0, 1.0)
     a_r = ((n_r * y_axis_w).sum(dim=-1)).clamp(0.0, 1.0)
     gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
@@ -265,7 +278,7 @@ def plates_pair_misalignment(
     """
     ee_frame = env.scene[ee_frame_cfg.name]
     li, ri, _, face_l, face_r, _, _ = _face_dists(env, object_cfg, ee_frame_cfg)
-    p = ee_frame.data.target_pos_w
+    p = ee_frame.data.target_pos_w.torch
     pair_error = (p[:, li] - p[:, ri]) - (face_l - face_r)
     misalign = pair_error[:, 0].abs() + pair_error[:, 2].abs()
     gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
@@ -292,7 +305,7 @@ def plate_face_z_offset(
     """
     ee_frame = env.scene[ee_frame_cfg.name]
     li, ri, _, face_l, face_r, _, _ = _face_dists(env, object_cfg, ee_frame_cfg)
-    p = ee_frame.data.target_pos_w
+    p = ee_frame.data.target_pos_w.torch
     z_err_l = (p[:, li, 2] - face_l[:, 2]).abs()
     z_err_r = (p[:, ri, 2] - face_r[:, 2]).abs()
     gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
@@ -337,7 +350,7 @@ def one_sided_plate_contact(
     contact_flags = []
     for cfg in (left_sensor_cfg, right_sensor_cfg):
         sensor = env.scene.sensors[cfg.name]
-        force = torch.norm(sensor.data.force_matrix_w[:, :, filter_idx, :], dim=-1).amax(dim=-1)
+        force = torch.norm(sensor.data.force_matrix_w.torch[:, :, filter_idx, :], dim=-1).amax(dim=-1)
         contact_flags.append(force > threshold)
     return torch.logical_xor(contact_flags[0], contact_flags[1]).float()
 
@@ -369,7 +382,7 @@ def j6_mirror_loss(
         )
     l_idx, r_idx = env._j6_lr_ids
     gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
-    diff = (robot.data.joint_pos[:, l_idx] - robot.data.joint_pos[:, r_idx]).abs()
+    diff = (robot.data.joint_pos.torch[:, l_idx] - robot.data.joint_pos.torch[:, r_idx]).abs()
     return gate * diff
 
 
@@ -399,13 +412,13 @@ def grip_axis_alignment(
     ee_frame = env.scene[ee_frame_cfg.name]
     li, ri = _ee_lr_indices(ee_frame)
 
-    right_pos = ee_frame.data.target_pos_w[:, ri]
-    left_pos = ee_frame.data.target_pos_w[:, li]
+    right_pos = ee_frame.data.target_pos_w.torch[:, ri]
+    left_pos = ee_frame.data.target_pos_w.torch[:, li]
     grip = right_pos - left_pos  # (N, 3)
 
     y_ax = torch.zeros(grip.shape[0], 3, device=grip.device)
     y_ax[:, 1] = 1.0
-    ry = quat_apply(robot.data.root_quat_w, y_ax)  # robot +y in world
+    ry = quat_apply(robot.data.root_quat_w.torch, y_ax)  # robot +y in world
 
     cross_z = grip[:, 0] * ry[:, 1] - grip[:, 1] * ry[:, 0]
     dot_xy = grip[:, 0] * ry[:, 0] + grip[:, 1] * ry[:, 1]
@@ -426,13 +439,14 @@ def object_orientation_in_robot_root_frame(
     P5 추가: yaw DR(+-0.3)이 있는데 policy가 박스 회전을 관측할 수 없으면 min-alignment가
     관측 불가능한 목표가 됨. 실물은 ArUco 마커 6DoF 추정으로 대응 (orientation 오차가
     위치보다 커서 noise sigma를 크게 걸어둠). w>=0 고정은 q ≡ -q 불연속 제거용.
+    Lab 3.0부터 quat 순서가 (x, y, z, w)라 출력도 xyzw이고 w는 마지막 성분이다.
     """
     robot = env.scene[robot_cfg.name]
     obj = env.scene[object_cfg.name]
     _, quat = subtract_frame_transforms(
-        robot.data.root_pos_w, robot.data.root_quat_w, obj.data.root_pos_w, obj.data.root_quat_w
+        robot.data.root_pos_w.torch, robot.data.root_quat_w.torch, obj.data.root_pos_w.torch, obj.data.root_quat_w.torch
     )
-    sign = torch.where(quat[:, 0:1] >= 0.0, 1.0, -1.0)
+    sign = torch.where(quat[:, 3:4] >= 0.0, 1.0, -1.0)
     return quat * sign
 
 
@@ -446,9 +460,9 @@ def box_upright(
     |roll|+|pitch| 수평 유지 항에 해당. 바닥 안착 시 자연히 0이라 gate 불필요, yaw는 자유.
     """
     obj = env.scene[object_cfg.name]
-    z_axis = torch.zeros_like(obj.data.root_pos_w)
+    z_axis = torch.zeros_like(obj.data.root_pos_w.torch)
     z_axis[:, 2] = 1.0
-    box_z = quat_apply(obj.data.root_quat_w, z_axis)
+    box_z = quat_apply(obj.data.root_quat_w.torch, z_axis)
     return 1.0 - box_z[:, 2]
 
 
@@ -466,10 +480,10 @@ def _box_yaw_error(
     """
     robot = env.scene[robot_cfg.name]
     obj = env.scene[object_cfg.name]
-    x_axis = torch.zeros_like(obj.data.root_pos_w)
+    x_axis = torch.zeros_like(obj.data.root_pos_w.torch)
     x_axis[:, 0] = 1.0
-    bx = quat_apply(obj.data.root_quat_w, x_axis)  # 박스 x (world)
-    rx = quat_apply(robot.data.root_quat_w, x_axis)  # base x (world)
+    bx = quat_apply(obj.data.root_quat_w.torch, x_axis)  # 박스 x (world)
+    rx = quat_apply(robot.data.root_quat_w.torch, x_axis)  # base x (world)
     return torch.atan2(
         bx[:, 0] * rx[:, 1] - bx[:, 1] * rx[:, 0], bx[:, 0] * rx[:, 0] + bx[:, 1] * rx[:, 1]
     ).abs()
@@ -500,7 +514,7 @@ def excessive_squeeze_penalty(
     forces = []
     for cfg in (left_sensor_cfg, right_sensor_cfg):
         sensor = env.scene.sensors[cfg.name]
-        forces.append(torch.norm(sensor.data.force_matrix_w, dim=-1).amax(dim=(-1, -2)))
+        forces.append(torch.norm(sensor.data.force_matrix_w.torch, dim=-1).amax(dim=(-1, -2)))
     f = torch.nan_to_num(torch.stack(forces, dim=-1), nan=0.0, posinf=0.0)
     # NaN 가드 3층 (P11 2차 it2103 크래시): PhysX 충격 접촉력(판-박스)은 한 스텝에 수만 N+가
     # 보고될 수 있음 (침투 해소용 수치 스파이크 - 속도 상한과 무관) -> 무클램프 페널티가
@@ -525,7 +539,7 @@ def object_out_of_bounds(
     미고려 -> P11 크래시에서 cube의 dropping 종료 같은 오염 차단막이 없었음이 드러남.
     """
     obj = env.scene[object_cfg.name]
-    pos = obj.data.root_pos_w - env.scene.env_origins
+    pos = obj.data.root_pos_w.torch - env.scene.env_origins
     out = (
         (pos[:, 0] < x_range[0]) | (pos[:, 0] > x_range[1])
         | (pos[:, 1] < y_range[0]) | (pos[:, 1] > y_range[1])
@@ -580,8 +594,8 @@ class success_bonus(ManagerTermBase):
         robot = env.scene[robot_cfg.name]
         obj = env.scene[object_cfg.name]
         cmd = env.command_manager.get_command(command_name)[:, :3]
-        goal_w, _ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, cmd)
-        near = torch.norm(goal_w - obj.data.root_pos_w, dim=1) < dist_threshold
+        goal_w, _ = combine_frame_transforms(robot.data.root_pos_w.torch, robot.data.root_quat_w.torch, cmd)
+        near = torch.norm(goal_w - obj.data.root_pos_w.torch, dim=1) < dist_threshold
         upright = box_upright(env, object_cfg) < tilt_threshold
         gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold).bool()
         ok = near & upright & gate
@@ -607,7 +621,7 @@ def _lifted_perenv(env, lift_delta: float, object_cfg: SceneEntityCfg) -> torch.
     """env별 들기 판정: 박스 중심 z > 안착 중심(반높이_z) + lift_delta. 크기 DR 공평화 (§3-3)."""
     obj = env.scene[object_cfg.name]
     half_z = _box_halves(env, object_cfg)[1]
-    return (obj.data.root_pos_w[:, 2] > half_z + lift_delta).float()
+    return (obj.data.root_pos_w.torch[:, 2] > half_z + lift_delta).float()
 
 
 def _contact_normal_ratio(
@@ -626,13 +640,13 @@ def _contact_normal_ratio(
     잘 안 되면 curriculum으로 G에 하드 q 조건(옵션 X) 추가가 다음 카드.
     """
     obj = env.scene[object_cfg.name]
-    y = torch.zeros_like(obj.data.root_pos_w)
+    y = torch.zeros_like(obj.data.root_pos_w.torch)
     y[:, 1] = 1.0
-    n_face = quat_apply(obj.data.root_quat_w, y)  # 박스 +y면 법선 (world, unit)
+    n_face = quat_apply(obj.data.root_quat_w.torch, y)  # 박스 +y면 법선 (world, unit)
     qs = []
     for cfg in (finger1_sensor_cfg, finger2_sensor_cfg):
         sensor = env.scene.sensors[cfg.name]
-        f = torch.nan_to_num(sensor.data.force_matrix_w.reshape(env.num_envs, -1, 3).sum(dim=1))
+        f = torch.nan_to_num(sensor.data.force_matrix_w.torch.reshape(env.num_envs, -1, 3).sum(dim=1))
         mag = torch.norm(f, dim=-1)
         ratio = (f * n_face).sum(dim=-1).abs() / mag.clamp(min=1e-6)  # |F·n̂|/|F|
         ratio = torch.where(mag > 1e-3, ratio, torch.zeros_like(ratio))  # 접촉 없으면 0
@@ -662,13 +676,13 @@ def _plate_align_min(env, object_cfg: SceneEntityCfg = SceneEntityCfg("object"))
     obj = env.scene[object_cfg.name]
     ee_frame = env.scene["ee_frame"]
     li, ri = _ee_lr_indices(ee_frame)
-    y_axis = torch.zeros_like(obj.data.root_pos_w)
+    y_axis = torch.zeros_like(obj.data.root_pos_w.torch)
     y_axis[:, 1] = 1.0
-    y_axis_w = quat_apply(obj.data.root_quat_w, y_axis)
-    z_axis = torch.zeros_like(obj.data.root_pos_w)
+    y_axis_w = quat_apply(obj.data.root_quat_w.torch, y_axis)
+    z_axis = torch.zeros_like(obj.data.root_pos_w.torch)
     z_axis[:, 2] = 1.0
-    n_l = quat_apply(ee_frame.data.target_quat_w[:, li], z_axis)
-    n_r = quat_apply(ee_frame.data.target_quat_w[:, ri], z_axis)
+    n_l = quat_apply(ee_frame.data.target_quat_w.torch[:, li], z_axis)
+    n_r = quat_apply(ee_frame.data.target_quat_w.torch[:, ri], z_axis)
     a_l = (-(n_l * y_axis_w).sum(dim=-1)).clamp(0.0, 1.0)
     a_r = ((n_r * y_axis_w).sum(dim=-1)).clamp(0.0, 1.0)
     return torch.minimum(a_l, a_r)
@@ -724,7 +738,7 @@ def lift_progress(
     obj = env.scene[object_cfg.name]
     half_z = _box_halves(env, object_cfg)[1]
     gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
-    progress = ((obj.data.root_pos_w[:, 2] - half_z) / lift_delta).clamp(0.0, 1.0)
+    progress = ((obj.data.root_pos_w.torch[:, 2] - half_z) / lift_delta).clamp(0.0, 1.0)
     return gate * progress
 
 
@@ -743,8 +757,8 @@ def object_goal_distance_perenv_squeezed(
     robot = env.scene[robot_cfg.name]
     obj = env.scene[object_cfg.name]
     command = env.command_manager.get_command(command_name)
-    des_pos_w, _ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, command[:, :3])
-    distance = torch.norm(des_pos_w - obj.data.root_pos_w, dim=1)
+    des_pos_w, _ = combine_frame_transforms(robot.data.root_pos_w.torch, robot.data.root_quat_w.torch, command[:, :3])
+    distance = torch.norm(des_pos_w - obj.data.root_pos_w.torch, dim=1)
     gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
     q = _contact_normal_ratio(env, finger1_sensor_cfg, finger2_sensor_cfg, object_cfg)
     # [P36] yaw_factor는 tracking에서 제거 -> success로 이동. P35 실증: tracking(w16)에 넣으면 지배 보상
@@ -767,7 +781,7 @@ def plate_contact_forces(
     for cfg in (left_sensor_cfg, right_sensor_cfg):
         sensor = env.scene.sensors[cfg.name]
         # force_matrix_w: (num_envs, 1, 1, 3)
-        forces.append(torch.norm(sensor.data.force_matrix_w, dim=-1).amax(dim=(-1, -2)))
+        forces.append(torch.norm(sensor.data.force_matrix_w.torch, dim=-1).amax(dim=(-1, -2)))
     # v0 전용 obs 방어 (P11 크래시 교훈의 예방 이식): NaN 제거 + 500N 클램프 (scale 후 최대 10)
     f = torch.nan_to_num(torch.stack(forces, dim=-1), nan=0.0, posinf=0.0)
     return f.clamp(max=500.0) * scale
@@ -790,9 +804,9 @@ class VerticalLiftPoseCommand(UniformPoseCommand):
         super()._resample_command(env_ids)  # z / orientation은 그대로 샘플
         obj = self._env.scene["object"]
         obj_pos_b, _ = subtract_frame_transforms(
-            self.robot.data.root_pos_w[env_ids],
-            self.robot.data.root_quat_w[env_ids],
-            obj.data.root_pos_w[env_ids],
+            self.robot.data.root_pos_w.torch[env_ids],
+            self.robot.data.root_quat_w.torch[env_ids],
+            obj.data.root_pos_w.torch[env_ids],
         )
         self.pose_command_b[env_ids, 0] = obj_pos_b[:, 0]  # goal x = 박스 x
         self.pose_command_b[env_ids, 1] = obj_pos_b[:, 1]  # goal y = 박스 y (z는 super가 샘플)
@@ -806,7 +820,7 @@ class DualFR3PlateBoxLiftEnvCfg(LiftEnvCfg):
 
         # PhysX GPU aggregate pair 버퍼 확대 (cube에서 4096 env 동시 접촉 시 용량 초과로
         # 접촉 누락이 터진 이슈의 예방 적용 — plate도 양판 squeeze 동시 접촉 구조라 동일 리스크)
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 64 * 1024
+        self.sim.physics.gpu_total_aggregate_pairs_capacity = 64 * 1024  # Lab 3.0: sim.physx -> sim.physics
 
         # ---------- 로봇 ----------
         self.scene.robot = DUAL_FR3_PLATE_EE_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
@@ -911,7 +925,8 @@ class DualFR3PlateBoxLiftEnvCfg(LiftEnvCfg):
         # ---------- object: 바닥 위 박스 (크기/밀도 DR) ----------
         self.scene.object = RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Object",
-            init_state=RigidObjectCfg.InitialStateCfg(pos=BOX_SPAWN_POS_W, rot=[1, 0, 0, 0]),
+            # Lab 3.0 quat은 (x, y, z, w): identity = [0, 0, 0, 1] ([1, 0, 0, 0]이면 x축 180도 뒤집힘)
+            init_state=RigidObjectCfg.InitialStateCfg(pos=BOX_SPAWN_POS_W, rot=[0, 0, 0, 1]),
             spawn=sim_utils.MeshCuboidCfg(
                 size=(BOX_BASE_SIZE, BOX_BASE_SIZE, BOX_BASE_SIZE),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(
@@ -1391,7 +1406,7 @@ def plate_height_symmetry(
     gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
     ee_frame = env.scene[ee_frame_cfg.name]
     li, ri = _ee_lr_indices(ee_frame)
-    dz = (ee_frame.data.target_pos_w[:, li, 2] - ee_frame.data.target_pos_w[:, ri, 2]).abs()
+    dz = (ee_frame.data.target_pos_w.torch[:, li, 2] - ee_frame.data.target_pos_w.torch[:, ri, 2]).abs()
     return gate * dz
 
 
@@ -1869,6 +1884,43 @@ class DualFR3PlateBoxLiftEnvCfg_P47_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P47_PLA
 
 
 @configclass
+class DualFR3PlateBoxLiftEnvCfg_P47_Friction(DualFR3PlateBoxLiftEnvCfg_P47):
+    """P47-Friction = P47 + 팔 관절 armature/friction/viscous 명시. from-scratch 재학습.
+
+    변경 사항 (2026-10-21):
+      arms_shoulder/arms_forearm에 armature 0.1, friction 0.2, dynamic_friction 0.2,
+      viscous_friction 0.003 (Reach Sim2Real *-Friction과 동일 값, FR3_ARM_MUJOCO_PASSIVE_DYNAMICS).
+      P47은 armature/viscous를 지정하지 않아 0이고 마찰은 USD의 physxJoint:jointFriction(0.2)에 의존.
+    액추에이터는 P47 그대로 implicit PD @100Hz(정책 50Hz), PD 게인 DR ±15%도 유지.
+    reward/curriculum 등 P47 전 항목 불변. P47 checkpoint와 관절 dynamics가 달라 이어받기 불가.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.robot = with_arm_passive_dynamics(self.scene.robot)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P47_Friction_PLAY(DualFR3PlateBoxLiftEnvCfg_P47_Friction):
+    """P47-Friction visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_P47_Friction_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P47_Friction_PLAY):
+    """P47-Friction robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
 class DualFR3PlateBoxLiftEnvCfg_P48(DualFR3PlateBoxLiftEnvCfg_P44):
     """P48 = P44 + excessive_squeeze force_threshold 100N → 120N.
 
@@ -2124,3 +2176,699 @@ class DualFR3PlateBoxLiftEnvCfg_P52_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_P52_PLA
     def __post_init__(self):
         super().__post_init__()
         self.observations.policy.enable_corruption = True
+
+
+##
+# Sim2Real: P47 + Reach Sim2Real v2 제어 계약 (2026-10-22) — 로그 dual_fr3_plate_lift_sim2real_{1khz,100hz}
+##
+
+
+def _apply_plate_sim2real(env_cfg, *, physics_dt: float) -> None:
+    """P47에 Reach Sim2Real v2 제어 계약을 적용하고, 정책 주기 50 Hz -> 20 Hz에 따른 box 전용 보정을 한다."""
+    apply_sim2real_control(env_cfg, physics_dt=physics_dt)
+    # 관절 순서를 Reach Sim2Real 계약(left1~7, right1~7)으로 고정. P47의 regex 순서는 articulation
+    # 순서(좌우 교차)라 배포 노드 순서와 다르다. action과 joint obs를 같은 순서로 맞춘다.
+    env_cfg.actions.arm_action.joint_names = DUAL_ARM_JOINT_NAMES
+    env_cfg.actions.arm_action.preserve_order = True
+    for term in (env_cfg.observations.policy.joint_pos, env_cfg.observations.policy.joint_vel):
+        term.params["asset_cfg"] = SceneEntityCfg("robot", joint_names=DUAL_ARM_JOINT_NAMES, preserve_order=True)
+    # success 진입 조건은 0.5 s 유지 그대로: 50 Hz 25 step -> 20 Hz 10 step.
+    # 그 밖의 reward는 RewardManager가 dt를 곱하고, 커리큘럼은 EMA/iteration 기준이라 주기와 무관.
+    policy_dt = env_cfg.sim.dt * env_cfg.decimation
+    env_cfg.rewards.success.params["hold_steps"] = round(0.5 / policy_dt)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real1kHz(DualFR3PlateBoxLiftEnvCfg_P47):
+    """Sim2Real-1kHz = P47 + Reach Sim2Real v2 제어 계약. from-scratch 재학습.
+
+    P47-Friction은 passive dynamics만 맞춘 것이고, 이 cfg는 제어 경로 전체를 맞춘다:
+      물리/PD 100 Hz -> 1 kHz, 정책 50 Hz -> 20 Hz (decimation 2 -> 50), implicit PD -> explicit PD +
+      토크 87/12 Nm + 1000 Nm/s 변화율 제한 + MuJoCo-matched passive dynamics, 팔 action ±0.1 rad clip +
+      policy-step target, actor tanh-squashed Gaussian(runner cfg), 관절 순서 left1~7/right1~7.
+      success hold 25 -> 10 step (0.5 s 유지). PD 게인 DR ±15%는 P47에도 있던 것과 같은 값.
+    episode 5 s(= 100 policy step), reward/curriculum/물체 DR은 P47 그대로.
+    ⚠ 정책 주기가 바뀌어 P47 보상 튜닝이 20 Hz에서도 그대로 통하는지는 학습으로 확인해야 함
+      (cube는 v1->v2에서 50 -> 20 Hz 전환이 문제없었음).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_plate_sim2real(self, physics_dt=0.001)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real1kHz_PLAY(DualFR3PlateBoxLiftEnvCfg_Sim2Real1kHz):
+    """Sim2Real-1kHz visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real1kHz_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_Sim2Real1kHz_PLAY):
+    """Sim2Real-1kHz robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz(DualFR3PlateBoxLiftEnvCfg_P47):
+    """Sim2Real-100Hz = Sim2Real-1kHz와 같되 물리/PD 100 Hz(decimation 5). 1 kHz가 너무 느릴 때의 대안."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_plate_sim2real(self, physics_dt=0.01)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_PLAY(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz):
+    """Sim2Real-100Hz visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_PLAY_NOISY(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_PLAY):
+    """Sim2Real-100Hz robustness-evaluation cfg with training observation corruption enabled."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz):
+    """Sim2Real-100Hz와 같되 팔 action offset 상한만 ±0.1 -> ±0.3 rad. box Sim2Real 본 학습용.
+
+    measured-relative PD라 접촉으로 막힌 관절의 최대 PD 토크 = Kp * offset (80 * 0.1 = 8 Nm -> 24 Nm).
+    ±0.1 rad(8 Nm)로는 4 kg box를 못 듦 (A/B 확인 2026-10-23). Reach/cube 계약(±0.1 rad)과 다르므로
+    box 배포 노드에 scale/clip/fault 변경이 필요 — 체크리스트: docs/dual_fr3_lift_sim2real.md.
+    tanh actor 출력이 (-1, 1)이므로 clip만 넓히면 효과가 없어 scale도 같이 0.3으로 올린다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.arm_action.scale = 0.3
+        self.actions.arm_action.clip = {".*": (-0.3, 0.3)}
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_PLAY(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03):
+    """Sim2Real-100Hz-Offset03 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- Offset03-Level: 수평 들기 gate + FR3 관절 한계 여유 (2026-10-24) ----------
+# Offset03 model_2000은 박스를 굴려서 든다(들고 있는 동안 기울기 평균 46~57도). 들기/goal 보상에
+# 기울기 gate가 없어서 box_upright(-3)를 감수해도 기울여 드는 쪽이 이득이었다. 조임 힘 테스트로는
+# 판당 ~44 N이면 박스 μ 0.45 이상(4.5 kg은 0.6 이상)에서 수평 들기가 가능하므로 물리 한계가 아니다.
+LEVEL_TILT_GATE = 0.293  # 1 - cos(45도): 이 기울기에서 들기/goal 보상 0, 수평이면 그대로
+# FR3 관절 위치 한계 [rad]: Franka FCI 문서 "Robot and interface specifications"의 q_min/q_max.
+# (2026-11-03 정정: 처음에 "datasheet"라고 불렀지만 제품 datasheet R02212 2.6은 A1 ±166°, A2 ±105°,
+# A4 -176/-7°, A6 25/265° 등으로 더 넓고, franka_description URDF·sim USD·배포 노드 검사 값이 그쪽이다.)
+# 실로봇이 어느 값에서 멈추는지는 실물에서 확인하지 않았다. 둘 중 좁은 쪽이라 이 값으로 자른다.
+# Offset03 model_2000은 왼팔 j1·j2가 env-step의 약 80%에서 이 한계를 넘어 USD 한계에 붙어 있었다.
+FR3_JOINT_POS_LIMITS = (
+    (-2.7437, 2.7437), (-1.7837, 1.7837), (-2.9007, 2.9007), (-3.0421, -0.1518),
+    (-2.8065, 2.8065), (0.5445, 4.5169), (-3.0159, 3.0159),
+)
+
+
+def _level_factor(env, object_cfg: SceneEntityCfg, tilt_gate: float) -> torch.Tensor:
+    """수평 1 -> box_upright가 tilt_gate일 때 0 (plate_face_alignment의 upright_factor와 같은 형태)."""
+    return (1.0 - box_upright(env, object_cfg) / tilt_gate).clamp(0.0, 1.0)
+
+
+def object_is_lifted_perenv_and_squeezed_level(
+    env,
+    lift_delta: float,
+    finger1_sensor_cfg: SceneEntityCfg,
+    finger2_sensor_cfg: SceneEntityCfg,
+    threshold: float = 0.5,
+    tilt_gate: float = LEVEL_TILT_GATE,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """object_is_lifted_perenv_and_squeezed x 수평 factor."""
+    lifted = object_is_lifted_perenv_and_squeezed(
+        env, lift_delta, finger1_sensor_cfg, finger2_sensor_cfg, threshold, object_cfg
+    )
+    return lifted * _level_factor(env, object_cfg, tilt_gate)
+
+
+def lift_progress_level(
+    env,
+    lift_delta: float,
+    finger1_sensor_cfg: SceneEntityCfg,
+    finger2_sensor_cfg: SceneEntityCfg,
+    threshold: float = 1.0,
+    tilt_gate: float = LEVEL_TILT_GATE,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """lift_progress x 수평 factor. 굴리기만 해도 중심이 올라가 진행도를 받던 경로를 막는다."""
+    progress = lift_progress(env, lift_delta, finger1_sensor_cfg, finger2_sensor_cfg, threshold, object_cfg)
+    return progress * _level_factor(env, object_cfg, tilt_gate)
+
+
+def object_goal_distance_perenv_squeezed_level(
+    env,
+    std: float,
+    lift_delta: float,
+    command_name: str,
+    finger1_sensor_cfg: SceneEntityCfg,
+    finger2_sensor_cfg: SceneEntityCfg,
+    threshold: float = 0.5,
+    tilt_gate: float = LEVEL_TILT_GATE,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """object_goal_distance_perenv_squeezed x 수평 factor."""
+    tracking = object_goal_distance_perenv_squeezed(
+        env, std, lift_delta, command_name, finger1_sensor_cfg, finger2_sensor_cfg, threshold, robot_cfg, object_cfg
+    )
+    return tracking * _level_factor(env, object_cfg, tilt_gate)
+
+
+def fr3_joint_limits_inset(inset: float) -> tuple:
+    """FR3_JOINT_POS_LIMITS를 양쪽에서 inset[rad]만큼 좁힌 한 팔(7관절) 한계."""
+    return tuple((lo + inset, hi - inset) for lo, hi in FR3_JOINT_POS_LIMITS)
+
+
+def fr3_joint_limit_margin(
+    env,
+    margin: float = 0.1,
+    inset: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=DUAL_ARM_JOINT_NAMES, preserve_order=True),
+) -> torch.Tensor:
+    """FR3 한계(inset만큼 좁힌 값)까지 거리가 margin[rad] 미만인 관절마다 ((margin - 거리) / margin)^2, 양팔 합.
+
+    한계에서 1, 한계를 넘으면 더 커진다(0.1 rad 넘으면 4). asset_cfg 순서는 left1~7, right1~7이고,
+    RewardManager는 params로 넘긴 SceneEntityCfg만 resolve하므로 RewTerm params에 명시해야 한다.
+    """
+    q = env.scene[asset_cfg.name].data.joint_pos.torch[:, asset_cfg.joint_ids]
+    limits = torch.tensor(fr3_joint_limits_inset(inset) * 2, device=q.device)
+    dist = torch.minimum(q - limits[:, 0], limits[:, 1] - q)
+    return (((margin - dist).clamp(min=0.0) / margin) ** 2).sum(dim=-1)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_Level(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03):
+    """Offset03 + 수평 들기 gate + FR3 관절 한계 여유 페널티. from-scratch.
+
+    - lifting_object, lift_progress, object_goal_tracking(+fine_grained)에 수평 factor를 곱한다
+      (수평 1 -> 45도에서 0). 15도 gate는 success에 이미 있고, 발견 단계의 기울이기는 부분 보상으로 남긴다.
+    - fr3_joint_limit_margin(-1.0, 처음부터): FR3 datasheet 한계 0.1 rad 안쪽부터 페널티.
+      관절 공간 대부분에서 0이라 탐색을 막지 않는다. 오른팔은 Offset03에서도 한계 안에서 과제를 했다.
+    한 run에 두 축을 바꿨다: 실패하면 gate만 / 한계만으로 분리한다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        level_funcs = {
+            object_is_lifted_perenv_and_squeezed: object_is_lifted_perenv_and_squeezed_level,
+            lift_progress: lift_progress_level,
+            object_goal_distance_perenv_squeezed: object_goal_distance_perenv_squeezed_level,
+        }
+        for name in ("lifting_object", "lift_progress", "object_goal_tracking", "object_goal_tracking_fine_grained"):
+            term = getattr(self.rewards, name)
+            term.func = level_funcs[term.func]
+        self.rewards.fr3_joint_limit_margin = RewTerm(
+            func=fr3_joint_limit_margin,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=DUAL_ARM_JOINT_NAMES, preserve_order=True)},
+            weight=-1.0,
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_Level_PLAY(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_Level):
+    """Sim2Real-100Hz-Offset03-Level visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- Offset03-PlateOnly: 판으로만 들기 + FR3 관절 한계를 sim에 강제 (2026-10-24) ----------
+# Level/Offset03 정책 접촉 측정(64 env x 300 step, 1 N 초과): 박스가 들린 스텝 중 왼팔 link4 14%(Level 4500),
+# 왼팔 link5 11%(Level 9999), 베이스 13%·왼팔 link2 5%(Offset03 resume 9999)에서 판 외 부위가 박스에 닿았다.
+# link7 원통(판과 같은 body라 기존 squeeze 센서는 판 접촉으로 셈)은 ~0%. 기존 undesired_contacts는 -1e-4
+# 시작이라 들기 보상을 못 이겼고 베이스는 아예 안 봤다. 실로봇에선 충돌 반사/파손 원인이므로 들기/goal/
+# success 보상을 "판 외 접촉이 없을 때"만 준다. Level의 j7은 USD 한계에 붙어 있었다(32%).
+PLATE_ONLY_FORCE_REF = 10.0  # [N] 판 외 접촉력 합이 이 값 이상이면 들기/goal/success 보상 0
+# [m] link7 frame z: 판 collider는 0.107~0.132(link7 z축 기준 45도 돌아간 140 mm 정사각형, 모서리가 x/y축 위
+# 0.099), link7 원통 collider는 z 0.050~0.105. 그래서 접촉점 z만으로 판/원통을 나눈다.
+PLATE_CONTACT_Z_MIN = 0.106
+LIFT_MONITOR_WEIGHT = 1e-3  # 커리큘럼 발동 판정용 무gate lifting 항 (보상 기여는 무시할 수준)
+# 커리큘럼 "들기 습득" 기준 (lifting_object weight 15 단위, 초당). 기존 10은 무gate lift_monitor로도 최대 9.87이라
+# 도달 불가였다(run 2026-10-24_21-11-54). 8은 Run C 조기 발동 사고(~4/s)보다 충분히 높다.
+LIFT_LEARNED_THRESHOLD = 8.0
+
+
+def _link7_housing_force(env, sensor_name: str, link7_id: int) -> torch.Tensor:
+    """link7-박스 접촉점 중 판 밖(link7 원통)에 있는 점들의 법선력 합 [N], (num_envs,).
+
+    PhysX 센서는 body 단위라 force_matrix_w로는 판과 원통을 못 나눈다 -> 접촉점별 raw 데이터를 link7
+    frame으로 옮겨 판 collider 높이보다 아래인 점만 더한다. 센서 body가 env당 1개, filter가 박스 1개라
+    counts/starts는 env 순서다.
+    """
+    sensor = env.scene.sensors[sensor_name]
+    forces, points, _, _, counts, starts = sensor.contact_view.get_contact_data(dt=env.physics_dt)
+    counts = wp.to_torch(counts).reshape(-1).to(torch.int64)
+    out = torch.zeros(env.num_envs, device=env.device)
+    total = int(counts.sum())
+    if total == 0:
+        return out
+    starts = wp.to_torch(starts).reshape(-1).to(torch.int64)
+    env_ids = torch.repeat_interleave(torch.arange(env.num_envs, device=env.device), counts)
+    first = torch.repeat_interleave(torch.cumsum(counts, 0) - counts, counts)
+    idx = starts[env_ids] + torch.arange(total, device=env.device) - first
+    f = wp.to_torch(forces).reshape(-1)[idx]
+    p = wp.to_torch(points).reshape(-1, 3)[idx]
+    robot = env.scene["robot"]
+    pos = robot.data.body_pos_w.torch[env_ids, link7_id]
+    quat = robot.data.body_quat_w.torch[env_ids, link7_id]
+    local = quat_apply_inverse(quat, p - pos)
+    return out.index_add_(0, env_ids, f * (local[:, 2] < PLATE_CONTACT_Z_MIN).float())
+
+
+def nonplate_contact_forces(env) -> torch.Tensor:
+    """판 외 접촉력 [N], (num_envs, 15): 양팔 link1~6 net(상대 무관) 12 + 베이스-박스 1 + link7 원통-박스 2.
+
+    reward 항 여러 개가 같은 스텝에 부르므로 common_step_counter로 캐시한다.
+    """
+    cache = getattr(env, "_nonplate_cache", None)
+    if cache is not None and cache[0] == env.common_step_counter:
+        return cache[1]
+    if not hasattr(env, "_link7_ids"):
+        robot = env.scene["robot"]
+        env._link7_ids = {s: robot.find_bodies(f"{s}_fr3_link7")[0][0] for s in ("left", "right")}
+    arms = torch.linalg.norm(env.scene.sensors["arms_contact"].data.net_forces_w.torch, dim=-1)
+    base = torch.linalg.norm(env.scene.sensors["base_object_contact"].data.force_matrix_w.torch, dim=-1)
+    housing = [_link7_housing_force(env, f"{s}_plate_object_contact", env._link7_ids[s]) for s in ("left", "right")]
+    forces = torch.cat([arms, base.sum(dim=(-1, -2)).unsqueeze(-1), torch.stack(housing, dim=-1)], dim=-1)
+    env._nonplate_cache = (env.common_step_counter, forces)
+    return forces
+
+
+def _plate_only_factor(env, force_ref: float) -> torch.Tensor:
+    """판 외 접촉 없음 1 -> 접촉력 합이 force_ref일 때 0."""
+    return (1.0 - nonplate_contact_forces(env).sum(dim=-1) / force_ref).clamp(0.0, 1.0)
+
+
+def nonplate_contact_count(env, threshold: float = 1.0) -> torch.Tensor:
+    """threshold[N]를 넘는 판 외 접촉 부위 수. undesired_contacts(link1~6)에 베이스·link7 원통을 더한 것."""
+    return (nonplate_contact_forces(env) > threshold).sum(dim=-1).float()
+
+
+def object_is_lifted_perenv_and_squeezed_plateonly(
+    env,
+    lift_delta: float,
+    finger1_sensor_cfg: SceneEntityCfg,
+    finger2_sensor_cfg: SceneEntityCfg,
+    threshold: float = 0.5,
+    tilt_gate: float = LEVEL_TILT_GATE,
+    force_ref: float = PLATE_ONLY_FORCE_REF,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """수평 gate 들기 x 판 전용 factor."""
+    lifted = object_is_lifted_perenv_and_squeezed_level(
+        env, lift_delta, finger1_sensor_cfg, finger2_sensor_cfg, threshold, tilt_gate, object_cfg
+    )
+    return lifted * _plate_only_factor(env, force_ref)
+
+
+def lift_progress_plateonly(
+    env,
+    lift_delta: float,
+    finger1_sensor_cfg: SceneEntityCfg,
+    finger2_sensor_cfg: SceneEntityCfg,
+    threshold: float = 1.0,
+    tilt_gate: float = LEVEL_TILT_GATE,
+    force_ref: float = PLATE_ONLY_FORCE_REF,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """수평 gate 들기 진행도 x 판 전용 factor."""
+    progress = lift_progress_level(env, lift_delta, finger1_sensor_cfg, finger2_sensor_cfg, threshold, tilt_gate, object_cfg)
+    return progress * _plate_only_factor(env, force_ref)
+
+
+def object_goal_distance_perenv_squeezed_plateonly(
+    env,
+    std: float,
+    lift_delta: float,
+    command_name: str,
+    finger1_sensor_cfg: SceneEntityCfg,
+    finger2_sensor_cfg: SceneEntityCfg,
+    threshold: float = 0.5,
+    tilt_gate: float = LEVEL_TILT_GATE,
+    force_ref: float = PLATE_ONLY_FORCE_REF,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """수평 gate goal 추종 x 판 전용 factor."""
+    tracking = object_goal_distance_perenv_squeezed_level(
+        env, std, lift_delta, command_name, finger1_sensor_cfg, finger2_sensor_cfg, threshold, tilt_gate,
+        robot_cfg, object_cfg,
+    )
+    return tracking * _plate_only_factor(env, force_ref)
+
+
+class success_bonus_plateonly(success_bonus):
+    """success_bonus x 판 전용 factor (지급만 깎고 hold 카운터는 그대로)."""
+
+    def __call__(
+        self,
+        env,
+        dist_threshold: float,
+        tilt_threshold: float,
+        hold_steps: int,
+        finger1_sensor_cfg: SceneEntityCfg,
+        finger2_sensor_cfg: SceneEntityCfg,
+        threshold: float = 1.0,
+        command_name: str = "object_pose",
+        robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+        sustained: bool = False,
+        yaw_alpha: float = 0.0,
+        yaw_std: float = 0.35,
+        force_ref: float = PLATE_ONLY_FORCE_REF,
+    ) -> torch.Tensor:
+        reward = super().__call__(
+            env, dist_threshold, tilt_threshold, hold_steps, finger1_sensor_cfg, finger2_sensor_cfg, threshold,
+            command_name, robot_cfg, object_cfg, sustained, yaw_alpha, yaw_std,
+        )
+        return reward * _plate_only_factor(env, force_ref)
+
+
+def set_fr3_datasheet_joint_limits(
+    env,
+    env_ids,
+    inset: float = 0.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=DUAL_ARM_JOINT_NAMES, preserve_order=True),
+):
+    """startup: sim 관절 위치 한계(USD)를 FR3 한계(FR3_JOINT_POS_LIMITS, inset만큼 더 좁힘)로 바꾼다.
+
+    asset_cfg는 params로 넘겨야 resolve된다.
+    """
+    robot = env.scene[asset_cfg.name]
+    if env_ids is None or isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    limits = torch.tensor(fr3_joint_limits_inset(inset) * 2, device=env.device).repeat(len(env_ids), 1, 1)
+    robot.write_joint_position_limit_to_sim_index(limits=limits, joint_ids=asset_cfg.joint_ids, env_ids=env_ids)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_PlateOnly(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_Level):
+    """Offset03-Level + 판으로만 들기 + FR3 관절 한계 강제 + 커리큘럼 발동 수정. from-scratch.
+
+    - 들기/goal/success 보상에 판 전용 factor를 곱한다: 판 외 접촉력 합(양팔 link1~6, 베이스-박스,
+      link7 원통-박스) 0 N이면 1, PLATE_ONLY_FORCE_REF(10 N)면 0. 수평 gate는 Level 그대로.
+    - undesired_contact_penalty를 nonplate_contact_count로 교체 (link1~6에 베이스·link7 원통 추가,
+      -1e-4 시작 -> 들기 습득 후 -1 커리큘럼은 그대로).
+    - sim 관절 한계를 FR3 datasheet로 좁히고(startup event) PD 목표도 같은 한계로 자른다. 배포 노드도
+      q_target을 같은 한계로 잘라야 한다. fr3_joint_limit_margin(-1)은 유지.
+    - Level에서 lifting_object에 gate를 곱하자 "들기 습득" 판정(lifting_object 초당 EMA > 10)이 끝까지
+      안 넘어서 페널티 커리큘럼이 하나도 안 켜졌다 -> gate 없는 lift_monitor 항으로 판정한다. 기준도
+      10 -> LIFT_LEARNED_THRESHOLD(8)로 낮춘다 (첫 from-scratch run은 10이라 끝까지 안 켜졌음).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        plate_only_funcs = {
+            object_is_lifted_perenv_and_squeezed_level: object_is_lifted_perenv_and_squeezed_plateonly,
+            lift_progress_level: lift_progress_plateonly,
+            object_goal_distance_perenv_squeezed_level: object_goal_distance_perenv_squeezed_plateonly,
+        }
+        for name in ("lifting_object", "lift_progress", "object_goal_tracking", "object_goal_tracking_fine_grained"):
+            term = getattr(self.rewards, name)
+            term.func = plate_only_funcs[term.func]
+        self.rewards.success.func = success_bonus_plateonly
+
+        self.scene.base_object_contact = ContactSensorCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/base",
+            filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"],
+        )
+        # 판 + link7 원통이 같이 닿으면 접촉점이 기본 4개를 넘을 수 있어 여유를 둔다
+        self.scene.left_plate_object_contact.max_contact_data_count_per_prim = 16
+        self.scene.right_plate_object_contact.max_contact_data_count_per_prim = 16
+        self.rewards.undesired_contact_penalty.func = nonplate_contact_count
+        self.rewards.undesired_contact_penalty.params = {"threshold": 1.0}
+
+        self.events.fr3_joint_limits = EventTerm(
+            func=set_fr3_datasheet_joint_limits,
+            mode="startup",
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=DUAL_ARM_JOINT_NAMES, preserve_order=True)},
+        )
+        self.actions.arm_action.target_limits = FR3_JOINT_POS_LIMITS * 2
+
+        lifting = self.rewards.lifting_object
+        self.rewards.lift_monitor = RewTerm(
+            func=object_is_lifted_perenv_and_squeezed,
+            params={k: v for k, v in lifting.params.items() if k != "tilt_gate"},
+            weight=LIFT_MONITOR_WEIGHT,
+        )
+        for term in self.curriculum.__dict__.values():
+            if term is not None and term.func is modify_reward_weight_on_lifting_learned:
+                term.params["lifting_term"] = "lift_monitor"
+                term.params["threshold"] = LIFT_LEARNED_THRESHOLD * LIFT_MONITOR_WEIGHT / lifting.weight
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_PlateOnly_PLAY(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_PlateOnly):
+    """Sim2Real-100Hz-Offset03-PlateOnly visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- Light: PlateOnly + reach/cube와 같은 ±0.1 rad + 실물 가벼운 박스 (2026-11-02) ----------
+# 사용자: 실물 박스는 1 kg 미만이다 (7/29에 정한 4 kg과 다름). ±0.1 rad(Kp*0.1 = 8 Nm)로 4 kg은 못 들지만
+# (A/B 2026-10-23), 스크립트 조임-들기 시험(scratch squeeze_test3, 판을 박스 중간 높이에 대고 DLS로 조인 뒤
+# 20 cm 들기)에서 판당 조임이 16~22 N이었다. 0.5 kg은 박스 마찰 0.4~1.0 전부, 1.0 kg은 0.6 이상에서
+# 12~16 cm 들렸고, 1.5~2 kg은 3~7 cm에서 미끄러졌고, 4 kg은 전혀 안 들렸다.
+# 이 박스면 배포 노드 기준(max_policy_target_delta_rad 0.11)을 reach와 같이 그대로 쓴다.
+LIGHT_BOX_MASS = 0.75  # kg, 명목값 (실측 전)
+LIGHT_BOX_MASS_RANGE = (0.5, 1.0)  # kg, 실측하면 좁힌다
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Offset03_PlateOnly):
+    """PlateOnly(판으로만 들기, datasheet 관절 한계, 커리큘럼 threshold 8)에서 action bound를 ±0.1 rad로
+    되돌리고 박스를 0.5~1.0 kg으로 바꾼다. 외란은 질량에 비례해 줄인다 (4 kg 기준 ±5 N/±1 Nm와 같은 가속도).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.arm_action.scale = 0.1
+        self.actions.arm_action.clip = {".*": (-0.1, 0.1)}
+        self.scene.object.spawn.mass_props = sim_utils.MassPropertiesCfg(mass=LIGHT_BOX_MASS)
+        self.events.randomize_box_density.params["mass_distribution_params"] = LIGHT_BOX_MASS_RANGE
+        ratio = LIGHT_BOX_MASS / V1_BOX_MASS
+        self.events.disturb_box.params.update(force=DISTURB_FORCE * ratio, torque=DISTURB_TORQUE * ratio)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_PLAY(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light):
+    """Sim2Real-100Hz-Light visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- Light-Margin: 관절 한계를 FCI 한계보다 안쪽으로 (2026-11-03) ----------
+# Light model_5999는 j2를 상한(1.7837)에 붙여 쓴다(env 62~75%, 시간 3~9%). sim 한계·PD 목표 clamp·한계
+# 페널티를 모두 FR3_JOINT_LIMIT_INSET만큼 안쪽으로 옮긴다. j2는 1.7337이 되어 URDF/datasheet 한계(1.8361)와
+# 0.10, 배포 노드 검사(URDF - 0.02)와 0.08 rad 떨어진다. model_5999에서 이어 학습한다.
+FR3_JOINT_LIMIT_INSET = 0.05  # rad
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Margin(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light):
+    """Light + 관절 한계(sim 한계, q_target clamp, 한계 페널티)를 FR3_JOINT_LIMIT_INSET만큼 안쪽으로."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.fr3_joint_limits.params["inset"] = FR3_JOINT_LIMIT_INSET
+        self.actions.arm_action.target_limits = fr3_joint_limits_inset(FR3_JOINT_LIMIT_INSET) * 2
+        self.rewards.fr3_joint_limit_margin.params["inset"] = FR3_JOINT_LIMIT_INSET
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Margin_PLAY(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Margin):
+    """Sim2Real-100Hz-Light-Margin visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- Pregrasp: 접근은 rule-based/MoveIt, RL은 마지막 접근~조이기~들기 (2026-11-03) ----------
+# Light RL의 박스 yaw(38도)·판 높이차·j2 한계는 판을 어디에 대느냐(접근)에서 생긴다(P37 "kinematic placement").
+# 실물에서는 비전으로 박스 pose를 잡고 MoveIt/MoveToJoint로 판을 박스 면 4 cm 바깥, 잡는 높이에 놓은 뒤 정책을 켠다.
+# sim은 그 넘겨받는 상태를 표로 재현한다: scripts/tools/eval_dual_fr3_plate_rule_based.py --pregrasp_gap 0.04로
+# 박스 pose별 양팔 관절각을 미리 구해 두고(Light-Margin 관절 한계 안), reset마다 한 줄을 뽑아 박스와 팔을 같이 놓는다.
+# 인식·플래너 오차는 박스 pose 노이즈로 넣는다.
+# 박스는 실물 2차 박스(2026-11-03 사용자): 가로 410 x 세로 310 x 높이 280 mm, 빈 박스 501~561 g, 잡는 방향(y) = 310 mm.
+# Light/Light-Margin(555 x 475 x 275, 0.5~1.0 kg)과 다르다. 박스를 바꾸면 표도 그 크기로 다시 만든다(--box_size).
+BOX410_SIZE = (0.41, 0.31, 0.28)  # (x 전후, y 잡는 방향, z 높이) [m]
+BOX410_MASS = 0.5  # kg, 명목값
+BOX410_MASS_RANGE = (0.4, 0.6)  # kg, 실측 501~561 g에 여유
+PREGRASP_TABLE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    "assets", "pregrasp", "plate_box410_pregrasp_gap004_margin005.npz",
+)
+PREGRASP_BOX_POS_NOISE = 0.01  # m, 박스 xy (표의 pose 기준, 판-면 간격 4 cm 안)
+PREGRASP_BOX_YAW_NOISE = 0.05  # rad (약 3도)
+PREGRASP_JOINT_NOISE = 0.01  # rad
+PREGRASP_EPISODE_S = 4.0
+
+
+def reset_from_pregrasp_table(
+    env,
+    env_ids,
+    table_path: str,
+    box_pos_noise: float,
+    box_yaw_noise: float,
+    joint_noise: float,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+):
+    """reset: 접근 끝 자세 표에서 env마다 한 줄을 뽑아 양팔 관절(속도 0, PD 목표도 같은 값)과 박스 pose를 놓는다.
+
+    reset_all·reset_object_position 뒤에 와야 한다(이벤트는 cfg 정의 순서로 실행된다). 표는 env frame 기준이다.
+    """
+    robot = env.scene[robot_cfg.name]
+    obj = env.scene[object_cfg.name]
+    table = getattr(env, "_pregrasp_table", None)
+    if table is None:
+        data = np.load(table_path)
+        names = [str(x) for x in data["joint_names"]]
+        order = [names.index(nm) for nm in robot.joint_names]
+        table = {
+            "q": torch.tensor(data["joint_pos"][:, order], dtype=torch.float32, device=env.device),
+            "box": torch.tensor(data["box_pose"], dtype=torch.float32, device=env.device),
+        }
+        env._pregrasp_table = table
+    if env_ids is None or isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    n = len(env_ids)
+    k = torch.randint(0, table["q"].shape[0], (n,), device=env.device)
+
+    limits = robot.data.joint_pos_limits.torch[env_ids]
+    q = table["q"][k] + (2 * torch.rand_like(table["q"][k]) - 1) * joint_noise
+    q = torch.minimum(torch.maximum(q, limits[..., 0]), limits[..., 1])
+    robot.write_joint_position_to_sim_index(position=q, env_ids=env_ids)
+    robot.write_joint_velocity_to_sim_index(velocity=torch.zeros_like(q), env_ids=env_ids)
+    robot.set_joint_position_target_index(target=q, env_ids=env_ids)
+    robot.set_joint_velocity_target_index(target=torch.zeros_like(q), env_ids=env_ids)
+
+    box = table["box"][k]
+    pos = box[:, :3] + env.scene.env_origins[env_ids]
+    pos[:, :2] += (2 * torch.rand(n, 2, device=env.device) - 1) * box_pos_noise
+    yaw = (2 * torch.rand(n, device=env.device) - 1) * box_yaw_noise
+    z = torch.zeros(n, 3, device=env.device)
+    z[:, 2] = 1.0
+    quat = quat_mul(quat_from_angle_axis(yaw, z), box[:, 3:])
+    obj.write_root_pose_to_sim_index(root_pose=torch.cat([pos, quat], -1), env_ids=env_ids)
+    obj.write_root_velocity_to_sim_index(root_velocity=torch.zeros(n, 6, device=env.device), env_ids=env_ids)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Margin):
+    """Light-Margin에서 박스를 410 x 310 x 280 mm, 0.4~0.6 kg으로 바꾸고, 에피소드를 접근 끝 자세(판이 박스 면
+    4 cm 바깥)에서 시작한다. 보상·관측·행동은 그대로.
+
+    에피소드는 4 s(80 step). 박스 pose 분포는 표가 정한다(x 0.45~0.52, y ±0.1, yaw ±0.1 + 노이즈).
+    외란은 Light처럼 질량에 비례해 줄인다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.object.spawn.size = BOX410_SIZE
+        self.scene.object.spawn.mass_props = sim_utils.MassPropertiesCfg(mass=BOX410_MASS)
+        self.scene.object.init_state.pos = (0.5, 0.0, BOX410_SIZE[2] / 2 + 0.0225)
+        self.events.randomize_box_density.params["mass_distribution_params"] = BOX410_MASS_RANGE
+        ratio = BOX410_MASS / V1_BOX_MASS
+        self.events.disturb_box.params.update(force=DISTURB_FORCE * ratio, torque=DISTURB_TORQUE * ratio)
+        self.episode_length_s = PREGRASP_EPISODE_S
+        self.events.reset_from_pregrasp = EventTerm(
+            func=reset_from_pregrasp_table,
+            mode="reset",
+            params={
+                "table_path": PREGRASP_TABLE_PATH,
+                "box_pos_noise": PREGRASP_BOX_POS_NOISE,
+                "box_yaw_noise": PREGRASP_BOX_YAW_NOISE,
+                "joint_noise": PREGRASP_JOINT_NOISE,
+            },
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_PLAY(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp):
+    """Sim2Real-100Hz-Light-Pregrasp visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Upright(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp):
+    """Pregrasp + 똑바로 들기 항을 처음부터 켠다.
+
+    P47에서 "들기 습득" 뒤에 켜지던 자세 품질 항(box_upright -3, plate_height_symmetry -8,
+    plate_approach_symmetry -20, one_sided_contact -5)을 처음부터 최종 weight로 두고, success의 yaw 계수 ramp도
+    바로 시작한다(1000 iter). 접근이 이미 끝난 상태라 들기 발견이 쉬워서, P7의 "작게 시작" 규칙이 막던 문제
+    (페널티가 발견을 막음)가 덜할 것으로 본다(미확인). action_rate·joint_vel·판 외 접촉·reaching은 커리큘럼 그대로.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        for name, weight in (
+            ("box_upright", -3.0),
+            ("plate_height_symmetry", -8.0),
+            ("plate_approach_symmetry", -20.0),
+            ("one_sided_contact", -5.0),
+        ):
+            getattr(self.rewards, name).weight = weight
+            setattr(self.curriculum, name, None)
+        self.curriculum.yawtrack.params.update(trigger=0.0, ramp_steps=24000)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Upright_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Upright
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Upright visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False

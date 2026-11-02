@@ -1,5 +1,8 @@
 # Dual FR3 Plate-EE Box Lift — Sim2Real 전략과 문헌 정리
 
+> 2026-10-22: bounded + policy-step(snapshot) action 계약을 Reach Sim2Real v2와 같은 제어 경로로 구현한 task는
+> [dual_fr3_lift_sim2real.md](dual_fr3_lift_sim2real.md) 참조. 아래 내용은 v3/P38 기준 원문이다.
+
 > 현재 개발 태스크: `Isaac-Lift-Box-DualFR3-Plate-P47-v0` (**현재 최선**)
 > P50/P51 병행 학습 중 (2026-08-24, 판-박스 면접촉 개선 목표)
 >
@@ -472,6 +475,7 @@ Force observation 삭제는 force safety 삭제가 아니다. 다만 FR3 `tau_ex
 - [ ] plate payload 질량·CoM·inertia 측정 및 sim/실물 controller 양쪽의 반영 여부 확인.
 - [ ] payload tare 후 `tau_ext` posture envelope/Jacobian wrench safety threshold 검증.
 - [ ] 4 kg 박스 질량·CoM·마찰·접촉 변형 측정.
+- [ ] Sim2Real box는 action bound ±0.3 rad(`-Offset03`)로 학습함. 배포 노드의 scale/clip 0.3, fault 0.35 rad, collision 임계값 반영. ±0.1 rad(8 Nm)로는 4 kg를 못 듦. 상세: [dual_fr3_lift_sim2real.md](dual_fr3_lift_sim2real.md#box-action-bound-03-rad--offset03-2026-10-23).
 - [ ] action/pose temporal factorial 통과.
 - [ ] nominal 및 measured-posterior sim suite 통과.
 - [ ] independent safety supervisor dry-run 완료.
