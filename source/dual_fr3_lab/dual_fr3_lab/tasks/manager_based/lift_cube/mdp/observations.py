@@ -36,7 +36,7 @@ def object_orientation_in_robot_root_frame(
         obj.data.root_pos_w.torch,
         obj.data.root_quat_w.torch,
     )
-    sign = torch.where(quat[:, 0:1] >= 0.0, 1.0, -1.0)
+    sign = torch.where(quat[:, 3:4] >= 0.0, 1.0, -1.0)  # Lab 3.0 quat은 (x, y, z, w): w는 마지막
     return quat * sign
 
 

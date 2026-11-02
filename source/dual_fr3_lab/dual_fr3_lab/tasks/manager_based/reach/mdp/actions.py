@@ -38,6 +38,14 @@ class ReachRelativeJointPositionAction(RelativeJointPositionAction):
                 f"'policy_step', got {cfg.reference_mode!r}."
             )
         self._policy_step_targets = torch.zeros_like(self.processed_actions)
+        self._target_limits = None
+        if cfg.target_limits is not None:
+            self._target_limits = torch.tensor(cfg.target_limits, device=self.device)
+
+    def _clamp_targets(self, targets: torch.Tensor) -> torch.Tensor:
+        if self._target_limits is None:
+            return targets
+        return torch.clamp(targets, self._target_limits[:, 0], self._target_limits[:, 1])
 
     @property
     def position_targets(self) -> torch.Tensor:
@@ -45,14 +53,14 @@ class ReachRelativeJointPositionAction(RelativeJointPositionAction):
         if self.cfg.reference_mode == "policy_step":
             return self._policy_step_targets
         current_positions = self._asset.data.joint_pos.torch[:, self._joint_ids]
-        return current_positions + self.processed_actions
+        return self._clamp_targets(current_positions + self.processed_actions)
 
     def process_actions(self, actions: torch.Tensor) -> None:
         """Process one policy action and optionally snapshot its absolute target."""
         super().process_actions(actions)
         if self.cfg.reference_mode == "policy_step":
             current_positions = self._asset.data.joint_pos.torch[:, self._joint_ids]
-            self._policy_step_targets[:] = current_positions + self.processed_actions
+            self._policy_step_targets[:] = self._clamp_targets(current_positions + self.processed_actions)
 
     def reset(self, env_ids: Sequence[int] | None = None) -> None:
         super().reset(env_ids)
@@ -62,11 +70,11 @@ class ReachRelativeJointPositionAction(RelativeJointPositionAction):
             self._policy_step_targets[resolved_env_ids] = current_positions[resolved_env_ids]
 
     def apply_actions(self) -> None:
-        if self.cfg.reference_mode == "physics_step":
+        if self.cfg.reference_mode == "physics_step" and self._target_limits is None:
             super().apply_actions()
             return
         self._asset.set_joint_position_target_index(
-            target=self._policy_step_targets,
+            target=self.position_targets,
             joint_ids=self._joint_ids,
         )
 
@@ -79,3 +87,9 @@ class ReachRelativeJointPositionActionCfg(RelativeJointPositionActionCfg):
 
     reference_mode: str = "physics_step"
     """Position-reference update rate: ``physics_step`` or ``policy_step``."""
+
+    target_limits: tuple[tuple[float, float], ...] | None = None
+    """Per-joint (lower, upper) clamp on the absolute target, in ``joint_names`` order. None = no clamp.
+
+    The deployment node has to apply the same clamp, since the real controller rejects targets beyond its limits.
+    """

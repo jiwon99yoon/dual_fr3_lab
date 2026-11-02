@@ -7,6 +7,8 @@ from isaaclab.utils import configclass
 
 from isaaclab_rl.rsl_rl import RslRlMLPModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
+from dual_fr3_lab.tasks.manager_based.reach.agents.rsl_rl_ppo_cfg import TanhSquashedGaussianDistributionCfg
+
 
 @configclass
 class LiftCubePPORunnerCfg(RslRlOnPolicyRunnerCfg):
@@ -61,3 +63,32 @@ class LiftCubePPORunnerCfgV3(LiftCubePPORunnerCfg):
     """v3 (세로 cube 50x50x100 재학습) — 로그 분리."""
 
     experiment_name = "dual_fr3_lift_v3"
+
+
+@configclass
+class LiftCubePPORunnerCfgV3Friction(LiftCubePPORunnerCfgV3):
+    """v3-Friction (v3 + MuJoCo-matched 팔 관절 passive dynamics 재학습) — 로그 분리."""
+
+    experiment_name = "dual_fr3_lift_v3_friction"
+
+
+@configclass
+class LiftCubePPORunnerCfgSim2Real1kHz(LiftCubePPORunnerCfgV3):
+    """Sim2Real-1kHz — Reach Sim2Real와 같은 tanh-squashed bounded actor, 로그 분리."""
+
+    experiment_name = "dual_fr3_lift_sim2real_1khz"
+    actor = RslRlMLPModelCfg(
+        hidden_dims=[256, 128, 64],
+        activation="elu",
+        obs_normalization=False,
+        distribution_cfg=TanhSquashedGaussianDistributionCfg(init_std=1.0),
+    )
+    # actor 출력이 이미 (-1, 1): wrapper clip은 수치 안전장치로만 유지 (Reach Sim2Real와 동일)
+    clip_actions = 1.0
+
+
+@configclass
+class LiftCubePPORunnerCfgSim2Real100Hz(LiftCubePPORunnerCfgSim2Real1kHz):
+    """Sim2Real-100Hz — 1kHz와 같은 actor/PPO, 로그 분리."""
+
+    experiment_name = "dual_fr3_lift_sim2real_100hz"

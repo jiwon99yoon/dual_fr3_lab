@@ -27,6 +27,15 @@ class TanhSquashedGaussianDistribution(GaussianDistribution):
     reparameterized sample already generated for the PPO update.  This keeps the
     entropy gradient consistent with the bounded action distribution instead of the
     unbounded latent Gaussian.
+
+    The latent mean is clamped to ``[-mean_bound, mean_bound]``.  Beyond ``|mean| ~ 3``
+    the squashed action no longer changes, so neither the reward nor the action penalties
+    hold the mean back and it can drift without limit.  Once it passes ~9, float32
+    ``tanh`` returns exactly 1.0, :meth:`log_prob` can only recover ``atanh(1 - epsilon)``
+    (~7.25), and a tiny mean update overflows the PPO ratio to ``inf`` (NaN actor).
+    The clamp also zeroes the gradient past the bound, which stops the drift itself.
+    Deterministic inference keeps the plain ``tanh`` so exported actors are unchanged;
+    the mismatch is at most ``1 - tanh(mean_bound)`` (9e-5 for the default 5.0).
     """
 
     def __init__(
@@ -35,15 +44,21 @@ class TanhSquashedGaussianDistribution(GaussianDistribution):
         init_std: float = 1.0,
         std_type: str = "log",
         epsilon: float = 1.0e-6,
+        mean_bound: float | None = 5.0,
     ) -> None:
         if not 0.0 < epsilon < 1.0:
             raise ValueError(f"epsilon must be in (0, 1), got {epsilon}")
+        if mean_bound is not None and not mean_bound > 0.0:
+            raise ValueError(f"mean_bound must be positive or None, got {mean_bound}")
         super().__init__(output_dim=output_dim, init_std=init_std, std_type=std_type)
         self.epsilon = float(epsilon)
+        self.mean_bound = None if mean_bound is None else float(mean_bound)
         self._last_pre_tanh_sample: torch.Tensor | None = None
 
     def update(self, mlp_output: torch.Tensor) -> None:
         """Update the latent Gaussian and invalidate the cached entropy sample."""
+        if self.mean_bound is not None:
+            mlp_output = mlp_output.clamp(min=-self.mean_bound, max=self.mean_bound)
         super().update(mlp_output)
         self._last_pre_tanh_sample = None
 

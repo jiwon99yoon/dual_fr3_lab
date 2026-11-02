@@ -1,5 +1,8 @@
 # Dual FR3 Cube Lift — Sim2Real 전략과 배포 계약
 
+> 2026-10-22: bounded + policy-step(snapshot) action 계약을 Reach Sim2Real v2와 같은 제어 경로로 구현한 task는
+> [dual_fr3_lift_sim2real.md](dual_fr3_lift_sim2real.md) 참조. 아래 내용은 v3/P38 기준 원문이다.
+
 > 대상 태스크: `Isaac-Lift-Cube-DualFR3-v3`
 >
 > 현재 기준: **2026-08-24, v3 실물 배포 후보 (유지 — cube 쪽 추가 실험 없음)**

@@ -41,7 +41,12 @@ from . import mdp
 # Pre-defined configs
 ##
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
-from dual_fr3_lab.robots.dual_fr3 import DUAL_FR3_CFG  # isort: skip
+from dual_fr3_lab.robots.dual_fr3 import (  # isort: skip
+    DUAL_FR3_CFG,
+    with_arm_passive_dynamics,
+    with_torque_rate_limited_arms,
+)
+from dual_fr3_lab.tasks.manager_based.reach.mdp.actions import ReachRelativeJointPositionActionCfg  # isort: skip
 
 
 # ---------- 배치 상수 (world 기준, MJCF 테이블: lift/config/dual_fr3_table.md) ----------
@@ -55,7 +60,7 @@ CUBE_POS_W = (0.45, -0.25, TABLE_TOP_Z + 0.03)  # 오른팔 workspace 중앙, �
 
 # link7 -> TCP(그리퍼 파지점) 오프셋: joint8(z+0.107) + hand yaw -45도 + TCP(z+0.1034)
 TCP_OFFSET_POS = (0.0, 0.0, 0.2104)
-TCP_OFFSET_QUAT = (0.9238795, 0.0, 0.0, -0.3826834)  # Rz(-45도), (w, x, y, z)
+TCP_OFFSET_QUAT = (0.0, 0.0, -0.3826834, 0.9238795)  # Rz(-45도), (x, y, z, w) — Lab 3.0 순서
 
 
 def modify_reward_weight_on_lifting_learned(
@@ -258,7 +263,8 @@ class DualFR3CubeLiftEnvCfg(LiftEnvCfg):
         CUBE_BASE = (0.05, 0.05, 0.05)  # m — v0~v2 정육면체, v3에서 z=0.10으로 override
         self.scene.object = RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Object",
-            init_state=RigidObjectCfg.InitialStateCfg(pos=CUBE_POS_W, rot=[1, 0, 0, 0]),
+            # Lab 3.0 quat은 (x, y, z, w): identity = [0, 0, 0, 1] ([1, 0, 0, 0]이면 x축 180도 뒤집힘)
+            init_state=RigidObjectCfg.InitialStateCfg(pos=CUBE_POS_W, rot=[0, 0, 0, 1]),
             spawn=sim_utils.MeshCuboidCfg(
                 size=CUBE_BASE,
                 rigid_props=RigidBodyPropertiesCfg(
@@ -633,6 +639,144 @@ class DualFR3CubeLiftEnvCfgV3_PLAY(DualFR3CubeLiftEnvCfgV3):
 
 @configclass
 class DualFR3CubeLiftEnvCfgV3_PLAY_NOISY(DualFR3CubeLiftEnvCfgV3_PLAY):
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+# v3-Friction: v3 + MuJoCo-matched 팔 관절 passive dynamics (2026-10-21)
+@configclass
+class DualFR3CubeLiftEnvCfgV3Friction(DualFR3CubeLiftEnvCfgV3):
+    """v3-Friction = v3 + 팔 관절 armature/friction/viscous 명시. from-scratch 재학습.
+
+    변경점 1개: arms_shoulder/arms_forearm에 armature 0.1, friction 0.2, dynamic_friction 0.2,
+    viscous_friction 0.003 (Reach Sim2Real *-Friction과 동일 값, FR3_ARM_MUJOCO_PASSIVE_DYNAMICS).
+    v3는 armature/viscous를 지정하지 않아 0이고 마찰은 USD의 physxJoint:jointFriction(0.2)에 의존.
+    액추에이터는 v3 그대로 implicit PD @100Hz — torque-rate limiter/1kHz 전환은 별도 축으로 분리.
+    v3 checkpoint와 관절 dynamics가 달라 이어받기 불가.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.robot = with_arm_passive_dynamics(self.scene.robot)
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgV3Friction_PLAY(DualFR3CubeLiftEnvCfgV3Friction):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgV3Friction_PLAY_NOISY(DualFR3CubeLiftEnvCfgV3Friction_PLAY):
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+##
+# Sim2Real: Reach Sim2Real v2와 같은 제어 계약 (2026-10-22) — cube/box 공용 helper
+##
+
+SIM2REAL_POLICY_DT = 0.05  # 20 Hz 정책 (배포 노드 policy_rate_hz 20)
+
+
+def apply_sim2real_control(env_cfg, *, physics_dt: float) -> None:
+    """lift env에 Reach Sim2Real v2의 제어 계약을 덮어쓴다 (cube/box 공용).
+
+    - 물리/explicit PD 주기 physics_dt, 정책 20 Hz (decimation = 0.05 / physics_dt)
+    - 팔: explicit PD Kp80/Kd4 + 토크 87/12 Nm + 1000 Nm/s 변화율 제한 + MuJoCo-matched passive dynamics
+    - 팔 action: Δq = clip(0.1·a, ±0.1 rad). policy-step 기준 = 정책 시점에 q_target = q(t_k) + Δq를
+      만들어 decimation 동안 고정 (현재 reach v2 학습의 --reach_policy_step_action과 같은 의미)
+    - 팔 PD 게인 DR ±15% (startup)
+    action의 joint 목록/순서는 기존 arm_action을 그대로 쓴다. actor의 tanh 분포는 runner cfg에서 맞춘다.
+    """
+    decimation = round(SIM2REAL_POLICY_DT / physics_dt)
+    env_cfg.sim.dt = physics_dt
+    env_cfg.decimation = decimation
+    env_cfg.sim.render_interval = decimation
+    env_cfg.scene.robot = with_torque_rate_limited_arms(env_cfg.scene.robot, control_dt=physics_dt)
+    arm = env_cfg.actions.arm_action
+    env_cfg.actions.arm_action = ReachRelativeJointPositionActionCfg(
+        asset_name=arm.asset_name,
+        joint_names=arm.joint_names,
+        preserve_order=arm.preserve_order,
+        scale=0.1,
+        # JointAction은 scale 다음에 clip: raw [-1, 1] -> offset [-0.1, 0.1] rad (Reach Sim2Real와 동일)
+        clip={".*": (-0.1, 0.1)},
+        reference_mode="policy_step",
+    )
+    env_cfg.events.randomize_actuator_gains = EventTerm(
+        func=mdp.randomize_actuator_gains,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_fr3_joint[1-7]"]),
+            "stiffness_distribution_params": (0.85, 1.15),
+            "damping_distribution_params": (0.85, 1.15),
+            "operation": "scale",
+        },
+    )
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgSim2Real1kHz(DualFR3CubeLiftEnvCfgV3):
+    """Sim2Real-1kHz = v3 + Reach Sim2Real v2 제어 계약. from-scratch 재학습.
+
+    v3-Friction은 passive dynamics만 맞춘 것이고, 이 cfg는 apply_sim2real_control로 제어 경로 전체를 맞춘다:
+    물리/PD 1 kHz(decimation 50, 정책 20 Hz 유지), explicit PD + 토크 변화율 제한, 팔 action ±0.1 rad clip +
+    policy-step target, 팔 PD 게인 DR ±15%. actor는 tanh-squashed Gaussian(runner cfg).
+    obs 36D, action 8D(오른팔 7 + 그리퍼 1), reward, 물체 DR, episode 8 s는 v3 그대로.
+    그리퍼는 implicit 그대로이며 binary action이라 tanh 출력의 부호만 쓴다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        apply_sim2real_control(self, physics_dt=0.001)
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgSim2Real1kHz_PLAY(DualFR3CubeLiftEnvCfgSim2Real1kHz):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgSim2Real1kHz_PLAY_NOISY(DualFR3CubeLiftEnvCfgSim2Real1kHz_PLAY):
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.enable_corruption = True
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgSim2Real100Hz(DualFR3CubeLiftEnvCfgV3):
+    """Sim2Real-100Hz = Sim2Real-1kHz와 같되 물리/PD 100 Hz(decimation 5). 1 kHz가 너무 느릴 때의 대안.
+
+    PD/토크 변화율 제한이 10 ms마다 갱신되므로 실물 1 kHz 제어기와의 시간 이산화 차이는 남는다
+    (Reach Sim2Real 100Hz-Friction과 같은 위치).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        apply_sim2real_control(self, physics_dt=0.01)
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgSim2Real100Hz_PLAY(DualFR3CubeLiftEnvCfgSim2Real100Hz):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3CubeLiftEnvCfgSim2Real100Hz_PLAY_NOISY(DualFR3CubeLiftEnvCfgSim2Real100Hz_PLAY):
     def __post_init__(self):
         super().__post_init__()
         self.observations.policy.enable_corruption = True

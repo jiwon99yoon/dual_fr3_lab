@@ -21,6 +21,8 @@ import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 
+from dual_fr3_lab.actuators import TorqueRateLimitedPDActuatorCfg
+
 ##
 # Configuration
 ##
@@ -88,6 +90,59 @@ DUAL_FR3_CFG = ArticulationCfg(
     soft_joint_pos_limit_factor=1.0,
 )
 """Configuration of dual FR3 arms on a husky base (base fixed)."""
+
+
+# 팔 관절 passive dynamics: MuJoCo FR3 MJCF와 정합한 값 (Reach Sim2Real *-Friction, lift *-Friction 공용)
+#   [M(q) + A] qdd + C qd + B qd + tau_dry = tau_applied
+#   A=armature, tau_dry=friction/dynamic_friction(Isaac Sim 5.0+에서 effort, Nm), B=viscous_friction
+# 실물 FR3 관절별 식별값이 아니라 sim-to-sim 정합값. sysID에서 armature 부재가 Isaac 과도응답
+# outlier의 원인으로 확인됨 (docs/sim2real_gap.md).
+FR3_ARM_MUJOCO_PASSIVE_DYNAMICS = {
+    "armature": 0.1,
+    "friction": 0.2,
+    "dynamic_friction": 0.2,
+    "viscous_friction": 0.003,
+}
+
+
+def with_arm_passive_dynamics(robot_cfg: ArticulationCfg) -> ArticulationCfg:
+    """팔 액추에이터(arms_shoulder/arms_forearm)에 MuJoCo-matched passive dynamics를 명시한 복사본.
+
+    액추에이터 종류(implicit/explicit), 게인, effort limit은 그대로 두고 passive 항만 덮어쓴다.
+    hands 등 다른 액추에이터와 원본 cfg는 건드리지 않는다.
+    """
+    actuators = dict(robot_cfg.actuators)
+    for name in ("arms_shoulder", "arms_forearm"):
+        actuators[name] = actuators[name].replace(**FR3_ARM_MUJOCO_PASSIVE_DYNAMICS)
+    return robot_cfg.replace(actuators=actuators)
+
+
+def with_torque_rate_limited_arms(
+    robot_cfg: ArticulationCfg, *, control_dt: float, match_mujoco_passive_dynamics: bool = True
+) -> ArticulationCfg:
+    """팔 액추에이터를 Reach Sim2Real의 explicit PD + 토크 크기/변화율 제한으로 교체한 복사본.
+
+    Kp=80, Kd=4, 토크 한계 joint1~4 87 Nm / joint5~7 12 Nm, 변화율 1000 Nm/s(libfranka kMaxTorqueRate).
+    control_dt는 sim.dt와 같아야 한다 (step당 최대 토크 변화 = 1000 * control_dt).
+    Reach Sim2Real와 lift Sim2Real이 같은 값을 쓰도록 여기 한 곳에서만 정의한다. hands는 건드리지 않는다.
+    """
+    passive_dynamics = FR3_ARM_MUJOCO_PASSIVE_DYNAMICS if match_mujoco_passive_dynamics else {}
+    actuators = dict(robot_cfg.actuators)
+    for name, joint_expr, effort_limit in (
+        ("arms_shoulder", ".*_fr3_joint[1-4]", 87.0),
+        ("arms_forearm", ".*_fr3_joint[5-7]", 12.0),
+    ):
+        actuators[name] = TorqueRateLimitedPDActuatorCfg(
+            joint_names_expr=[joint_expr],
+            effort_limit=effort_limit,
+            effort_limit_sim=effort_limit,
+            stiffness=80.0,
+            damping=4.0,
+            torque_rate_limit=1000.0,
+            control_dt=control_dt,
+            **passive_dynamics,
+        )
+    return robot_cfg.replace(actuators=actuators)
 
 
 DUAL_FR3_HIGH_PD_CFG = DUAL_FR3_CFG.copy()

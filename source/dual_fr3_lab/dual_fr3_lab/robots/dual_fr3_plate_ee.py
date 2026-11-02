@@ -25,9 +25,7 @@ plate_ee_140x140x25.usd(볼트 인터페이스 유지, 박스 collider)를 부�
 
 import os
 
-from dual_fr3_lab.actuators import TorqueRateLimitedPDActuatorCfg
-
-from .dual_fr3 import DUAL_FR3_CFG
+from .dual_fr3 import DUAL_FR3_CFG, with_torque_rate_limited_arms
 
 ##
 # Configuration
@@ -54,42 +52,14 @@ DUAL_FR3_PLATE_EE_CFG.spawn.rigid_props.disable_gravity = True
 """Dual FR3 arms with flat-plate end-effectors on a husky base (base fixed)."""
 
 
-_MUJOCO_MATCHED_PASSIVE_DYNAMICS = {
-    "armature": 0.1,
-    "friction": 0.2,
-    "dynamic_friction": 0.2,
-    "viscous_friction": 0.003,
-}
-
-
 def _make_reach_sim2real_cfg(*, control_dt: float, match_mujoco_passive_dynamics: bool):
     """Build an independent Reach actuator configuration for one dynamics variant."""
 
-    cfg = DUAL_FR3_PLATE_EE_CFG.copy()
-    passive_dynamics = (
-        _MUJOCO_MATCHED_PASSIVE_DYNAMICS if match_mujoco_passive_dynamics else {}
-    )
-    cfg.actuators["arms_shoulder"] = TorqueRateLimitedPDActuatorCfg(
-        joint_names_expr=[".*_fr3_joint[1-4]"],
-        effort_limit=87.0,
-        effort_limit_sim=87.0,
-        stiffness=80.0,
-        damping=4.0,
-        torque_rate_limit=1000.0,
+    return with_torque_rate_limited_arms(
+        DUAL_FR3_PLATE_EE_CFG,
         control_dt=control_dt,
-        **passive_dynamics,
+        match_mujoco_passive_dynamics=match_mujoco_passive_dynamics,
     )
-    cfg.actuators["arms_forearm"] = TorqueRateLimitedPDActuatorCfg(
-        joint_names_expr=[".*_fr3_joint[5-7]"],
-        effort_limit=12.0,
-        effort_limit_sim=12.0,
-        stiffness=80.0,
-        damping=4.0,
-        torque_rate_limit=1000.0,
-        control_dt=control_dt,
-        **passive_dynamics,
-    )
-    return cfg
 
 
 DUAL_FR3_PLATE_EE_SIM2REAL_100HZ_NO_FRICTION_CFG = _make_reach_sim2real_cfg(

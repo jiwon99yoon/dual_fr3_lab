@@ -16,6 +16,8 @@ class TanhSquashedGaussianDistributionCfg(RslRlMLPModelCfg.GaussianDistributionC
     )
     std_type = "log"
     epsilon: float = 1.0e-6
+    # Latent-mean clamp; None disables it (pre-fix behavior that diverged to NaN at it 3940).
+    mean_bound: float | None = 5.0
 
 
 @configclass

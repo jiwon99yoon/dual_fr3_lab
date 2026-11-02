@@ -48,7 +48,7 @@ def object_grasped(
     for cfg in (finger1_sensor_cfg, finger2_sensor_cfg):
         sensor: ContactSensor = env.scene.sensors[cfg.name]
         # (num_envs, 1, num_filters, 3) -> Object filter만 선택 -> per-env force magnitude
-        finger_forces.append(torch.norm(sensor.data.force_matrix_w[:, :, filter_idx, :], dim=-1).amax(dim=-1))
+        finger_forces.append(torch.norm(sensor.data.force_matrix_w.torch[:, :, filter_idx, :], dim=-1).amax(dim=-1))
     return (torch.minimum(*finger_forces) > threshold).float()
 
 
@@ -94,7 +94,7 @@ def finger_table_impact_penalty(
     count = torch.zeros(env.num_envs, device=env.device)
     for cfg in (finger1_sensor_cfg, finger2_sensor_cfg):
         sensor: ContactSensor = env.scene.sensors[cfg.name]
-        f = torch.norm(sensor.data.force_matrix_w[:, :, filter_idx, :], dim=-1).amax(dim=-1)
+        f = torch.norm(sensor.data.force_matrix_w.torch[:, :, filter_idx, :], dim=-1).amax(dim=-1)
         count += (f > threshold).float()
     return count
 

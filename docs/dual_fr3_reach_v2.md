@@ -223,12 +223,22 @@ Actor : 58 -> 256 -> 128 -> 64 -> 14 -> tanh
 Critic: 58 -> 256 -> 128 -> 64 -> 1
 activation: ELU
 observation normalization: off
-actor distribution: tanh-squashed Gaussian (init_std=1.0, std_type=log)
+actor distribution: tanh-squashed Gaussian (init_std=1.0, std_type=log, mean_bound=5.0)
 ```
 
 PPO log-probability에는 tanh Jacobian correction이 포함된다. entropy는 latent
 Gaussian이 아닌 squashed distribution에서 추정하며, `clip_actions=1.0`은
 actor 범위를 만드는 수단이 아니라 수치적 safety guard로 유지한다.
+
+학습 분포의 latent mean은 `±mean_bound`(5.0)로 clamp한다. 이 clamp가 없던
+1kHz-Friction run(2026-10-21)은 it 3940에서 NaN으로 죽었다. 원인은 null-space
+관절(L3)의 tanh 전 mean이 126까지 커진 것이다. float32 `tanh`가 정확히 1.0으로
+포화하면 `log_prob`은 `atanh(1-1e-6)≈7.25`밖에 복원하지 못하고, 그 상태에서는
+아주 작은 업데이트에도 PPO ratio가 `inf`가 된다. latent KL만 보는 adaptive LR은
+이를 감지하지 못한다. deterministic 출력과 export는 plain `tanh`를 유지하므로
+배포 NPZ는 바뀌지 않는다. 학습과 배포의 액션 차이는 최대 `1-tanh(5)≈9e-5`이다.
+액션이 포화된 상태에서는 squashed entropy가 음수일 수 있으므로, entropy 부호만으로
+이상을 판단하지 않는다.
 
 주요 PPO 설정은 `num_steps_per_env=24`, `gamma=0.98`, `lambda=0.95`,
 `learning_rate=1e-4`, `entropy_coef=0.006`, `max_iterations=5000`이다.
