@@ -261,3 +261,10 @@ class LiftPlateSim2Real100HzLightPregraspUprightPPORunnerCfg(LiftPlateSim2Real10
     """Sim2Real-100Hz-Light-Pregrasp-Upright: Light와 같은 actor/PPO, dedicated log namespace."""
 
     experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_upright"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspRollAlignPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Pregrasp-RollAlign: Light와 같은 actor/PPO, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_rollalign"

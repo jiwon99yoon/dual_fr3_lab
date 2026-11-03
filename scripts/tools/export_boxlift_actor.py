@@ -12,6 +12,12 @@ writes when training starts. This tool reads both and writes one NPZ:
 * ``manifest_json``: the deployment manifest, validated on the robot by
   ``fr3_husky_nn_policy.boxlift_core``.
 
+``manifest["start"]`` says where an episode starts. ``ready_pose``: arms at ``joints.default_position``, box on the
+floor in the start range. ``pregrasp_table`` (``-Pregrasp`` tasks): the arms start at one row of the pre-grasp
+table the run trained with, plates 4 cm outside the box faces. The table is embedded as ``pregrasp_joint_position``
+(rows x 14, manifest joint order) and ``pregrasp_box_pose_base`` (rows x 7, base frame, pos + quat xyzw), so the
+robot can pick the row nearest the measured box pose and move there (MoveIt) before the policy starts.
+
 The export refuses when ``params/env.yaml`` is missing; it never reconstructs the training
 configuration from the current source tree, which may have changed since the run.
 
@@ -100,6 +106,50 @@ def _find_event(events: dict, *, func_suffix: str, asset: str = "object") -> dic
         if str(event.get("func", "")).endswith(func_suffix) and (params.get("asset_cfg") or {}).get("name") == asset:
             return event
     return None
+
+
+def start_info(env: dict, joint_names: list[str], root_pos: list[float]) -> tuple[dict, dict]:
+    """``manifest["start"]`` and the arrays to embed for it (see the module docstring)."""
+    event = next((e for e in env["events"].values() if isinstance(e, dict)
+                  and str(e.get("func", "")).endswith(":reset_from_pregrasp_table")), None)
+    if event is None:
+        return {"mode": "ready_pose"}, {}
+    params = event["params"]
+    trained_path = Path(params["table_path"])
+    table = trained_path
+    if not table.is_file():
+        # a run trained on another PC stores that PC's absolute path: use the same file from this checkout
+        table = Path(__file__).resolve().parents[2] / "source" / "dual_fr3_lab" / "dual_fr3_lab" / "assets" / "pregrasp" / trained_path.name
+    _require(table.is_file(), f"pre-grasp table {trained_path.name} of this run not found ({trained_path}, {table})")
+    data = np.load(table, allow_pickle=False)
+    names = [str(n) for n in data["joint_names"]]
+    _require(sorted(names) == sorted(joint_names), f"table joints {names} != action joints {joint_names}")
+    joint_position = data["joint_pos"][:, [names.index(n) for n in joint_names]].astype(np.float32)
+    box_pose = data["box_pose"].astype(np.float64)
+    box_pose[:, :3] -= np.asarray(root_pos)  # env frame -> base frame (root rotation is identity)
+    start = {
+        "mode": "pregrasp_table",
+        "table_file": str(table),
+        "table_file_trained": str(trained_path),
+        "table_sha256": _sha256(table),
+        "table_meta": str(data["meta"]) if "meta" in data.files else None,
+        "rows": int(len(joint_position)),
+        "box_pos_noise_m": float(params["box_pos_noise"]),
+        "box_yaw_noise_rad": float(params["box_yaw_noise"]),
+        "joint_noise_rad": float(params["joint_noise"]),
+        "arrays": {"joint_position": "pregrasp_joint_position", "box_pose_base": "pregrasp_box_pose_base"},
+    }
+    # the box starts at a table row plus the reset noise, not in the object reset event's range (which the table
+    # reset overwrites): the start ranges come from the table
+    qx, qy, qz, qw = box_pose[:, 3:7].T
+    yaw = np.arctan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+    pos_noise, yaw_noise = start["box_pos_noise_m"], start["box_yaw_noise_rad"]
+    start["box_ranges_base"] = {
+        "x": [float(box_pose[:, 0].min() - pos_noise), float(box_pose[:, 0].max() + pos_noise)],
+        "y": [float(box_pose[:, 1].min() - pos_noise), float(box_pose[:, 1].max() + pos_noise)],
+        "yaw": [float(yaw.min() - yaw_noise), float(yaw.max() + yaw_noise)],
+    }
+    return start, {"pregrasp_joint_position": joint_position, "pregrasp_box_pose_base": box_pose.astype(np.float32)}
 
 
 def build_manifest(env: dict, agent: dict, checkpoint: Path, env_yaml: Path, checkpoint_sha256: str,
@@ -242,8 +292,13 @@ def export(checkpoint: Path, output: Path, env_yaml: Path | None = None) -> Path
 
     checkpoint_sha256 = _sha256(checkpoint)
     iteration = int(state.get("iter", -1))
-    manifest = build_manifest(_load_params(env_yaml), _load_params(agent_yaml), checkpoint, env_yaml,
-                              checkpoint_sha256, iteration)
+    env = _load_params(env_yaml)
+    manifest = build_manifest(env, _load_params(agent_yaml), checkpoint, env_yaml, checkpoint_sha256, iteration)
+    manifest["start"], start_arrays = start_info(env, manifest["joints"]["names"],
+                                                 [float(v) for v in env["scene"]["robot"]["init_state"]["pos"]])
+    if "box_ranges_base" in manifest["start"]:
+        ranges = manifest["start"]["box_ranges_base"]
+        manifest["box"].update(start_x_range_base=ranges["x"], start_y_range_base=ranges["y"], start_yaw_range=ranges["yaw"])
 
     payload = {
         "format_version": np.asarray(2, dtype=np.int64),
@@ -253,6 +308,7 @@ def export(checkpoint: Path, output: Path, env_yaml: Path | None = None) -> Path
         "source_sha256": np.asarray(checkpoint_sha256),
         "source_iteration": np.asarray(iteration, dtype=np.int64),
         "manifest_json": np.asarray(json.dumps(manifest, sort_keys=False)),
+        **start_arrays,
     }
     for out_index, state_index in enumerate(layers):
         payload[f"weight_{out_index}"] = actor[f"mlp.{state_index}.weight"].detach().cpu().numpy().astype(np.float32)
@@ -285,6 +341,8 @@ def main() -> None:
           f"iter {manifest['provenance']['iteration']}, sha256 {manifest['provenance']['checkpoint_sha256'][:12]}")
     print(f"  box size {box['size']} (scale {box['size_scale_range']}), mass {box['mass_range']}, "
           f"goal z {manifest['goal']['z_range_base']}, reference {manifest['action']['reference_mode']}")
+    start = manifest["start"]
+    print(f"  start {start['mode']}" + (f": {start['rows']} rows from {start['table_file']}" if "rows" in start else ""))
 
 
 if __name__ == "__main__":

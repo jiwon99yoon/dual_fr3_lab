@@ -26,6 +26,9 @@ With ``--pregrasp_gap g`` APPROACH stops g outside each face instead of pushing 
 that pose the arm joints and box pose are recorded (one row per env). ``--save_table`` writes the rows that
 converged without touching the box; the `-Pregrasp` box task starts its episodes from this table.
 
+``--roll_align`` servos the whole plate orientation from HIGH on, with the square plate's edges parallel to the box
+edges (without it the rotation about the plate normal is whatever the arm had when APPROACH started, ~18 deg).
+
 ``--box_size X Y Z`` swaps the box (x front-back, y grip direction, z height) without touching the env cfg.
 ``--video out.mp4`` renders every env from three cameras (overview, front, side) and writes the envs one after
 another; use a few envs (``--num_envs 3``). ``--log out.npz`` saves per-step phase, plate, joint, command and force
@@ -59,6 +62,9 @@ parser.add_argument("--lim_k", type=float, default=1.0, help="null-space push aw
 parser.add_argument("--limit_aware", action="store_true",
                     help="re-solve the IK without the joints the env's target clamp holds at a limit")
 parser.add_argument("--fixed_roll", action="store_true", help="also servo the plate rotation about its normal")
+parser.add_argument("--roll_align", action="store_true",
+                    help="servo the full plate orientation from the start, with the square plate's edges parallel to "
+                         "the box edges (implies --fixed_roll)")
 parser.add_argument("--v_pre", type=float, default=0.4)
 parser.add_argument("--w_pre", type=float, default=1.5)
 parser.add_argument("--v_app", type=float, default=0.15)
@@ -83,6 +89,7 @@ parser.add_argument("--video_size", type=int, nargs=2, default=(640, 480), metav
 parser.add_argument("--log", default=None, help="write per-step arrays (phase, plates, joints, commands, forces) to .npz")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+args.fixed_roll |= args.roll_align
 if args.video:
     args.enable_cameras = True
     os.environ.setdefault("DR_VIS", "0")  # the DR range plates hide the lifted box
@@ -103,6 +110,7 @@ from isaaclab.utils.math import (  # noqa: E402
     quat_apply,
     quat_conjugate,
     quat_from_angle_axis,
+    quat_from_matrix,
     quat_mul,
 )
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
@@ -154,6 +162,29 @@ def shortest_arc(u, v):
     # Isaac Lab 3 quaternions are (x, y, z, w)
     q = torch.cat([torch.cross(u, v, dim=-1), 1.0 + (u * v).sum(-1, keepdim=True)], -1)
     return q / torch.norm(q, dim=-1, keepdim=True)
+
+
+def edge_aligned_quat(q_cur, n_des, y_b):
+    """Plate orientation with its normal (link7 z) along n_des and its edges along the box x axis and world z.
+
+    The 140 mm square sits 45 deg from link7 x/y (its corners are on those axes), so an edge direction is
+    (x + y) / sqrt(2) in link7. Of the four such orientations the one closest to q_cur is returned.
+    """
+    up = torch.zeros_like(n_des)
+    up[:, 2] = 1.0
+    x_b = torch.cross(y_b, up, dim=-1)  # horizontal box x (y_b is horizontal)
+    best, best_dot = None, None
+    for a in (up, -up, x_b, -x_b):
+        e2 = torch.cross(n_des, a, dim=-1)  # image of link7 (-x + y) / sqrt(2)
+        q = quat_from_matrix(torch.stack([(a - e2) / 2**0.5, (a + e2) / 2**0.5, n_des], -1))
+        d = (q * q_cur).sum(-1).abs()
+        if best is None:
+            best, best_dot = q, d
+        else:
+            better = d > best_dot
+            best = torch.where(better[:, None], q, best)
+            best_dot = torch.where(better, d, best_dot)
+    return best
 
 
 def video_frame(panels, labels, text):
@@ -278,7 +309,7 @@ def main():
         p, q, _ = tcp(side)
         n_des = -s * yb0
         z_cur = quat_apply(q, up)
-        fin_q[side] = quat_mul(shortest_arc(z_cur, n_des), q)
+        fin_q[side] = edge_aligned_quat(q, n_des, yb0) if args.roll_align else quat_mul(shortest_arc(z_cur, n_des), q)
         ref_p[side], ref_q[side] = p.clone(), q.clone()
         f = c0 + s * (hy + args.pre_gap)[:, None] * yb0
         f[:, 2] = c0[:, 2] + hz + 0.10
@@ -347,7 +378,10 @@ def main():
                 fin_p[side][to_app] = inside[to_app]
                 # from here the plate roll is servoed too: it is the box pitch axis once the box is squeezed
                 _, q_now, _ = tcp(side)
-                q_lock = quat_mul(shortest_arc(quat_apply(q_now, up), -s * y_b), q_now)
+                if args.roll_align:
+                    q_lock = edge_aligned_quat(q_now, -s * y_b, y_b)
+                else:
+                    q_lock = quat_mul(shortest_arc(quat_apply(q_now, up), -s * y_b), q_now)
                 fin_q[side][to_app] = q_lock[to_app]
                 ref_q[side][to_app] = q_lock[to_app]
             to_lift = go & (nxt == LIFT)
@@ -543,7 +577,8 @@ def main():
                 box_pose=pg_box[ok].cpu().numpy(),  # env frame: pos (3) + quat (x, y, z, w)
                 residual=pg_err[ok].cpu().numpy(),  # (side L/R, [normal, z, rot]) target - plate
                 meta=np.array(str({"task": args.task, "gap": args.pregrasp_gap, "grip_dz": args.grip_dz,
-                                   "box_dx": args.box_dx, "null": args.null, "lim_k": args.lim_k, "seed": args.seed})),
+                                   "box_dx": args.box_dx, "null": args.null, "lim_k": args.lim_k, "seed": args.seed,
+                                   "roll_align": args.roll_align})),
             )
             print(f"[pregrasp] saved {int(ok.sum())} rows -> {args.save_table}")
         env.close()

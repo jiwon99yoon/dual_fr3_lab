@@ -2780,6 +2780,9 @@ PREGRASP_TABLE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
     "assets", "pregrasp", "plate_box410_pregrasp_gap004_margin005.npz",
 )
+# 같은 조건 + 판 모서리를 박스 모서리에 맞춘 표(--roll_align, 2026-11-03). 위 표는 판이 면 안에서 약 18도 돌아간 채
+# 시작한다(IK가 법선축 회전을 정하지 않았음). Pregrasp model_2999는 위 표로 학습했으므로 그 표는 그대로 둔다.
+PREGRASP_TABLE_ROLLALIGN_PATH = PREGRASP_TABLE_PATH.replace(".npz", "_rollalign.npz")
 PREGRASP_BOX_POS_NOISE = 0.01  # m, 박스 xy (표의 pose 기준, 판-면 간격 4 cm 안)
 PREGRASP_BOX_YAW_NOISE = 0.05  # rad (약 3도)
 PREGRASP_JOINT_NOISE = 0.01  # rad
@@ -2900,6 +2903,32 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Upright_PLAY(
     DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Upright
 ):
     """Sim2Real-100Hz-Light-Pregrasp-Upright visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_RollAlign(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp):
+    """Pregrasp와 같되 시작 자세 표만 판 모서리 정렬 표(PREGRASP_TABLE_ROLLALIGN_PATH)로 바꾼다. from-scratch.
+
+    리셋 직후 판 모서리 회전 -18도 -> -0.1도, 위치·간격·면 평행도·관절 여유는 거의 같다(docs/dual_fr3_lift_sim2real.md).
+    보상·커리큘럼·노이즈는 Pregrasp 그대로라 model_2999와 시작 자세만 다르다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.reset_from_pregrasp.params["table_path"] = PREGRASP_TABLE_ROLLALIGN_PATH
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_RollAlign_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_RollAlign
+):
+    """Sim2Real-100Hz-Light-Pregrasp-RollAlign visualization/evaluation cfg."""
 
     def __post_init__(self):
         super().__post_init__()
