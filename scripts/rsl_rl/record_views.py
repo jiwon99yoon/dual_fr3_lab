@@ -12,6 +12,9 @@ Writes <checkpoint dir>/videos/<checkpoint>_views_ep<N>.mp4 (and .json summary) 
 handover는 성공 단계에 처음 도달하고 ``--tail_s``초 뒤에 에피소드를 끊는다 (성공 종료가 없어 12 s를 다 채우면
 성공(~2 s) 뒤 10 s가 가만히 있는 장면이다). 끝까지 보려면 ``--tail_s -1``.
 DR 범위 판(파랑/초록)은 들어 올린 박스를 가리므로 기본으로 끈다(`DR_VIS=1`로 켬).
+박스 관측 지연·끊김 task(-BoxDrop)는 HUD에 비전 상태(OK / DROP, 지연 ms, 정책이 보는 박스 위치 오차)를 붙이고
+끊긴 step은 HUD 줄을 빨갛게 칠한다. ``--box_drop_at S``는 에피소드마다 S초부터 끝까지 끊기게 한다.
+``--only_drops``는 들었다가 놓친 에피소드(최대 들림 DROP_LIFT 이상 -> 그보다 DROP_FALL 아래로 내려감)만 저장한다.
 """
 
 import argparse
@@ -31,6 +34,10 @@ parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--out", default=None, help="output .mp4 path")
 parser.add_argument("--tail_s", type=float, default=2.0,
                     help="handover: end each episode this many seconds after it first succeeds (<0: full episode)")
+parser.add_argument("--box_drop_at", type=float, default=None,
+                    help="-BoxDrop: force the box pose observation to drop from this time [s] to the episode end")
+parser.add_argument("--only_drops", action="store_true",
+                    help="keep only episodes where the lifted object was dropped (--episodes counts kept ones)")
 AppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(enable_cameras=True)
 args_cli = parser.parse_args()
@@ -88,6 +95,8 @@ CONTACTS = {
 GOAL_COMMAND = {"box": "object_pose", "cube": "object_pose", "handover": "goal_pose"}
 REST_STEPS = 10  # per episode, the object's rest height is its lowest z over these first steps (spawn drop)
 LIFTED = 0.05  # [m] "while lifted" threshold for the episode summary
+DROP_LIFT = 0.10  # [m] --only_drops: the object must have been lifted at least this high
+DROP_FALL = 0.08  # [m] ... and then fallen this far below its max lift
 
 
 def _t(x):
@@ -105,10 +114,10 @@ def label(frame: np.ndarray, text: str) -> np.ndarray:
     return np.asarray(img)
 
 
-def hud(frame: np.ndarray, text: str) -> np.ndarray:
-    """Full-width text strip above the panels."""
+def hud(frame: np.ndarray, text: str, alert: bool = False) -> np.ndarray:
+    """Full-width text strip above the panels (red when ``alert``)."""
     font = ImageFont.load_default(size=22)
-    strip = Image.new("RGB", (frame.shape[1], 36), (24, 24, 24))
+    strip = Image.new("RGB", (frame.shape[1], 36), (150, 20, 20) if alert else (24, 24, 24))
     ImageDraw.Draw(strip).text((12, 6), text, fill=(240, 240, 240), font=font)
     return np.concatenate([np.asarray(strip), frame], axis=0)
 
@@ -139,6 +148,14 @@ def measure(raw, family: str) -> dict:
         names = ee.data.target_frame_names
         z = _t(ee.data.target_pos_w)[0, :, 2]
         m["plate_dz_cm"] = 100.0 * float(z[names.index("left_ee")] - z[names.index("right_ee")])
+        st = raw.__dict__.get("_box_obs_dropout")
+        if st is not None:
+            from dual_fr3_lab.tasks.manager_based.lift_plate.joint_pos_env_cfg import mdp as lift_mdp
+
+            true_pos = lift_mdp.object_position_in_robot_root_frame(raw)[0]
+            m["vis_drop"] = bool(st["drop"][0])
+            m["vis_delay_ms"] = 1000.0 * int(st["delay"][0]) * raw.step_dt
+            m["vis_err_cm"] = 100.0 * float((st["held"]["object_position"][0] - true_pos).norm())
     if family == "handover":
         from dual_fr3_lab.tasks.manager_based.handover_cube.mdp import handover as H
 
@@ -150,6 +167,9 @@ def hud_text(ep: int, t: float, lift: float, m: dict, family: str) -> str:
     text = f"ep {ep}  t {t:4.2f}s | lift {100 * lift:+5.1f} cm | tilt {m['tilt_deg']:4.1f} deg | goal {m['goal_cm']:5.1f} cm"
     if family == "box":
         text += f" | plate dz(L-R) {m['plate_dz_cm']:+5.1f} cm | F plate L {m['force_l']:4.0f} R {m['force_r']:4.0f} N"
+        if "vis_drop" in m:
+            text += (f" | vision {'DROP' if m['vis_drop'] else 'ok  '} delay {m['vis_delay_ms']:3.0f} ms"
+                     f" err {m['vis_err_cm']:4.1f} cm")
     elif family == "handover":
         from dual_fr3_lab.tasks.manager_based.handover_cube.mdp.handover import STAGE_NAMES
 
@@ -159,6 +179,15 @@ def hud_text(ep: int, t: float, lift: float, m: dict, family: str) -> str:
     else:
         text += f" | F finger L {m['force_l']:4.1f} R {m['force_r']:4.1f} N"
     return text
+
+
+def dropped(steps: list[dict]) -> bool:
+    peak = -math.inf
+    for s in steps:
+        peak = max(peak, s["lift"])
+        if peak >= DROP_LIFT and s["lift"] < peak - DROP_FALL:
+            return True
+    return False
 
 
 def summarize(steps: list[dict], dt: float, reasons: list[str], family: str) -> dict:
@@ -171,6 +200,7 @@ def summarize(steps: list[dict], dt: float, reasons: list[str], family: str) -> 
         "max_lift_cm": round(100 * float(lift.max()), 1),
         "lifted_s": round(float(lifted.sum()) * dt, 2),
         "min_goal_cm": round(min(s["goal_cm"] for s in steps), 1),
+        "dropped": dropped(steps),
     }
     if lifted.any():
         held = [s for s, ok in zip(steps, lifted) if ok]
@@ -180,6 +210,12 @@ def summarize(steps: list[dict], dt: float, reasons: list[str], family: str) -> 
             dz = np.array([s["plate_dz_cm"] for s in held])
             out["plate_dz_cm_while_lifted"] = {"mean": round(float(dz.mean()), 1),
                                                "mean_abs": round(float(np.abs(dz).mean()), 1)}
+    if family == "box" and "vis_drop" in steps[0]:
+        drop = np.array([s["vis_drop"] for s in steps])
+        out["box_obs"] = {"delay_ms": round(steps[-1]["vis_delay_ms"]),
+                          "drop_s": round(float(drop.sum()) * dt, 2),
+                          "first_drop_s": round((int(drop.argmax()) + 1) * dt, 2) if drop.any() else None,
+                          "max_err_cm": round(max(s["vis_err_cm"] for s in steps), 1)}
     if family == "handover":
         from dual_fr3_lab.tasks.manager_based.handover_cube.mdp.handover import STAGE_NAMES
 
@@ -231,12 +267,17 @@ def main():
         obs, _ = env.reset()
 
     frames, episodes, steps = [], [], []
+    ep_frames, n_seen = [], 0
     step, z_rest = 0, math.inf
     success_stage = None
     if family == "handover":
         from dual_fr3_lab.tasks.manager_based.handover_cube.mdp.handover import STAGE_SUCCESS as success_stage
     t_success, cut = None, False
     while simulation_app.is_running() and len(episodes) < args_cli.episodes and step < args_cli.max_steps:
+        st = raw.__dict__.get("_box_obs_dropout")
+        if args_cli.box_drop_at is not None and st is not None:
+            # 에피소드 시작 step에 뽑힌 full_at을 덮어쓴다 (다음 step의 mask 갱신부터 적용)
+            st["full_at"][0] = round(args_cli.box_drop_at / dt)
         with torch.inference_mode():
             # without a visualizer (--viz none) Lab 3 never moves the goal marker; update it before this step renders
             raw.sim.vis_marker_registry.dispatch_callbacks()
@@ -258,28 +299,40 @@ def main():
         for name in VIEWS[family]:
             rgb = _t(cams[name].data.output["rgb"])[0, ..., :3].cpu().numpy().astype(np.uint8)
             panels.append(label(rgb, LABELS[name]))
-        frames.append(hud(np.concatenate(panels, axis=1), hud_text(len(episodes) + 1, len(steps) * dt, m["lift"],
-                                                                   m, family)))
+        ep_frames.append(hud(np.concatenate(panels, axis=1), hud_text(n_seen + 1, len(steps) * dt, m["lift"],
+                                                                   m, family), alert=m.get("vis_drop", False)))
         if bool(dones[0]):
             # measure() above read the post-reset state; the episode's last valid sample is the one before
             steps.pop()
+            n_seen += 1
             tm = raw.termination_manager
             reasons = [name for name in tm.active_terms if bool(tm.get_term(name)[0])]
             if cut:
                 reasons = [f"cut_{args_cli.tail_s:g}s_after_success"]
             summary = summarize(steps, dt, reasons, family) if steps else {"termination": "+".join(reasons)}
-            episodes.append(summary)
-            print(f"[record] episode {len(episodes)}: {json.dumps(summary)}", flush=True)
+            print(f"[record] episode {n_seen}: {json.dumps(summary)}", flush=True)
+            if not args_cli.only_drops or summary.get("dropped"):
+                summary["episode"] = n_seen
+                episodes.append(summary)
+                frames += ep_frames
+            ep_frames = []
             steps, z_rest = [], math.inf
             t_success, cut = None, False
 
+    if not args_cli.only_drops:
+        frames += ep_frames  # unfinished last episode (max_steps)
+    if not frames:
+        print(f"[record] no episode kept out of {n_seen} (--only_drops: none dropped)", flush=True)
+        env.close()
+        return
     ckpt = os.path.abspath(args_cli.checkpoint)
     out = args_cli.out or os.path.join(
         os.path.dirname(ckpt), "videos", f"{os.path.splitext(os.path.basename(ckpt))[0]}_views_ep{len(episodes)}.mp4")
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     imageio.mimwrite(out, frames, fps=round(1.0 / dt), codec="libx264", quality=8, macro_block_size=1)
     with open(os.path.splitext(out)[0] + ".json", "w") as f:
-        json.dump({"task": task, "checkpoint": ckpt, "seed": args_cli.seed, "episodes": episodes}, f, indent=2)
+        json.dump({"task": task, "checkpoint": ckpt, "seed": args_cli.seed, "episodes_run": n_seen,
+                   "episodes": episodes}, f, indent=2)
     print(f"[record] {len(frames)} frames ({len(frames) * dt:.1f} s), {len(episodes)} episodes -> {out}", flush=True)
     env.close()
 

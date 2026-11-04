@@ -943,6 +943,51 @@ gym.register(
     disable_env_checker=True,
 )
 
+# Box410 + 페널티 커리큘럼 발동 기준 8 -> 6. 로그는 Box410과 같은 폴더(model_4999 이어 학습용)
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-T6-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_T6",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410PPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-T6-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_T6_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410PPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+# Box410-T6 + j1 좌우 거울 페널티 (양팔이 같은 방향으로 ~90도 도는 해 방지), from-scratch
+# 로그 dual_fr3_plate_lift_sim2real_100hz_light_box410_j1mirror
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-J1Mirror-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_J1Mirror",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410J1MirrorPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-J1Mirror-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": (
+            f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_J1Mirror_PLAY"
+        ),
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410J1MirrorPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
 # Light-Margin을 접근 끝 자세(판이 박스 면 4 cm 바깥)에서 시작 — 접근은 rule-based/MoveIt, RL은 조이기~들기
 # 로그 dual_fr3_plate_lift_sim2real_100hz_light_pregrasp[_upright]
 gym.register(
@@ -1204,6 +1249,28 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_MinSqueeze_Scratch_PLAY",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripMinSqueezeScratchPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+# Box410-J1Mirror + 박스 90도 회전(긴 변 410 mm 좌우, 실물 배치), from-scratch
+# 로그 dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorPPORunnerCfg",
     },
     disable_env_checker=True,
 )

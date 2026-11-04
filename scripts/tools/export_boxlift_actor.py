@@ -21,6 +21,9 @@ robot can pick the row nearest the measured box pose and move there (MoveIt) bef
 ``manifest["observation"]["box_pose"]`` is ``live`` (box position/orientation observed every step) or
 ``held_at_start`` (``-FrozenBox`` tasks: the policy saw the box pose of the episode start for the whole episode, so
 the robot must latch the pose measured at ``start_policy`` and keep feeding it).
+``-BoxDrop`` tasks trained on a live box pose with vision delay/dropout injected in sim. On the robot the input is the
+live vision pose itself, so the export writes the live terms (``box_pose`` ``live``); the robot should keep feeding
+the last pose while vision drops out instead of faulting.
 
 The export refuses when ``params/env.yaml`` is missing; it never reconstructs the training
 configuration from the current source tree, which may have changed since the run.
@@ -64,6 +67,11 @@ _HELD_TERM_FUNCS = {
 # -DR tasks add a training-only joint-state latency to joint_pos. On the robot the latency is real and the node
 # computes the plain term, so the manifest records the plain name.
 _DR_TERM_FUNCS = {"joint_pos": "joint_pos_rel_delayed"}
+# -BoxDrop tasks: the live box pose with sim-only vision delay/dropout; exported as the live term
+_DROPOUT_TERM_FUNCS = {
+    "object_position": "object_position_dropout",
+    "object_orientation": "object_orientation_dropout",
+}
 
 
 class _ParamsLoader(yaml.SafeLoader):
@@ -178,7 +186,10 @@ def build_manifest(env: dict, agent: dict, checkpoint: Path, env_yaml: Path, che
     policy_obs = env["observations"]["policy"]
     terms = [(name, str(term["func"]).split(":")[-1]) for name, term in policy_obs.items()
              if isinstance(term, dict) and "func" in term]
-    terms = [(name, _TERM_FUNCS[name] if func == _DR_TERM_FUNCS.get(name) else func) for name, func in terms]
+    dropout = {name for name, func in terms if func == _DROPOUT_TERM_FUNCS.get(name)}
+    _require(dropout in (set(), set(_DROPOUT_TERM_FUNCS)), f"box position and orientation must both have dropout or neither, got {dropout}")
+    terms = [(name, _TERM_FUNCS[name] if name in dropout or func == _DR_TERM_FUNCS.get(name) else func)
+             for name, func in terms]
     for name, func in terms:
         _require(func in (_TERM_FUNCS.get(name), _HELD_TERM_FUNCS.get(name)),
                  f"unexpected policy observation term {name} -> {func}")

@@ -250,6 +250,13 @@ class LiftPlateSim2Real100HzLightBox410PPORunnerCfg(LiftPlateSim2Real100HzPPORun
 
 
 @configclass
+class LiftPlateSim2Real100HzLightBox410J1MirrorPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Box410-J1Mirror: Light와 같은 actor/PPO, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_box410_j1mirror"
+
+
+@configclass
 class LiftPlateSim2Real100HzLightPregraspPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
     """Sim2Real-100Hz-Light-Pregrasp: Light와 같은 actor/PPO, dedicated log namespace."""
 
@@ -342,3 +349,10 @@ class LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripMinSqueezeScratchP
     """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-MinSqueeze-Scratch: Wide-RollAlign과 같은 actor/PPO, dedicated log namespace."""
 
     experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_facegrip_minsqueeze_scratch"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightBox410WideJ1MirrorPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror: Light와 같은 actor/PPO, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror"

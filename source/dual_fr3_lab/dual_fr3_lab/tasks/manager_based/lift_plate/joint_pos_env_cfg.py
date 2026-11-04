@@ -2957,6 +2957,93 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_PLAY(DualFR3PlateBoxL
         self.observations.policy.enable_corruption = False
 
 
+# ---------- Box410-T6: 페널티 커리큘럼 발동 기준 8 -> 6 (2026-11-03) ----------
+# Box410 model_4999까지 lift_monitor가 초당 약 7.6에 머물러 threshold 8을 못 넘었다 -> P47의 자세·대칭·접촉·
+# 매끄러움 페널티(box_upright -3, plate_height_symmetry -8, plate_approach_symmetry -20, one_sided -5,
+# contact -1, action_rate/joint_vel -0.1)가 5000 iter 내내 꺼져 있었다 (Light도 같았음).
+# 로그 폴더는 Box410과 같다 (model_4999에서 --resume으로 이어 학습하기 위해).
+BOX410_LIFT_LEARNED_THRESHOLD = 6.0
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_T6(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410):
+    """Box410 + 페널티 커리큘럼 발동 기준 BOX410_LIFT_LEARNED_THRESHOLD(6). 그 밖에는 Box410 그대로."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        for term in self.curriculum.__dict__.values():
+            if term is not None and term.func is modify_reward_weight_on_lifting_learned:
+                term.params["threshold"] = (
+                    BOX410_LIFT_LEARNED_THRESHOLD * LIFT_MONITOR_WEIGHT / self.rewards.lifting_object.weight
+                )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_T6_PLAY(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_T6):
+    """Sim2Real-100Hz-Light-Box410-T6 visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- Box410-J1Mirror: j1 좌우 거울 페널티 (2026-11-03) ----------
+# Box410 model_4999 진단(256 env, scratchpad lr_symmetry.py): 양팔이 base 기준 같은 방향(로봇 오른쪽)으로 ~90도
+# 돌아간다. 끝 시점 j1 L/R = -1.99/-1.17 (ready -0.52/+0.52), j3가 +1.6~1.9로 상쇄해 판 위치는 대칭(|yL+yR| 0.4 cm)
+# 이지만 팔 자세는 비대칭이다. 거울 대칭이면 q1_L = -q1_R인데 |q1_L + q1_R|가 끝 시점 3.2 rad. 판/박스 기준 보상만
+# 있어서 7자유도 여유로 이 해에 갔다. P40은 j6만 잡아 실패(P41 docstring) -> 어깨 yaw인 j1을 잡는다.
+# 박스 yaw(DR ±0.1 rad)를 돌려 잡는 데 필요한 j1 비대칭은 작으므로 J1_MIRROR_DEADBAND까지는 페널티 0.
+J1_MIRROR_DEADBAND = 0.15  # rad
+J1_MIRROR_WEIGHT = -1.0
+
+
+def joint_mirror_error(
+    env,
+    asset_cfg: SceneEntityCfg,
+    deadband: float = 0.0,
+) -> torch.Tensor:
+    """[J1Mirror] 거울 대칭 오차 |q_L + q_R| - deadband (rad, 0 아래는 0). asset_cfg = (left_jN, right_jN) 순서.
+
+    양팔이 base y축 거울 배치(y ±0.215, yaw ±30도)라 j1/j3/j5/j7은 q_L = -q_R이 대칭이다 (ready j1 -0.52/+0.52).
+    게이트 없음: 비대칭은 접근 단계에서 생기고, ready가 대칭(오차 0)이라 처음부터 켜도 탐색을 막지 않는다.
+    """
+    q = env.scene[asset_cfg.name].data.joint_pos.torch[:, asset_cfg.joint_ids]
+    return ((q[:, 0] + q[:, 1]).abs() - deadband).clamp(min=0.0)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_J1Mirror(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_T6):
+    """Box410-T6 + j1 거울 페널티(J1_MIRROR_WEIGHT, 처음부터, deadband J1_MIRROR_DEADBAND). from-scratch."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.j1_mirror = RewTerm(
+            func=joint_mirror_error,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot", joint_names=["left_fr3_joint1", "right_fr3_joint1"], preserve_order=True
+                ),
+                "deadband": J1_MIRROR_DEADBAND,
+            },
+            weight=J1_MIRROR_WEIGHT,
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_J1Mirror_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_J1Mirror
+):
+    """Sim2Real-100Hz-Light-Box410-J1Mirror visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
 # ---------- Pregrasp: 접근은 rule-based/MoveIt, RL은 마지막 접근~조이기~들기 (2026-11-03) ----------
 # Light RL의 박스 yaw(38도)·판 높이차·j2 한계는 판을 어디에 대느냐(접근)에서 생긴다(P37 "kinematic placement").
 # 실물에서는 비전으로 박스 pose를 잡고 MoveIt/MoveToJoint로 판을 박스 면 4 cm 바깥, 잡는 높이에 놓은 뒤 정책을 켠다.
@@ -3737,6 +3824,32 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Face
     DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_MinSqueeze_Scratch
 ):
     """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-MinSqueeze-Scratch visualization/evaluation cfg."""
+
+
+# ---------- Box410-Wide-J1Mirror: J1Mirror를 실물 박스 배치로 (2026-11-04) ----------
+# Box410-J1Mirror model_4999는 410을 앞뒤로 둔 박스로 학습했다(3/3 들기, j1 L/R +1.06/-1.10). 박스만 Pregrasp-Wide와 같이
+# 90도 돌린다(BOX410_WIDE_SIZE, 긴 변 410 mm가 좌우 = 판이 잡는 방향). 바닥에서 시작해 접근부터 전부 RL.
+# 박스 중심 x는 Wide 표와 같은 0.40~0.50 (0.50 이상은 j2 한계로 잡기 어렵고 실물에서도 안 쓴다).
+BOX410_WIDE_X_RANGE = (-0.10, 0.0)  # 스폰 x 오프셋 [m]
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_J1Mirror
+):
+    """Box410-J1Mirror와 같되 박스를 BOX410_WIDE_SIZE로, 스폰 x를 BOX410_WIDE_X_RANGE로. from-scratch."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.object.spawn.size = BOX410_WIDE_SIZE
+        self.events.reset_object_position.params["pose_range"]["x"] = BOX410_WIDE_X_RANGE
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror
+):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror visualization/evaluation cfg."""
 
     def __post_init__(self):
         super().__post_init__()
