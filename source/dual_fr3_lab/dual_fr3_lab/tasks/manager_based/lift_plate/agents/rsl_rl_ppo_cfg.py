@@ -381,3 +381,12 @@ class LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripSqueezeLiftLowMuHe
     """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-SqueezeLift-LowMuHeavy-Act015-Scratch: 같은 actor/PPO, dedicated log namespace."""
 
     experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_facegrip_squeezelift_lowmuheavy_act015_scratch"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripBoxDropFlatSqueezePPORunnerCfg(
+    LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripBoxDropScratchPPORunnerCfg
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-FlatSqueeze: FaceGrip-BoxDrop-Scratch와 같은 actor/critic 그룹, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_facegrip_boxdrop_flatsqueeze"

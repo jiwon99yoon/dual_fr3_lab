@@ -276,6 +276,17 @@ def plate_face_tilt(
     plate_face_alignment(cos, 양의 보상)는 25도에서도 0.91이라 차이가 작아 각도 자체를 쓴다.
     V자는 양 판 법선이 함께 위로 향해서 박스를 굴려 면을 맞추는 것으로는 줄지 않는다(박스 기울기는 box_upright가 따로 본다).
     """
+    ang_l, ang_r = _plate_face_angles(env, object_cfg, ee_frame_cfg)
+    gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
+    return 0.5 * (ang_l + ang_r) * gate
+
+
+def _plate_face_angles(
+    env,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """판별 판 법선(TCP z축)과 담당 박스 면 법선 사이 각도(rad), (왼판, 오른판). plate_face_tilt 계열 공용."""
     obj = env.scene[object_cfg.name]
     ee_frame = env.scene[ee_frame_cfg.name]
     li, ri, y_axis_w, _, _, _, _ = _face_dists(env, object_cfg, ee_frame_cfg)
@@ -285,8 +296,7 @@ def plate_face_tilt(
     n_r = quat_apply(ee_frame.data.target_quat_w.torch[:, ri], z_axis)
     ang_l = torch.acos((-(n_l * y_axis_w).sum(dim=-1)).clamp(-1.0, 1.0))
     ang_r = torch.acos(((n_r * y_axis_w).sum(dim=-1)).clamp(-1.0, 1.0))
-    gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
-    return 0.5 * (ang_l + ang_r) * gate
+    return ang_l, ang_r
 
 
 def plates_pair_misalignment(
@@ -4229,6 +4239,146 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Face
     DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_SqueezeLift_LowMuHeavy_Act015_Scratch
 ):
     """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-SqueezeLift-LowMuHeavy-Act015-Scratch visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- -FaceGrip-BoxDrop-FlatSqueeze: 더 기운 판 기준 평행 + 면 앞뒤 중앙 + 판 법선 방향 조임 (2026-11-05) ----------
+# FaceGrip-BoxDrop-Scratch 2999는 판 V자가 없지만(0.5 s pitch +1도) 들어 올릴 때(0.25~1 s) 왼판만 수직축 둘레로 ~11도 돌아간다
+# (오른판 0도). 박스는 1도 안쪽으로만 돌고, 왼팔 j4·j6(들기)와 j5가 판을 돌리는데 오른팔은 같은 때 j5로 되돌린다.
+# plate_face_tilt는 두 판 평균이라 이것을 5.5도로 세고 ~1 s뿐이라 에피소드당 ~-1(총 보상 ~200)밖에 안 된다.
+# 판 힘은 13.4 N(4699 11 N, 5698 16 N)이고 j1·j3을 행동 한계의 ~70%만 쓴다.
+FLATSQUEEZE_TILT_WEIGHT = -20.0  # 더 기운 판의 rad당 초당. 11도(0.19 rad) 1 s면 에피소드당 ~-3.8
+FLATSQUEEZE_OFFCENTER_WEIGHT = -20.0  # 판별 면 앞뒤 오차 합(m)당 초당. 두 판 2 cm씩이면 -0.8/s
+FLATSQUEEZE_FORCE_N = 16.0  # 판 법선 방향 최소 조임(판별). 5698 16 N에서 j1·j3 77~86%
+FLATSQUEEZE_RAMP_STEPS = 2400  # 100 iter(24 step/iter)
+
+
+def plate_face_tilt_worst(
+    env,
+    finger1_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    finger2_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    threshold: float = 1.0,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """plate_face_tilt와 같되 두 판 중 더 기운 판의 각도(rad). 한 판만 돌아가도 평균으로 반이 되지 않는다."""
+    ang_l, ang_r = _plate_face_angles(env, object_cfg, ee_frame_cfg)
+    gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
+    return torch.maximum(ang_l, ang_r) * gate
+
+
+def plate_face_offcenter(
+    env,
+    finger1_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    finger2_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    threshold: float = 1.0,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """판 중심(TCP)이 담당 박스 면 중심에서 면 가로(박스 x) 방향으로 벗어난 거리(m)의 양 판 합. 양 판 접촉 중에만.
+
+    - plates_pair_misalignment는 두 판의 상대 배치만 봐서 두 판이 함께 앞이나 뒤로 밀려도 0이다.
+    - 높이(박스 z)는 보지 않는다. 판이 박스 중심보다 위를 잡으면 박스가 판-판 축에 매달린 진자처럼 바로 서려 한다.
+    - 들기 보상에 곱하지 않고 따로 둔다. 중앙성을 q에 곱한 P30은 goal_tracking까지 깎아 정밀 유지가 무너졌다.
+    """
+    obj = env.scene[object_cfg.name]
+    ee_frame = env.scene[ee_frame_cfg.name]
+    li, ri, _, face_l, face_r, _, _ = _face_dists(env, object_cfg, ee_frame_cfg)
+    x_axis = torch.zeros_like(obj.data.root_pos_w.torch)
+    x_axis[:, 0] = 1.0
+    x_axis_w = quat_apply(obj.data.root_quat_w.torch, x_axis)  # 박스 x축 = 판이 닿는 면의 가로 방향 (world)
+    p = ee_frame.data.target_pos_w.torch
+    off_l = ((p[:, li] - face_l) * x_axis_w).sum(dim=-1).abs()
+    off_r = ((p[:, ri] - face_r) * x_axis_w).sum(dim=-1).abs()
+    gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
+    return (off_l + off_r) * gate
+
+
+def _plate_normal_forces(
+    env,
+    left_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    right_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """판별 박스 접촉 합력의 판 법선(TCP z축) 성분 크기 [N], (num_envs, 2) = (왼판, 오른판)."""
+    ee_frame = env.scene[ee_frame_cfg.name]
+    li, ri = _ee_lr_indices(ee_frame)
+    z_axis = torch.zeros(env.num_envs, 3, device=env.device)
+    z_axis[:, 2] = 1.0
+    forces = []
+    for cfg, idx in ((left_sensor_cfg, li), (right_sensor_cfg, ri)):
+        f = env.scene.sensors[cfg.name].data.force_matrix_w.torch.reshape(env.num_envs, -1, 3).sum(dim=1)
+        n = quat_apply(ee_frame.data.target_quat_w.torch[:, idx], z_axis)
+        forces.append((f * n).sum(dim=-1).abs())
+    return torch.nan_to_num(torch.stack(forces, dim=-1), nan=0.0, posinf=0.0)
+
+
+def min_squeeze_normal_penalty(
+    env,
+    force_min: float,
+    lift_height: float = MINSQUEEZE_LIFT_HEIGHT,
+    contact_threshold: float = 1.0,
+    left_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    right_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """min_squeeze_penalty와 같되 판별 힘을 판 법선(TCP z축) 성분으로 잰다. 판에 수직으로 누르는 힘만 조임으로 친다.
+
+    합력 norm은 박스 무게를 받치는 판 면 방향 마찰까지 더해 조임을 크게 센다. 판이 기울면 법선 성분은 cos만큼 줄어든다.
+    """
+    f = _plate_normal_forces(env, left_sensor_cfg, right_sensor_cfg, ee_frame_cfg)
+    gate = (f > contact_threshold).all(dim=-1).float().maximum(_lifted_perenv(env, lift_height, object_cfg))
+    return (force_min - f).clamp(min=0.0, max=force_min).sum(dim=-1) * gate
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_Scratch
+):
+    """FaceGrip-BoxDrop + 더 기운 판 기준 평행, 면 앞뒤 중앙, 판 법선 방향 조임. FaceGrip-BoxDrop-Scratch 2999에서 이어 학습한다.
+
+    - plate_face_tilt: func를 plate_face_tilt_worst로 바꾸고, weight는 학습된 FACEGRIP_TILT_WEIGHT에서 시작해 success EMA 3 뒤
+      FLATSQUEEZE_RAMP_STEPS에 걸쳐 FLATSQUEEZE_TILT_WEIGHT까지 올린다.
+    - plate_face_offcenter, min_squeeze(min_squeeze_normal_penalty, 판별 FLATSQUEEZE_FORCE_N): -1e-4에서 같은 방식으로 올린다.
+    - 이어 학습하면 env가 새로 만들어져 curriculum이 처음부터 다시 돈다. yawtrack은 FaceGrip과 같은 이유로 바로 1로 둔다.
+    - 관측·행동·critic 그룹·박스 관측 지연·끊김은 그대로라 checkpoint와 실물 노드를 그대로 쓴다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.plate_face_tilt.func = plate_face_tilt_worst
+        self.rewards.plate_face_tilt.weight = FACEGRIP_TILT_WEIGHT
+        self.curriculum.plate_face_tilt.params.update(weight=FLATSQUEEZE_TILT_WEIGHT, ramp_steps=FLATSQUEEZE_RAMP_STEPS)
+        self.rewards.plate_face_offcenter = RewTerm(func=plate_face_offcenter, weight=-1e-4)
+        self.curriculum.plate_face_offcenter = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={
+                "term_name": "plate_face_offcenter",
+                "weight": FLATSQUEEZE_OFFCENTER_WEIGHT,
+                "ramp_steps": FLATSQUEEZE_RAMP_STEPS,
+            },
+        )
+        self.rewards.min_squeeze = RewTerm(
+            func=min_squeeze_normal_penalty, params={"force_min": FLATSQUEEZE_FORCE_N}, weight=-1e-4
+        )
+        self.curriculum.min_squeeze = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={"term_name": "min_squeeze", "weight": MINSQUEEZE_WEIGHT, "ramp_steps": FLATSQUEEZE_RAMP_STEPS},
+        )
+        self.curriculum.yawtrack.params.update(trigger=0.0, ramp_steps=1)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-FlatSqueeze visualization/evaluation cfg (지연·끊김은 켜 둔다)."""
 
     def __post_init__(self):
         super().__post_init__()

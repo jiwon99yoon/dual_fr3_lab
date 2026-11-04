@@ -863,3 +863,52 @@ Play는 같은 rate의 `-Play-v0` / `-Play-Noisy-v0`를 쓴다.
   - V자(판 아래 모서리로 받치기)는 없어졌다. 남은 판 각도는 yaw(수직축 둘레, 첫 접촉부터 −5°)다. 접근 기울기 벌점으로는 줄지 않았다(접근 중 median 3.4° → 4.6°).
   - 대신 좌우 판 높이 차가 커졌고(영상 L − R +6.6~+7.8 cm) 끝 박스 기울기가 6.2°다. j1·j3이 행동 한계에 닿기 시작했다(왼 j3 p90 0.095).
   - 영상 `<run>/videos/model_6697_views_ep4.mp4`.
+- B 결과: run `..._squeezelift_lowmuheavy_act015_scratch/2026-11-04_22-40-53_squeezelift_lowmuheavy_act015_scratch`(stdout `box_squeezelift_b.log`), 3000 iter 동안 success 0.
+  - 1550 평가(B Play): 양 판으로 100% 들지만 1 s 26 cm → 4 s 22 cm로 미끄러져 내려와 goal(50 cm)에 못 간다(goal 거리 36 cm). 판 힘 끝 18 N, 최대 36 N, 관절 한계는 안 닿는다.
+  - 조임 쪽 항(min_squeeze 20 N, 조임 factor)이 전부 success EMA 3 뒤에 켜지는데 success가 0이라 끝까지 꺼져 있다. yawtrack·외란·qprime도 같은 이유로 0이다.
+
+### FaceGrip-BoxDrop 2999와 판 yaw (2026-11-05)
+
+`-Wide-RollAlign-FaceGrip-BoxDrop-Scratch`(4090, BoxDrop + `plate_face_tilt`, `min_squeeze` 없음, privileged critic) 2999를 같은 방식으로 평가했다(박스 관측은 실제 값).
+
+| | FaceGrip-BoxDrop 2999 | MinSqueeze-Scratch 2999 | SqueezeLift A 6697 |
+|---|---|---|---|
+| 성공 / 끝 goal 거리 | 100% / 1.3 cm | 100% / 2.7 cm | 99.5% / 2.0 cm |
+| 들 때 최대 기울기 median / p90, 끝 기울기 | 4.7 / 7.1°, 1.9° | 8.7 / 12.2°, 3.7° | 7.8 / 10.5°, 6.2° |
+| 판 V자(pitch) 0.5 s median | +1.0° | +10.7° | +0.3° |
+| 들고 있을 때 판 힘 L / R | 13.4 / 13.5 N | 17.2 / 17.2 N | 17.2 / 17.2 N |
+| 들 때 판 높이 차 \|zL − zR\| median | 0.8 cm | 0.8 cm | 3.4 cm |
+| 회전 시작 토크 +y / −y | 1.10 / 1.09 Nm | 1.27 / 1.18 Nm | 1.18 / 1.52 Nm |
+| j1·j3 PD 오차 median (행동 한계 0.1) | 0.068~0.071 rad, clip 0 | j1·j4 ~0.09 | 0.082~0.091, clip p90 최대 0.18 |
+
+- 판 yaw(수직축 둘레, 판 법선 vs 면 법선)는 한쪽 판만 돌아간다. 두 판을 합친 median(0.5 s −5°)은 이것을 반으로 보여 준다.
+  - FaceGrip-BoxDrop: 왼판이 접촉 −1.4° → 0.6 s −11.4° → 1.5 s −1.6°, 오른판은 0°. 박스는 1도 안쪽으로만 돈다.
+    - 접촉 ~ 0.5 s 왼판 회전을 관절로 나누면 j4 −2.8°, j5 −3.8°, j6 −1.7°, j1·j3 ~0°. 오른팔은 같은 때 j5 +4.7°로 j4·j6 몫을 되돌린다.
+    - j1·j3의 PD target은 6~19° 더 돌아가 있지만 박스 면이 막아서 실제 j1·j3는 거의 안 돈다.
+  - A 6697: 오른판이 닿기 전부터 −10°로 와서 들 때 −12~13°, 1.5 s −7.6°. 왼판은 0°. 접근 기울기 벌점으로 안 고쳐진 접근 문제다.
+- `plate_face_tilt`는 두 판 평균이라 11°/0°를 5.5°로 세고 ~1 s뿐이라 에피소드당 ~−1(총 보상 ~200)이다. V자(20° 넘게 들고 있는 내내)는 같은 weight로 고쳐졌다.
+- 측정 도구: scratchpad `yaw_probe.py`(판별 yaw, 판 회전 vs 박스 회전, 관절별 기여, PD target에서의 yaw).
+- 실로봇용 export: `fr3_husky_nn_policy/models/facegrip_boxdrop_scratch_model_2999.npz`, `facegrip_squeezelift14_model_6697.npz`(+ start poses yaml, 5698과 같은 5박스).
+
+### 더 기운 판 기준 평행 + 판 법선 조임 (`-FaceGrip-BoxDrop-FlatSqueeze`, 2026-11-05)
+
+FaceGrip-BoxDrop-Scratch 2999에서 이어 학습한다. 관측·행동·critic 그룹·박스 관측 지연·끊김은 그대로라 실물 노드도 그대로 쓴다.
+
+| 항 | 바꾼 것 | 최종 weight |
+|---|---|---|
+| `plate_face_tilt` | 두 판 평균 → 더 기운 판(`plate_face_tilt_worst`). 학습된 −10에서 시작 | −20 |
+| `plate_face_offcenter` (새) | 판 중심이 박스 면 중심에서 앞뒤(박스 x)로 벗어난 거리, 양 판 합, 양 판 접촉 중 | −20 /m |
+| `min_squeeze` | 합력 norm → 판 법선(TCP z) 성분(`min_squeeze_normal_penalty`), 14 → 16 N | −0.5 |
+
+- 세 항 모두 success EMA 3 뒤 100 iter에 걸쳐 올린다. 이어 학습이라 yawtrack은 FaceGrip처럼 바로 1로 둔다.
+- 높이(박스 z)는 중앙으로 끌지 않는다. 판이 박스 중심보다 위를 잡아야 박스가 판-판 축에 매달린 진자처럼 바로 선다. 중앙성을 들기 보상에 곱한 P30은 정밀 유지가 무너졌으므로 따로 둔 페널티다.
+- 2999에서 잰 값(양 판 접촉·들린 동안): 더 기운 판 0.5~0.6 s 11.8~12.2°(평균식 6.4°), 앞뒤 오차 합 ~2 cm, 판 법선 힘 9.5~13.9 N(norm과 차이 0.3 N 안쪽), 16 N 부족분 평균 8.2 N.
+  - 최종 weight에서 들고 있는 동안 초당 tilt −1.5(평균식 −10이면 −0.4), offcenter −0.45, min_squeeze −4.1.
+- 확인: `train.py` 3 iter(64 env, init_fgbd_2999/model_2999.pt 로드) 정상, curriculum이 바로 ramp를 시작한다.
+- 학습 명령(이 PC, 1000 iter):
+
+  ```bash
+  python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-FlatSqueeze-v0 \
+      --viz none --max_iterations 1000 --run_name flatsqueeze_from_fgbd2999 \
+      --resume --load_run init_fgbd_2999 --checkpoint model_2999.pt
+  ```
