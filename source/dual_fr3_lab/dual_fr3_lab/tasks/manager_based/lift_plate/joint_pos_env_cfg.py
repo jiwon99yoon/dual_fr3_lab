@@ -4413,3 +4413,198 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Face
         self.scene.num_envs = 50
         self.scene.env_spacing = 3.0
         self.observations.policy.enable_corruption = False
+
+
+# ---------- -FaceGrip-SqueezeLift-LowMuFlat: SqueezeLift 6697 + 낮은 마찰 + 더 기운 판 기준 평행 (2026-11-05) ----------
+# 실로봇(11-05): SqueezeLift 6697이 FaceGrip-BoxDrop-Scratch 2999보다 강건하고, 2999는 판-박스가 미끄러진다. sim에서는 2999가
+# 덜 미끄러진다(들린 동안 slip median 0.028 vs 0.070 m/s). 판 0.5와 박스 0.4~1.2의 average 결합이라 sim 접촉 마찰이
+# 0.45~0.85로 실물보다 관대할 수 있다(실물 미측정). 6697은 들기 전 19 N, 들고 있을 때 17 N으로 조이고 천천히 든다.
+# 6697은 오른판이 들 때 -12도(수직축)로 돌아가 있고, 판 높이 차가 3.4 cm다.
+# 박스 마찰 범위를 아래로, 판 마찰도 조금 섞어 접촉 마찰(average)을 0.3~0.85로 넓힌다. 질량은 그대로(실측 501~561 g).
+LOWMU_BOX_FRICTION_STATIC = (0.2, 1.2)
+LOWMU_BOX_FRICTION_DYNAMIC = (0.15, 1.0)
+LOWMU_PLATE_FRICTION_STATIC = (0.4, 0.5)  # 판(fr3_link7) 기본은 0.5
+LOWMU_PLATE_FRICTION_DYNAMIC = (0.35, 0.45)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_SqueezeLift_LowMuFlat(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_SqueezeLift
+):
+    """FaceGrip-SqueezeLift + 낮은 마찰(박스 LOWMU_BOX_*, 판 LOWMU_PLATE_*, startup DR) + 더 기운 판 기준 평행. SqueezeLift 6697에서 이어 학습한다.
+
+    - 6697이 배운 항(min_squeeze, 조임 factor, 접근 기울기·미끄럼 벌점)은 처음부터 최종 값으로 둔다. 이어 학습하면 curriculum이
+      처음부터 다시 돌아서, 그대로 두면 100 iter 동안 6697과 보상이 달라진다.
+    - plate_face_tilt: func를 plate_face_tilt_worst로 바꾸고, 학습된 FACEGRIP_TILT_WEIGHT에서 success EMA 3 뒤
+      FLATSQUEEZE_RAMP_STEPS에 걸쳐 FLATSQUEEZE_TILT_WEIGHT까지 올린다(FlatOnly와 같다).
+    - 관측·행동(action scale 0.1)·시작 자세 표는 그대로라 checkpoint와 실물 노드를 그대로 쓴다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.randomize_box_friction.params.update(
+            static_friction_range=LOWMU_BOX_FRICTION_STATIC, dynamic_friction_range=LOWMU_BOX_FRICTION_DYNAMIC
+        )
+        self.events.randomize_plate_friction = EventTerm(
+            func=mdp.randomize_rigid_body_material,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=[".*_fr3_link7"]),
+                "static_friction_range": LOWMU_PLATE_FRICTION_STATIC,
+                "dynamic_friction_range": LOWMU_PLATE_FRICTION_DYNAMIC,
+                "restitution_range": (0.0, 0.0),
+                "num_buckets": 64,
+                "make_consistent": True,
+            },
+        )
+        self.rewards.min_squeeze.weight = MINSQUEEZE_WEIGHT
+        self.rewards.plate_face_tilt_approach.weight = APPROACH_TILT_WEIGHT
+        self.rewards.plate_box_slip.weight = SLIP_WEIGHT
+        self.curriculum.squeeze_lift.params.update(trigger=0.0, ramp_steps=1)
+        self.rewards.plate_face_tilt.func = plate_face_tilt_worst
+        self.rewards.plate_face_tilt.weight = FACEGRIP_TILT_WEIGHT
+        self.curriculum.plate_face_tilt.params.update(weight=FLATSQUEEZE_TILT_WEIGHT, ramp_steps=FLATSQUEEZE_RAMP_STEPS)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_SqueezeLift_LowMuFlat_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_SqueezeLift_LowMuFlat
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-SqueezeLift-LowMuFlat visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- -FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift: 낮은 접촉 마찰 + 천천히 들기 + 박스 yaw 고정 + 박스 크기 DR (2026-11-05) ----------
+# 실로봇 bag(11-05): FlatSqueeze 3998은 조임 토크가 sim과 같은데, 들기 시작(0.25~0.6 s)에 판이 박스 면을 따라 3~8 cm 미끄러져
+# 올라가고(sim 0.1 cm) 박스가 잡는 축 둘레로 40~70도 돈다(12번 중 11번). sim은 접촉 마찰 0.22~0.25에서 이 미끄럼을 재현한다.
+# 3998은 들 때 판 힘이 18.5 N에서 14 N으로 줄고, 박스 위 가속이 0.2 s에 ~5 m/s^2(env median, p90 8.7)다. 마찰 0.22, 판 14 N이면
+# 0.55 kg 박스를 붙잡고 올릴 수 있는 가속은 ~1.4 m/s^2다. 판은 실물 그대로(고무 패드 없음)라 판 마찰은 낮은 쪽으로만 흔든다.
+# LowMuFlat(6697 + 낮은 마찰 + plate_face_tilt_worst)은 7200 뒤 박스를 수직축 둘레로 33도 돌려 판과 면을 맞추는 쪽으로 무너졌다.
+SOFTLIFT_BOX_FRICTION_STATIC = (0.1, 0.8)
+SOFTLIFT_BOX_FRICTION_DYNAMIC = (0.08, 0.7)
+SOFTLIFT_PLATE_FRICTION_STATIC = (0.3, 0.5)  # 판(fr3_link7) 기본 0.5. 접촉 마찰(average) 0.2~0.65, 0.3 미만 ~14%, 0.4 미만 ~43%
+SOFTLIFT_PLATE_FRICTION_DYNAMIC = (0.25, 0.45)
+SOFTLIFT_ACCEL_CAP = 1.5  # m/s^2, 양 판으로 잡고 있을 때 박스 위 가속 상한
+SOFTLIFT_ACCEL_WEIGHT = -20.0  # 상한 초과(m/s^2)당 초당. 3998 들기(초과분 시간 적분 ~0.2 m/s)면 에피소드당 ~-4
+BOX_YAW_DRIFT_WEIGHT = -10.0  # 시작 대비 박스 yaw 변화(rad)당 초당. LowMuFlat 7696의 33도면 -5.8/s (success ~12/s)
+SOFTLIFT_RAMP_STEPS = FLATSQUEEZE_RAMP_STEPS
+
+
+def box_lift_accel(
+    env,
+    accel_cap: float = SOFTLIFT_ACCEL_CAP,
+    finger1_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    finger2_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    threshold: float = 1.0,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """양 판 접촉 중 박스 위(world z) 가속의 accel_cap 초과분 [m/s^2]. 가속은 policy step 사이 속도 차분이다.
+
+    판이 박스를 붙잡고 올리려면 판당 m (g + a) / (2 mu)가 들어서 위 가속만 미끄럼에 걸린다. 아래 가속(내려놓기·떨어짐)은 보지 않는다.
+    에피소드 첫 step(episode_length_buf <= 1)은 이전 속도가 지난 에피소드 것이라 0으로 둔다.
+    """
+    vz = env.scene[object_cfg.name].data.root_link_lin_vel_w.torch[:, 2]
+    prev = getattr(env, "_box_vz_prev", None)
+    if prev is None:
+        prev = vz.clone()
+    az = (vz - prev) / env.step_dt
+    az[env.episode_length_buf <= 1] = 0.0
+    env._box_vz_prev = vz.clone()
+    gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
+    return torch.nan_to_num((az - accel_cap).clamp(min=0.0) * gate, nan=0.0, posinf=0.0)
+
+
+def box_yaw_drift(
+    env,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """에피소드 시작 대비 박스 yaw(world z 둘레) 변화 |rad|. 시작 yaw는 episode_length_buf <= 1인 step에 env별로 다시 적는다.
+
+    _box_yaw_error(base x 기준)는 리셋 yaw DR(±0.1 rad)까지 세서 박스를 돌려 바로 세우는 것도 보상한다. 이 항은 박스를 돌린 만큼만 본다.
+    """
+    obj = env.scene[object_cfg.name]
+    x_axis = torch.zeros_like(obj.data.root_pos_w.torch)
+    x_axis[:, 0] = 1.0
+    bx = quat_apply(obj.data.root_quat_w.torch, x_axis)  # 박스 x (world)
+    yaw = torch.atan2(bx[:, 1], bx[:, 0])
+    yaw0 = getattr(env, "_box_yaw0", None)
+    if yaw0 is None:
+        yaw0 = yaw.clone()
+    yaw0 = torch.where(env.episode_length_buf <= 1, yaw, yaw0)
+    env._box_yaw0 = yaw0
+    d = yaw - yaw0
+    return torch.nan_to_num(torch.atan2(torch.sin(d), torch.cos(d)).abs(), nan=0.0)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze
+):
+    """FaceGrip-BoxDrop-FlatSqueeze + 낮은 접촉 마찰·박스 크기 DR + 들기 가속 상한·판-박스 미끄럼·박스 yaw 변화 벌점. FlatSqueeze 3998에서 이어 학습한다.
+
+    - 마찰: 박스 SOFTLIFT_BOX_*, 판(fr3_link7) SOFTLIFT_PLATE_* (startup DR). 접촉 마찰(average) 0.2~0.65.
+    - 박스 크기: 축마다 ±BOX_SIZE_DR_M (prestartup 배율). 시작 자세 표는 기준 크기 그대로라 판-면 간격이 4 cm ± 0.5 cm가 된다.
+      행동은 현재 q 기준 ±0.1 rad라 조임 한계(PD 오차 상한)는 박스 폭과 무관하고, 폭에 따라 닫는 양만 달라진다.
+    - 3998이 배운 항(plate_face_tilt_worst -20, plate_face_offcenter -20, min_squeeze -0.5)은 처음부터 최종 값으로 둔다.
+    - box_lift_accel, plate_box_slip, box_yaw_drift: -1e-4에서 success EMA 3 뒤 SOFTLIFT_RAMP_STEPS에 걸쳐 각 weight까지.
+    - 관측·행동(action scale 0.1)·시작 자세 표는 그대로라 checkpoint와 실물 노드를 그대로 쓴다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        sx, sy, sz = self.scene.object.spawn.size
+        self.events.randomize_box_size.params["scale_range"] = {
+            "x": (1.0 - BOX_SIZE_DR_M / sx, 1.0 + BOX_SIZE_DR_M / sx),
+            "y": (1.0 - BOX_SIZE_DR_M / sy, 1.0 + BOX_SIZE_DR_M / sy),
+            "z": (1.0 - BOX_SIZE_DR_M / sz, 1.0 + BOX_SIZE_DR_M / sz),
+        }
+        self.events.randomize_box_friction.params.update(
+            static_friction_range=SOFTLIFT_BOX_FRICTION_STATIC, dynamic_friction_range=SOFTLIFT_BOX_FRICTION_DYNAMIC
+        )
+        self.events.randomize_plate_friction = EventTerm(
+            func=mdp.randomize_rigid_body_material,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=[".*_fr3_link7"]),
+                "static_friction_range": SOFTLIFT_PLATE_FRICTION_STATIC,
+                "dynamic_friction_range": SOFTLIFT_PLATE_FRICTION_DYNAMIC,
+                "restitution_range": (0.0, 0.0),
+                "num_buckets": 64,
+                "make_consistent": True,
+            },
+        )
+        self.rewards.plate_face_tilt.weight = FLATSQUEEZE_TILT_WEIGHT
+        self.rewards.plate_face_offcenter.weight = FLATSQUEEZE_OFFCENTER_WEIGHT
+        self.rewards.min_squeeze.weight = MINSQUEEZE_WEIGHT
+        for name, func, weight in (
+            ("box_lift_accel", box_lift_accel, SOFTLIFT_ACCEL_WEIGHT),
+            ("plate_box_slip", plate_box_slip, SLIP_WEIGHT),
+            ("box_yaw_drift", box_yaw_drift, BOX_YAW_DRIFT_WEIGHT),
+        ):
+            setattr(self.rewards, name, RewTerm(func=func, weight=-1e-4))
+            setattr(
+                self.curriculum,
+                name,
+                CurrTerm(
+                    func=ramp_reward_weight_on_success,
+                    params={"term_name": name, "weight": weight, "ramp_steps": SOFTLIFT_RAMP_STEPS},
+                ),
+            )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift visualization/evaluation cfg (DR·지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
