@@ -77,6 +77,15 @@ pr = cfg.events.reset_object_position.params["pose_range"]
 xr = (x0 + pr["x"][0], x0 + pr["x"][1])
 yr = (y0 + pr["y"][0], y0 + pr["y"][1])
 yawr = tuple(pr.get("yaw", (0.0, 0.0)))
+pg = getattr(cfg.events, "reset_from_pregrasp", None)
+if pg is not None:
+    # -Pregrasp: the box pose comes from the pre-grasp table plus reset noise, not from reset_object_position
+    tb = np.load(pg.params["table_path"])["box_pose"]
+    tyaw = np.arctan2(2 * (tb[:, 6] * tb[:, 5] + tb[:, 3] * tb[:, 4]), 1 - 2 * (tb[:, 4] ** 2 + tb[:, 5] ** 2))
+    dp, dyaw = pg.params["box_pos_noise"], pg.params["box_yaw_noise"]
+    xr = (float(tb[:, 0].min()) - dp, float(tb[:, 0].max()) + dp)
+    yr = (float(tb[:, 1].min()) - dp, float(tb[:, 1].max()) + dp)
+    yawr = (float(tyaw.min()) - dyaw, float(tyaw.max()) + dyaw)
 goal = cfg.commands.object_pose.ranges
 
 env = gym.make(args.task, cfg=cfg)
@@ -89,6 +98,13 @@ for k, (eye, look) in VIEWS.items():
 env.reset()
 raw._disturb_scale = 0.0
 robot, box = raw.scene["robot"], raw.scene["object"]
+if pg is not None:
+    # the reset put the arms at a random pre-grasp row (plates next to that row's box): back to the ready pose
+    q0 = T(robot.data.default_joint_pos)[:1].clone()
+    ids0 = torch.tensor([0], device=dev)
+    robot.write_joint_position_to_sim_index(position=q0, env_ids=ids0)
+    robot.write_joint_velocity_to_sim_index(velocity=torch.zeros_like(q0), env_ids=ids0)
+    robot.set_joint_position_target_index(target=q0, env_ids=ids0)
 rp, rq = T(robot.data.root_pos_w)[0].clone(), T(robot.data.root_quat_w)[0].clone()
 floor_z = float(origin[2] - rp[2])  # floor in the root frame (plane at env z = 0)
 

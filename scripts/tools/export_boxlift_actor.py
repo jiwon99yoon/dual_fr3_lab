@@ -18,6 +18,10 @@ table the run trained with, plates 4 cm outside the box faces. The table is embe
 (rows x 14, manifest joint order) and ``pregrasp_box_pose_base`` (rows x 7, base frame, pos + quat xyzw), so the
 robot can pick the row nearest the measured box pose and move there (MoveIt) before the policy starts.
 
+``manifest["observation"]["box_pose"]`` is ``live`` (box position/orientation observed every step) or
+``held_at_start`` (``-FrozenBox`` tasks: the policy saw the box pose of the episode start for the whole episode, so
+the robot must latch the pose measured at ``start_policy`` and keep feeding it).
+
 The export refuses when ``params/env.yaml`` is missing; it never reconstructs the training
 configuration from the current source tree, which may have changed since the run.
 
@@ -51,6 +55,11 @@ _TERM_FUNCS = {
     "target_object_position": "generated_commands",
     "actions": "last_action",
     "object_orientation": "object_orientation_in_robot_root_frame",
+}
+# -FrozenBox tasks hold the box pose observed at the episode start for the whole episode
+_HELD_TERM_FUNCS = {
+    "object_position": "object_position_at_reset",
+    "object_orientation": "object_orientation_at_reset",
 }
 
 
@@ -167,7 +176,11 @@ def build_manifest(env: dict, agent: dict, checkpoint: Path, env_yaml: Path, che
     terms = [(name, str(term["func"]).split(":")[-1]) for name, term in policy_obs.items()
              if isinstance(term, dict) and "func" in term]
     for name, func in terms:
-        _require(_TERM_FUNCS.get(name) == func, f"unexpected policy observation term {name} -> {func}")
+        _require(func in (_TERM_FUNCS.get(name), _HELD_TERM_FUNCS.get(name)),
+                 f"unexpected policy observation term {name} -> {func}")
+    held = {name for name, func in terms if func == _HELD_TERM_FUNCS.get(name)}
+    _require(held in (set(), set(_HELD_TERM_FUNCS)), f"box position and orientation must both be live or both held, got {held}")
+    box_pose_obs = "held_at_start" if held else "live"
     _require([name for name, _ in terms] == list(_TERM_FUNCS), f"policy observation order {terms} != {list(_TERM_FUNCS)}")
 
     # ---- joints / action
@@ -242,7 +255,7 @@ def build_manifest(env: dict, agent: dict, checkpoint: Path, env_yaml: Path, che
             "episode_length_s": float(env["episode_length_s"]),
             "output_activation": "tanh",
         },
-        "observation": {"terms": [[name, func] for name, func in terms]},
+        "observation": {"terms": [[name, func] for name, func in terms], "box_pose": box_pose_obs},
         "joints": {"names": joint_names, "default_position": default_position},
         "action": {
             "scale": float(action["scale"]),

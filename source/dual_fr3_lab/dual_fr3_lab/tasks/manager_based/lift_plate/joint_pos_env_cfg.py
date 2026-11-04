@@ -16,6 +16,7 @@ rule-based 검증: scripts/tutorials/05_controllers/run_dual_fr3_plate_lift.py
 - 들기/운반 보상은 "양 판 동시 접촉" gate 통과 시에만 지급 (dual_fr3 finger gate와 동일 구조)
 """
 
+import copy
 import os
 import numpy as np
 import torch
@@ -448,6 +449,118 @@ def object_orientation_in_robot_root_frame(
     )
     sign = torch.where(quat[:, 3:4] >= 0.0, 1.0, -1.0)
     return quat * sign
+
+
+def _held_at_reset(env, key: str, value: torch.Tensor) -> torch.Tensor:
+    """에피소드 첫 관측(episode_length_buf == 0)의 값을 env에 저장해 두고, 그 뒤로는 저장한 값을 돌려준다."""
+    held = env.__dict__.setdefault("_obs_held_at_reset", {})
+    if key not in held or held[key].shape != value.shape:
+        held[key] = value.clone()
+    fresh = env.episode_length_buf == 0
+    held[key][fresh] = value[fresh]
+    return held[key].clone()
+
+
+def object_position_at_reset(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """에피소드 시작 때의 박스 위치(robot root frame)를 에피소드 내내 그대로 준다 (num_envs, 3).
+
+    비전 없이 박스 pose를 놓은 위치로 고정 publish하는 실물 조건. 들기 시작한 뒤의 박스 위치는 관측하지 않는다.
+    """
+    return _held_at_reset(env, "object_position", mdp.object_position_in_robot_root_frame(env, robot_cfg, object_cfg))
+
+
+def object_orientation_at_reset(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """에피소드 시작 때의 박스 orientation(xyzw, w>=0)을 에피소드 내내 그대로 준다 (num_envs, 4)."""
+    return _held_at_reset(env, "object_orientation", object_orientation_in_robot_root_frame(env, robot_cfg, object_cfg))
+
+
+# 비전 박스 pose의 지연·끊김 (-BoxDrop). 20 Hz policy step 기준.
+BOX_OBS_DELAY_STEPS = 3  # 에피소드마다 0~3 step(0~150 ms) 지연을 뽑아 고정
+BOX_OBS_DROP_START_PROB = 0.02  # 끊기지 않은 step마다 끊김이 시작될 확률 (평균 2.5 s에 한 번)
+BOX_OBS_DROP_STEPS = (2, 20)  # 끊김 길이 0.1~1.0 s, 그동안 마지막 값을 유지
+BOX_OBS_FULL_DROP_PROB = 0.1  # 에피소드의 10%는 임의 시점(0.05~2 s)부터 끝까지 끊김
+
+
+def _box_obs_dropout_mask(env) -> dict:
+    """박스 pose 관측의 env별 지연·끊김 상태. 한 policy step에 한 번만 갱신해 위치·자세가 같은 mask를 쓴다."""
+    st = env.__dict__.get("_box_obs_dropout")
+    n, dev = env.num_envs, env.device
+    if st is None:
+        st = {
+            "left": torch.zeros(n, dtype=torch.long, device=dev),  # 남은 끊김 step
+            "delay": torch.zeros(n, dtype=torch.long, device=dev),
+            "full_at": torch.full((n,), -1, dtype=torch.long, device=dev),
+            "drop": torch.zeros(n, dtype=torch.bool, device=dev),
+            "hist": {},
+            "held": {},
+            "step": None,
+        }
+        env._box_obs_dropout = st
+    if st["step"] == env.common_step_counter:
+        return st
+    st["step"] = env.common_step_counter
+    t = env.episode_length_buf
+    fresh = t == 0
+    k = int(fresh.sum())
+    if k:
+        st["delay"][fresh] = torch.randint(0, BOX_OBS_DELAY_STEPS + 1, (k,), device=dev)
+        full = torch.rand(k, device=dev) < BOX_OBS_FULL_DROP_PROB
+        st["full_at"][fresh] = torch.where(full, torch.randint(1, 41, (k,), device=dev), torch.full_like(st["left"][fresh], -1))
+        st["left"][fresh] = 0
+    going = st["left"] > 0
+    st["left"] = (st["left"] - 1).clamp(min=0)
+    start = ~going & ~fresh & (torch.rand(n, device=dev) < BOX_OBS_DROP_START_PROB)
+    lo, hi = BOX_OBS_DROP_STEPS
+    st["left"] = torch.where(start, torch.randint(lo - 1, hi, (n,), device=dev), st["left"])
+    full_now = (st["full_at"] >= 0) & (t >= st["full_at"])
+    st["drop"] = (going | start | full_now) & ~fresh
+    return st
+
+
+def _box_obs_with_dropout(env, key: str, value: torch.Tensor) -> torch.Tensor:
+    """value를 env별 지연만큼 늦추고, 끊긴 step에는 마지막으로 들어온 값을 준다. 에피소드 첫 관측은 항상 현재 값이다."""
+    st = _box_obs_dropout_mask(env)
+    fresh = env.episode_length_buf == 0
+    hist = st["hist"].get(key)
+    if hist is None or hist.shape[1:] != value.shape:
+        hist = value.unsqueeze(0).repeat(BOX_OBS_DELAY_STEPS + 1, 1, 1)
+    hist = torch.cat([value.unsqueeze(0), hist[:-1]], 0)  # hist[0]이 최신
+    hist[:, fresh] = value[fresh]
+    st["hist"][key] = hist
+    delayed = hist[st["delay"], torch.arange(env.num_envs, device=env.device)]
+    held = st["held"].get(key)
+    if held is None or held.shape != value.shape:
+        held = delayed.clone()
+    held = torch.where(st["drop"].unsqueeze(-1), held, delayed)
+    held[fresh] = value[fresh]
+    st["held"][key] = held
+    return held.clone()
+
+
+def object_position_dropout(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """박스 위치(robot root frame)에 비전 지연·끊김을 넣은 관측 (num_envs, 3). 설정은 BOX_OBS_* 상수."""
+    return _box_obs_with_dropout(env, "object_position", mdp.object_position_in_robot_root_frame(env, robot_cfg, object_cfg))
+
+
+def object_orientation_dropout(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """박스 orientation(xyzw, w>=0)에 위치와 같은 지연·끊김을 넣은 관측 (num_envs, 4)."""
+    return _box_obs_with_dropout(env, "object_orientation", object_orientation_in_robot_root_frame(env, robot_cfg, object_cfg))
 
 
 def box_upright(
@@ -2783,6 +2896,18 @@ PREGRASP_TABLE_PATH = os.path.join(
 # 같은 조건 + 판 모서리를 박스 모서리에 맞춘 표(--roll_align, 2026-11-03). 위 표는 판이 면 안에서 약 18도 돌아간 채
 # 시작한다(IK가 법선축 회전을 정하지 않았음). Pregrasp model_2999는 위 표로 학습했으므로 그 표는 그대로 둔다.
 PREGRASP_TABLE_ROLLALIGN_PATH = PREGRASP_TABLE_PATH.replace(".npz", "_rollalign.npz")
+# 실물 배치는 긴 변(410 mm)이 로봇 좌우(y, 판이 잡는 방향)이고 310 mm가 앞뒤다(2026-11-03 정정). 위 Box410 task들은
+# 410을 앞뒤로 둔 채 학습했다. 같은 박스를 90도 돌린 것이라 질량·높이·DR은 그대로 쓰고, 표는 이 박스로 다시 만든다.
+# 표: eval_dual_fr3_plate_rule_based.py --box_size 0.31 0.41 0.28 --box_dx -0.10 0.0, 박스 중심 x 0.40~0.50
+# (0.50 이상은 j2 한계로 유효율이 떨어지고 실물에서도 안 쓴다). 같은 seed로 두 표를 만들어 j7만 다르다.
+# - WIDE: 판 회전을 정하지 않은 기존 Pregrasp 방식(판이 면 안에서 약 16도 돌아감).
+# - WIDE_ROLLALIGN: --snap_j7, 기록 후 j7만 최대 45도 돌려 판 모서리를 박스에 맞춘다. --roll_align 표는 j7이 72도
+#   돌아간 자세였고 그 RollAlign 정책은 박스를 40~67도 비틀었다.
+BOX410_WIDE_SIZE = (BOX410_SIZE[1], BOX410_SIZE[0], BOX410_SIZE[2])  # (x 0.31 전후, y 0.41 잡는 방향, z 0.28)
+PREGRASP_TABLE_WIDE_PATH = os.path.join(
+    os.path.dirname(PREGRASP_TABLE_PATH), "plate_box410wide_pregrasp_gap004_margin005.npz"
+)
+PREGRASP_TABLE_WIDE_ROLLALIGN_PATH = PREGRASP_TABLE_WIDE_PATH.replace(".npz", "_snapj7.npz")
 PREGRASP_BOX_POS_NOISE = 0.01  # m, 박스 xy (표의 pose 기준, 판-면 간격 4 cm 안)
 PREGRASP_BOX_YAW_NOISE = 0.05  # rad (약 3도)
 PREGRASP_JOINT_NOISE = 0.01  # rad
@@ -2929,6 +3054,125 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_RollAlign_PLAY(
     DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_RollAlign
 ):
     """Sim2Real-100Hz-Light-Pregrasp-RollAlign visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp):
+    """Pregrasp와 같되 박스를 90도 돌려 실물 배치(긴 변 410 mm가 좌우 = 판이 잡는 방향)로 둔다. from-scratch.
+
+    크기 BOX410_WIDE_SIZE, 시작 자세 표는 이 박스로 같은 방식으로 만든 표(PREGRASP_TABLE_WIDE_PATH, 박스 중심 x 0.40~0.50).
+    노이즈·보상·에피소드는 Pregrasp 그대로다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.object.spawn.size = BOX410_WIDE_SIZE
+        self.events.reset_from_pregrasp.params["table_path"] = PREGRASP_TABLE_WIDE_PATH
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_PLAY(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign(DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide):
+    """Wide와 같되 시작 자세 표만 판 모서리 정렬 표(PREGRASP_TABLE_WIDE_ROLLALIGN_PATH, j7만 다름)로 바꾼다."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.reset_from_pregrasp.params["table_path"] = PREGRASP_TABLE_WIDE_ROLLALIGN_PATH
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+def _add_privileged_critic(cfg) -> None:
+    """policy 관측 그룹을 복사해 critic 그룹을 만든다(같은 항·순서, 노이즈 없음, 박스 pose는 실제 값).
+
+    policy의 박스 관측 함수를 바꾸기 전에 불러야 한다. 차원이 policy와 같아 기존 checkpoint에서 이어 학습할 수 있다.
+    """
+    critic = copy.deepcopy(cfg.observations.policy)
+    critic.enable_corruption = False
+    cfg.observations.critic = critic
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FrozenBox(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign
+):
+    """Wide-RollAlign과 같되 policy의 박스 위치·자세 관측을 에피소드 시작 값으로 고정한다(비전 없는 실물 조건).
+
+    critic 그룹은 policy와 같은 항·순서에 박스 pose를 매 step 실제 값으로(노이즈 없이) 받는다(asymmetric
+    actor-critic). 차원이 같아 Wide-RollAlign checkpoint에서 이어 학습할 수 있다.
+    Wide-RollAlign model_2999는 박스 관측을 고정하면 sim 성공 0%였다(goal을 지나쳐 들고 박스가 25° 기운다).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        _add_privileged_critic(self)
+        self.observations.policy.object_position.func = object_position_at_reset
+        self.observations.policy.object_orientation.func = object_orientation_at_reset
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FrozenBox_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FrozenBox
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FrozenBox visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_BoxDrop(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign
+):
+    """Wide-RollAlign과 같되 policy의 박스 위치·자세 관측에 비전 지연·끊김을 넣는다(BOX_OBS_* 상수).
+
+    - 에피소드마다 0~150 ms 지연, step마다 2% 확률로 0.1~1.0 s 끊김(마지막 값 유지), 에피소드 10%는 도중부터 끝까지 끊김.
+    - 실물 노드는 비전이 끊기면 마지막 pose를 계속 넣는다.
+    - critic 그룹은 실제 박스 pose를 노이즈 없이 받는다(asymmetric actor-critic).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        _add_privileged_critic(self)
+        self.observations.policy.object_position.func = object_position_dropout
+        self.observations.policy.object_orientation.func = object_orientation_dropout
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_BoxDrop_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_BoxDrop
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-BoxDrop visualization/evaluation cfg (지연·끊김은 켜 둔다)."""
 
     def __post_init__(self):
         super().__post_init__()

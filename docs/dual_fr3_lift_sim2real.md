@@ -456,10 +456,26 @@ run `dual_fr3_plate_lift_sim2real_100hz_light/2026-11-02_15-17-33_light`, 6000 i
     - 512 env 유효율: + 5 cm 97.9%(정렬 전 97.5%), + 6.5 cm 99.6%. 회전을 고정해도 손이 닿는 범위는 줄지 않았다. 관절 여유 중앙값은 0.077 rad다(정렬 전 0.092).
     - 표: 4096 env, seed 0, + 5 cm → 4003줄(97.7%), `assets/pregrasp/plate_box410_pregrasp_gap004_margin005_rollalign.npz`. 기존 표는 그대로 둔다(model_2999가 그 표로 학습됨).
     - 리셋 직후 판 모서리 회전 −0.1°(p10~p90 −1.1~+0.7°, 정렬 전 −18°)이다. 위치·간격·면 평행도는 정렬 전과 같다.
-    - 아직 이 표로 학습하지 않았다. Pregrasp task는 기존 표를 쓴다.
+    - Pregrasp task는 기존 표를 쓴다. 이 표로는 RollAlign task를 학습했다(아래, 실패).
     - 비교 그림(같은 박스 pose, 양쪽 판): `docs/figures/pregrasp_start_old_vs_rollalign.png`.
     - 재학습 task: `Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-RollAlign[-Play]-v0`(로그 `dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_rollalign`). Pregrasp와 표만 다르다. 4090에서 3000 iter from scratch로 돌린다.
     - 다른 PC에서 학습한 run의 env.yaml에는 그 PC의 표 절대경로가 들어간다. `export_boxlift_actor.py`는 그 경로가 없으면 이 checkout의 `assets/pregrasp/<같은 파일명>`을 쓴다.
+    - **결과(로컬, 12:03~13:30, `2026-11-03_12-03-06_pregrasp_rollalign_box410`)**: 판은 평행해졌지만 박스를 비튼다. 실로봇 후보가 아니다.
+
+      | 항목(1024 env, 외란 1.0, 4 s) | RollAlign 600 | 1200 | 2100 | 2999 | 참고: Pregrasp 2999 |
+      |---|---|---|---|---|---|
+      | 성공 | 100% | 100% | 99.9% | **31.8%** | 100% |
+      | 끝 박스 yaw | 63° | 58° | 48° | 41° | 0.4° |
+      | 들기 중 최대 기울기 | 13.1° | 10.4° | 7.7° | 11.8° | 6.8° |
+      | 최대 판 힘 | 29 N | 22 N | 21 N | 18 N | 17 N |
+
+      - 판 V자는 사라졌다. 판 법선-면 차이가 0.5 s에 5.9°(기존 28.9°), pitch −2.9°(기존 +26.7°)다.
+      - 대신 모든 checkpoint가 박스를 수직축으로 41~67° 비튼다. 학습 곡선에서 성공 보상이 600 iter 9.7 → 2999 iter 1.0으로 계속 떨어졌다(기존 run은 12.8로 회복).
+      - 관절: 오른팔 j2가 모든 env에서 Margin 한계(0.05)에 붙고, 왼팔 j7이 한계 0.11까지 간다. 기존 정책은 모든 관절이 0.13 이상 남는다.
+      - 원인 후보: `--roll_align`은 네 정렬 방향 중 ready 자세 판에 가까운 것을 골라서 j7이 기존 표보다 72° 돌아간 자세(왼 2.06/오 −0.49, 기존 0.81/0.76)에서 시작한다. 판은 정사각형이라 −18°만 돌려도 정렬되는데 반대쪽으로 돈 것이다. run 하나라 seed 차이일 수도 있다.
+      - 영상: `<run>/videos/model_2999_views_ep4.mp4`(박스를 비틀어 41 cm까지만 들고 goal에서 6~14 cm 멈춤).
+  - **j7 정렬 표 `--snap_j7`(11-03)**: 기본 접근(판 회전은 기존처럼 둠)으로 줄을 기록한 뒤, j7만 최대 45° 돌려 판 모서리를 박스에 맞춘다. j7 축이 판 법선이라 판 중심·법선·간격은 그대로다.
+    - Wide 박스 표에서 j7 회전 왼 −15.7°, 오 +15.8°(중앙값), 결과 j7 왼 0.56/오 1.01(기존 표 근처). 리셋 직후 판 모서리 회전 0.0°(p10~p90 ±0.8°).
   - **판 평행도(11-03 측정, 512 env)**: 리셋 때는 판 법선과 박스 면 법선 차이가 1.6°(p90 2.8°)로 평행하다(yaw ±2.4°는 박스 yaw 노이즈).
     정책이 움직이면서 판을 아래 끝이 박스 쪽, 위 끝이 바깥인 V자로 기울인다. pitch는 첫 접촉(0.15 s) 11°, 들기 중(0.5~0.75 s) 27°, 유지(1.5 s) 5.5°다.
     들기 중 판 중심은 면에서 3.6 cm 떨어져 있어 아래 모서리로 잡는 셈이다. 오른판은 접촉 전 yaw도 9° 돈다(왼판 0°).
@@ -491,3 +507,93 @@ Play는 같은 rate의 `-Play-v0` / `-Play-Noisy-v0`를 쓴다.
 
 - `Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410[-Play]-v0`: Light-Margin + `_apply_box410()` + 박스 x 0.45~0.52. Pregrasp와 비교하는 기준선이다.
 - 학습: 5000 iter from scratch, run_name `light_box410`, stdout은 repo 루트 `box_light_box410.log`, launcher는 scratchpad `train_light_box410.sh`다.
+- 결과(model_4999, 12:15 종료, 512 env, 외란 1.0, 5 s):
+
+  | 항목 | Light-Box410 model_4999 | 참고: Pregrasp box410 model_2999 |
+  |---|---|---|
+  | 성공 | 99.4% | 100% |
+  | 성공까지 시간 | 3.25 s | 1.40 s |
+  | 끝 박스 yaw | **64°**(p90 69°) | 0.4° |
+  | 끝 기울기 | 8.6° | 4.7° |
+  | 잡는 높이(판 중심 − 박스 중심) | **12.9 cm** | 8.8 cm |
+  | 최대 판 힘 | 33 N | 17 N |
+  | 판 외 접촉 > 1 N | 7% | 0% |
+
+  - 성공 판정은 통과하지만 박스 윗모서리 근처를 잡고 박스를 수직축으로 64° 돌린다. 판 중심이 윗면에서 1 cm 아래이므로 판의 절반이 박스 위로 나온다. 3300 iter(yaw 61°, 12.4 cm)에서 나아지지 않았다.
+  - 4090 run 영상의 "잘 못 든다"는 이 거동으로 보인다. 410 박스는 접근을 분리한 Pregrasp 쪽이 맞다.
+
+## box Wide: 긴 변(410 mm)을 좌우로 (`-Light-Pregrasp-Wide`, 2026-11-03)
+
+- 실물 박스는 긴 변이 로봇 좌우(판이 잡는 방향)다. Box410/Pregrasp/RollAlign은 410을 앞뒤(x)로 두고 학습했다.
+  - 원인: 11-02에 "410 310 280"을 이전 박스(555 앞뒤 × 475 잡는 방향 × 275)와 같은 (x 앞뒤, y 잡는 방향, z) 순서로 읽었다. 답변에 "410(앞뒤) × 310(판으로 잡는 방향)"이라고 적었지만 확인을 받지 않았다.
+  - 지금 정책(Pregrasp model_2999)을 쓰려면 실물 박스를 90° 돌려 410 변을 앞뒤로 놓는다.
+- 시작 자세 표 두 가지로 나눠 학습한다. 같은 seed로 만들어 박스 pose와 j1~j6이 똑같고 j7만 다르다.
+
+  | task (`Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-…`) | 표 (`assets/pregrasp/`) | 리셋 직후 판 모서리 회전 | j7 중앙값 L/R |
+  |---|---|---|---|
+  | `Wide[-Play]-v0` (로그 `…_pregrasp_wide`) | `plate_box410wide_pregrasp_gap004_margin005.npz` (기존 Pregrasp 방식) | −15.9° (p10~p90 −22~−9°) | 0.83 / 0.74 |
+  | `Wide-RollAlign[-Play]-v0` (로그 `…_pregrasp_wide_rollalign`) | `…_snapj7.npz` (`--snap_j7`) | 0.0° (±0.7°) | 0.56 / 1.01 |
+
+  - 박스 `BOX410_WIDE_SIZE` = (x 0.31, y 0.41, z 0.28), 나머지(노이즈·보상·에피소드 4 s)는 Pregrasp와 같다.
+  - 표: `--box_size 0.31 0.41 0.28 --box_dx -0.10 0.0 [--snap_j7]`, 4096 env, seed 0, + 5 cm → 각 3956줄(96.6%). 박스 중심 x 0.40~0.50.
+  - x 범위를 앞당긴 이유: 판이 바깥(y ±0.245)으로 벌어져서 j2 한계에 더 빨리 걸린다. x 0.45~0.52로 만들면 86%(x ≥ 0.50은 66%)다. 0.36~0.50에서는 x ≤ 0.48까지 거의 100%다. 박스 깊이가 31 cm라 x 0.40이어도 로봇 쪽 면이 0.245(Husky 앞에서 13.6 cm)다.
+  - 리셋 직후: 판-면 간격 3.9 cm, 판 중심 박스 중심 + 5.2 cm, 판 모서리 회전 0.0°.
+- 학습: 로컬에서 두 run을 같이, 각 3000 iter from scratch(16:32~18:55, iter당 2.8 s, traceback 0).
+  - `logs/rsl_rl/dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide/2026-11-03_16-32-43_pregrasp_wide_box410` → stdout `box_pregrasp_wide.log`
+  - `logs/rsl_rl/dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign/2026-11-03_16-33-43_pregrasp_wide_rollalign_box410` → stdout `box_pregrasp_wide_rollalign.log`
+  - 16:25에 정렬 표 하나로 시작한 run은 165 iter에서 멈췄다(두 표로 나누기로 함).
+
+### Wide 결과 (model_2999)
+
+1024 env, 학습 노이즈 그대로, 질량·마찰 DR, 외란 1.0, 80 step(4 s). Pregrasp 2999는 410 앞뒤 박스(같은 평가)다.
+
+| | Pregrasp 2999 (410 앞뒤) | Wide 2999 | Wide-RollAlign 2999 |
+|---|---|---|---|
+| 성공 (0.5 s 유지) | 100% | 100% | 100% |
+| 성공까지 median / p90 | 1.40 / 1.55 s | 1.65 / 1.90 s | 1.40 / 1.60 s |
+| 끝 goal 거리, 기울기 | 1.7 cm, 4.7° | 3.7 cm, 3.4° | 2.4 cm, 2.9° |
+| 들 때 최대 기울기 median (p90) | 6.8° (9.1) | 9.3° (11.9) | 12.0° (14.0) |
+| 끝 박스 yaw median (p90), 시작 yaw 2.9° | 0.4° (1.0) | 2.0° (4.8) | 1.5° (2.9) |
+| 판 최대 힘 L/R | 16.6 / 16.7 N | 17.5 / 17.1 N | 20.3 / 20.6 N |
+| 들 때 판 중심 − 박스 중심 dz, 좌우 판 높이 차 | 8.8 cm, 0.8 cm | 7.5 cm, 2.3 cm | 9.0 cm, 0.5 cm |
+| 판 V자 기울기 (판-면 각, 0.5 s / 0.75 s) | 28.9° / 28.6° | 14.0° / 16.4° | 24.4° / 25.7° |
+| FR3 한계 여유 median / min | 0.107 / 0.064 rad | 0.123 / 0.056 rad | 0.135 / 0.064 rad |
+| 판 외 접촉 > 1 N | 0 | 0 | 0 |
+
+- 관절 이동량(에피소드 중 시작 대비 최대 |Δq| median, 512 env):
+  - Wide-RollAlign: 양팔 대칭. j2 1.5~1.6, j4 1.0, j1 ≤ 0.6 rad.
+  - Wide: **비대칭**. 왼팔은 j2 1.40·j4 0.93으로 들지만, 오른팔은 j2 0.50만 쓰고 j1 1.06·j3 1.43·j5 1.03·j7 1.28 rad를 돌린다. 영상에서 오른팔 팔꿈치가 옆으로 눕는다. 관절 경로 합 L 5.5 / R 7.3 rad(RollAlign 6.0 / 5.8).
+- Wide는 V자 기울기가 작지만 좌우 판 높이가 2.3 cm 어긋나고 박스 yaw가 덜 맞는다. RollAlign은 판이 수평으로 맞고 빠르지만 V자가 크다(옛 Pregrasp와 비슷).
+- 실물 첫 후보: **Wide-RollAlign 2999**(대칭 동작, 한계 여유 큼). Wide 2999는 두 번째 후보.
+- 실물 시작 자세 다섯 줄(박스 x 0.419~0.477, y ±0.05)에서 노이즈 없이 500 env: 두 정책 모두 성공 100%, 한계 여유 최소 RollAlign 0.129 / Wide 0.112 rad.
+- export: `fr3_husky_etri/model/dual_fr3_boxlift_pregrasp_wide[_rollalign]_model2999.npz` (+ `_start_poses.yaml`).
+  - 실로봇 노드 launch에 `box_size_m:="[0.310, 0.410, 0.280]"`을 준다(이번에 launch 인자 추가). 기본값 [0.41, 0.31, 0.28]이면 매니페스트 검사에서 거부된다.
+- 영상: `<run>/videos/model_2999_views_ep4.mp4` (두 run 각각).
+- 배치 그림: `docs/figures/box410wide_workspace_{top,side,front}.png` ([dual_fr3_box_real_setup.md](dual_fr3_box_real_setup.md)). `draw_box_workspace.py`가 Pregrasp task면 표의 박스 범위(+ 리셋 노이즈)를 그리고 팔을 ready로 되돌리게 고쳤다.
+
+### 박스 관측 고정 (`-Wide-RollAlign-FrozenBox`, 2026-11-04)
+
+- 비전이 완전히 끊기거나 `/box_pose`를 놓은 위치로 고정 publish하면, 들기 시작한 뒤 정책이 보는 박스 pose가 실제와 달라진다. 정책은 매 step 박스 pose를 본다.
+- sim 확인: 박스 관측을 에피소드 시작 값으로 고정하고 model_2999를 평가했다(1024 env, 같은 DR).
+
+  | | 성공 | 끝 goal 거리 | 끝 기울기 / 들 때 최대 | 판 외 접촉 > 1 N |
+  |---|---|---|---|---|
+  | Wide-RollAlign 2999 | 0% | 20.2 cm | 24.8° / 29.6° | 57% |
+  | Wide 2999 | 8.1% | 21.6 cm | 56.1° / 65.6° | 57% |
+
+  - 둘 다 박스는 들지만(양 판 들기 100%) goal을 지나쳐 들고 박스가 기운다. 들기 중 박스 관측에 크게 기댄다.
+  - → 비전 없이(고정 publish) 명령 모드로 들면 안 된다(etri 실험 문서에 경고 추가).
+- 대책 task `Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FrozenBox[-Play]-v0`:
+  - policy의 `object_position`·`object_orientation`을 `object_position_at_reset`·`object_orientation_at_reset`(에피소드 첫 관측 값 유지)으로 바꾼다.
+  - `critic` 관측 그룹을 따로 두고 실제 박스 pose를 노이즈 없이 준다(asymmetric actor-critic, `obs_groups = {"actor": ["policy"], "critic": ["critic"]}`). 차원이 같아(56) Wide-RollAlign checkpoint에서 이어 학습할 수 있다.
+  - export: `export_boxlift_actor.py`가 이 항을 받아 매니페스트 `observation.box_pose = "held_at_start"`로 적는다. 실로봇 노드는 아직 이 항을 모른다(관측 항 검사에서 거부). 받으려면 `start_policy` 때 박스 pose를 잡아 두고 그 값을 계속 넣게 고쳐야 한다. 고정 publish라면 지금도 결과는 같다.
+- **학습은 중단했다 (2026-11-04).** 실물에 Azure Kinect 비전이 연동되어 있어 박스 pose를 계속 받을 수 있다. 비전이 전혀 없는 경우를 학습할 필요는 없고, 비전이 잠깐 끊기는 경우만 학습하기로 했다.
+  - 13:53에 두 run을 시작해 14:00 무렵 멈췄다. Wide-RollAlign 2999에서 이어 학습한 run은 iter 3179/3999, 처음부터 학습한 run은 101/3000까지 갔다. 평가하지 않았고 run 폴더는 삭제했다.
+  - task와 exporter 지원(`held_at_start`)은 코드에 남아 있다.
+- 대신 끊김 학습 task `Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-BoxDrop[-Play]-v0`를 추가했다. **아직 실행하지 않았다.**
+  - policy의 박스 위치·자세에 비전 지연과 끊김을 넣는다(`object_position_dropout`·`object_orientation_dropout`, 설정은 `BOX_OBS_*` 상수).
+    - 에피소드마다 0~3 step(0~150 ms) 지연.
+    - step마다 2% 확률로 0.1~1.0 s 끊김. 끊긴 동안 마지막 값을 유지한다.
+    - 에피소드의 10%는 도중(0.05~2 s)부터 끝까지 끊김.
+  - critic은 FrozenBox와 같이 실제 박스 pose를 받는다.
+  - 실로봇 노드는 지금 박스 pose가 0.30 s 넘게 안 들어오면 fault를 낸다(`box_pose_timeout_s`). 이 정책을 쓰려면 끊긴 동안 마지막 pose를 계속 넣게 고쳐야 한다.

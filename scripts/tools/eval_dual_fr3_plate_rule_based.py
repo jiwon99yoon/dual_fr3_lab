@@ -29,6 +29,11 @@ converged without touching the box; the `-Pregrasp` box task starts its episodes
 ``--roll_align`` servos the whole plate orientation from HIGH on, with the square plate's edges parallel to the box
 edges (without it the rotation about the plate normal is whatever the arm had when APPROACH started, ~18 deg).
 
+``--snap_j7`` keeps the default approach and, when a row is recorded, turns joint 7 (the plate normal axis, so the
+plate centre and normal stay put) by at most 45 deg until the plate edges are parallel to the box edges. Joint 7
+stays near the un-aligned table; ``--roll_align`` instead lands it 72 deg away (2026-11-03: the RollAlign policy
+trained from that start twisted the box 40-67 deg about z).
+
 ``--box_size X Y Z`` swaps the box (x front-back, y grip direction, z height) without touching the env cfg.
 ``--video out.mp4`` renders every env from three cameras (overview, front, side) and writes the envs one after
 another; use a few envs (``--num_envs 3``). ``--log out.npz`` saves per-step phase, plate, joint, command and force
@@ -39,6 +44,7 @@ joints over-correct every 50 ms step and the plates shake on the way down (the s
 """
 
 import argparse
+import math
 import os
 
 from isaaclab.app import AppLauncher
@@ -65,6 +71,8 @@ parser.add_argument("--fixed_roll", action="store_true", help="also servo the pl
 parser.add_argument("--roll_align", action="store_true",
                     help="servo the full plate orientation from the start, with the square plate's edges parallel to "
                          "the box edges (implies --fixed_roll)")
+parser.add_argument("--snap_j7", action="store_true",
+                    help="pre-grasp rows: turn joint 7 by <= 45 deg so the plate edges are parallel to the box edges")
 parser.add_argument("--v_pre", type=float, default=0.4)
 parser.add_argument("--w_pre", type=float, default=1.5)
 parser.add_argument("--v_app", type=float, default=0.15)
@@ -284,6 +292,7 @@ def main():
     up = torch.tensor([[0.0, 0.0, 1.0]], device=dev).repeat(n, 1)
     ey = torch.tensor([[0.0, 1.0, 0.0]], device=dev).repeat(n, 1)
     ex = torch.tensor([[1.0, 0.0, 0.0]], device=dev).repeat(n, 1)
+    edge_l7 = torch.tensor([[0.5**0.5, 0.5**0.5, 0.0]], device=dev).repeat(n, 1)  # a plate edge in link7
 
     def box_pose():
         c = T(box.data.root_pos_w) - origin
@@ -339,6 +348,7 @@ def main():
     pg_q = torch.zeros(n, T(robot.data.joint_pos).shape[1], device=dev)
     pg_box = torch.zeros(n, 7, device=dev)
     pg_err = torch.zeros(n, 2, 3, device=dev)
+    pg_twist = torch.zeros(n, 2, device=dev)  # joint-7 turn that squares the plate edges (--snap_j7)
     pg_still = torch.zeros(n, dtype=torch.long, device=dev)
     pg_touch = torch.zeros(n, device=dev)
     face =(hy + args.pregrasp_gap) if pregrasp else (hy - args.depth)
@@ -417,6 +427,15 @@ def main():
                 pg_q[rec] = T(robot.data.joint_pos)[rec]
                 pg_box[rec] = torch.cat([c, T(box.data.root_quat_w)], -1)[rec]
                 pg_err[rec] = err[rec]
+                if args.snap_j7:
+                    for k, sd in enumerate(SIGN):
+                        _, q, _ = tcp(sd)
+                        nrm, e = quat_apply(q, up), quat_apply(q, edge_l7)
+                        u = up - (up * nrm).sum(-1, keepdim=True) * nrm  # world up in the plate plane
+                        phi = torch.atan2((torch.cross(u, e, dim=-1) * nrm).sum(-1), (u * e).sum(-1))
+                        pg_twist[rec, k] = -(torch.remainder(phi + math.pi / 4, math.pi / 2) - math.pi / 4)[rec]
+                    for k, sd in enumerate(SIGN):
+                        pg_q[rec, jids[names.index(f"{sd}_fr3_joint7")]] += pg_twist[rec, k]
                 pg_touch[rec] = torch.maximum(f.amax(-1), nonplate_contact_forces(raw).sum(-1))[rec]
                 pg_done |= rec
         if go.any() and (go & (nxt == LIFT)).any():
@@ -557,6 +576,10 @@ def main():
               f" p90 {100 * pg_err[pg_done][..., 0].quantile(0.9):.1f} cm, z median {100 * pg_err[pg_done][..., 1].median():.1f}"
               f" p90 {100 * pg_err[pg_done][..., 1].quantile(0.9):.1f} cm, rot median {pg_err[pg_done][..., 2].median():.3f} rad"
               f" | min joint margin to FCI limits median {mj[ok].median():.3f}, min {mj[ok].min():.3f} rad")
+        if args.snap_j7:
+            tw = torch.rad2deg(pg_twist[ok])
+            print(f"[pregrasp]   snap_j7: joint-7 turn L median {tw[:, 0].median():+.1f} deg [{tw[:, 0].min():+.1f}, {tw[:, 0].max():+.1f}],"
+                  f" R median {tw[:, 1].median():+.1f} deg [{tw[:, 1].min():+.1f}, {tw[:, 1].max():+.1f}]")
         print(f"[pregrasp]   rejected: not stopped {(~pg_done).sum()}, residual {(pg_done & ~near).sum()}"
               f" (normal {(pg_done & ~(pg_err[..., 0].abs() < 0.03).all(-1)).sum()}, z {(pg_done & ~((pg_err[..., 1] > -0.04) & (pg_err[..., 1] < 0.01)).all(-1)).sum()},"
               f" rot {(pg_done & ~(pg_err[..., 2] < 0.15).all(-1)).sum()}), touch {(pg_done & (pg_touch >= 0.5)).sum()},"
@@ -578,7 +601,8 @@ def main():
                 residual=pg_err[ok].cpu().numpy(),  # (side L/R, [normal, z, rot]) target - plate
                 meta=np.array(str({"task": args.task, "gap": args.pregrasp_gap, "grip_dz": args.grip_dz,
                                    "box_dx": args.box_dx, "null": args.null, "lim_k": args.lim_k, "seed": args.seed,
-                                   "roll_align": args.roll_align})),
+                                   "roll_align": args.roll_align, "snap_j7": args.snap_j7,
+                                   "box_size": list(cfg.scene.object.spawn.size)})),
             )
             print(f"[pregrasp] saved {int(ok.sum())} rows -> {args.save_table}")
         env.close()

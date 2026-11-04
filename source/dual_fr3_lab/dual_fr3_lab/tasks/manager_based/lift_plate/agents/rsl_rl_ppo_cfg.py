@@ -268,3 +268,35 @@ class LiftPlateSim2Real100HzLightPregraspRollAlignPPORunnerCfg(LiftPlateSim2Real
     """Sim2Real-100Hz-Light-Pregrasp-RollAlign: Light와 같은 actor/PPO, dedicated log namespace."""
 
     experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_rollalign"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWidePPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide: Light와 같은 actor/PPO, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign: Light와 같은 actor/PPO, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignFrozenBoxPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FrozenBox: actor는 policy 그룹(박스 pose 시작 값 고정),
+    critic은 critic 그룹(실제 박스 pose)."""
+
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_frozenbox"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignBoxDropPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-BoxDrop: actor는 policy 그룹(박스 pose 지연·끊김),
+    critic은 critic 그룹(실제 박스 pose)."""
+
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_boxdrop"
