@@ -1428,3 +1428,113 @@ gym.register(
     },
     disable_env_checker=True,
 )
+
+# ready pose 시작(Wide-J1Mirror) + FaceGrip plate_face_tilt + 박스 관측 지연·끊김, 박스 yaw ±10도, goal xy 고정 범위, 처음부터
+# 로그 dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+# Wide-J1Mirror-FaceGrip-BoxDrop + 더 기운 판 기준 평행(-20) + 면 앞뒤 중앙, Wide-J1Mirror-FaceGrip-BoxDrop checkpoint에서 이어 학습
+# 로그 dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop_flatonly
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatOnly-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatOnly",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropFlatOnlyPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatOnly-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatOnly_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropFlatOnlyPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+# Wide-J1Mirror-FaceGrip-BoxDrop-FlatOnly + 판 법선 조임 16 N + 접근 중 판 기울기, Wide-J1Mirror-FaceGrip-BoxDrop checkpoint에서 이어 학습
+# 로그 dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop_flatsqueeze
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropFlatSqueezePPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropFlatSqueezePPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+# Wide-J1Mirror-FaceGrip-BoxDrop + 판 법선 최소 조임 16 N + 접근 중 판 기울기, 처음부터
+# 로그 dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop_minsqueeze
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-MinSqueeze-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_MinSqueeze",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropMinSqueezePPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-MinSqueeze-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_MinSqueeze_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropMinSqueezePPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+# Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze + 접촉 마찰(average) 0.2~0.65 + 박스 크기 ±1 cm + 들기 가속 상한 + 판-박스 미끄럼 + 박스 yaw(시작보다 멀어진 만큼) 벌점, B2 5400에서 이어 학습
+# 로그 dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop_flatsqueeze_lowmusoftlift
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropFlatSqueezeLowMuSoftLiftPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropFlatSqueezeLowMuSoftLiftPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)

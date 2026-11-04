@@ -14,6 +14,7 @@
 | 궁금한 내용 | 기준 문서 |
 |---|---|
 | Plate-EE box-lift P38 기준 sim2real, 관련 문헌, P39 이후 실험 | [`DUAL_FR3_LIFT_PLATE_SIM2REAL.md`](DUAL_FR3_LIFT_PLATE_SIM2REAL.md) |
+| box-lift 현재 학습 환경(ready 시작 FaceGrip-BoxDrop)의 sim2real 요소 요약 | [`dual_fr3_box_sim2real_summary.md`](dual_fr3_box_sim2real_summary.md) |
 | Plate reward와 P1~P38 설계·실험 이력 | [`DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md`](DUAL_FR3_LIFT_PLATE_ENV_ANALYSIS.md) |
 | Cube-v3 기준 sim2real와 실물 inference | [`DUAL_FR3_LIFT_CUBE_SIM2REAL.md`](DUAL_FR3_LIFT_CUBE_SIM2REAL.md) |
 | Cube reward/환경 설계 이력 | [`DUAL_FR3_LIFT_ENV_ANALYSIS.md`](DUAL_FR3_LIFT_ENV_ANALYSIS.md) |

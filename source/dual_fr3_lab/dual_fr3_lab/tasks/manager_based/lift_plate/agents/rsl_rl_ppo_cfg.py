@@ -415,3 +415,48 @@ class LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripSqueezeLiftLowMuFl
     """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-SqueezeLift-LowMuFlat: SqueezeLift와 같은 actor/PPO, dedicated log namespace."""
 
     experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_facegrip_squeezelift_lowmuflat"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop: actor는 policy 그룹(박스 pose 지연·끊김),
+    critic은 critic 그룹(실제 박스 pose)."""
+
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropFlatOnlyPPORunnerCfg(
+    LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropPPORunnerCfg
+):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatOnly: 같은 actor/critic 그룹, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop_flatonly"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropFlatSqueezePPORunnerCfg(
+    LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropPPORunnerCfg
+):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze: 같은 actor/critic 그룹, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop_flatsqueeze"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropMinSqueezePPORunnerCfg(
+    LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropPPORunnerCfg
+):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-MinSqueeze: 같은 actor/critic 그룹, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop_minsqueeze"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropFlatSqueezeLowMuSoftLiftPPORunnerCfg(
+    LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropPPORunnerCfg
+):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift: 같은 actor/critic 그룹, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop_flatsqueeze_lowmusoftlift"

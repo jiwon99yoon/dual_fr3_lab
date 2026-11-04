@@ -4608,3 +4608,280 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Face
         self.scene.num_envs = 50
         self.scene.env_spacing = 3.0
         self.observations.policy.enable_corruption = False
+
+
+# ---------- Box410-Wide-J1Mirror-FaceGrip-BoxDrop: ready pose에서 접근부터 FaceGrip-BoxDrop 보상으로 (2026-11-05) ----------
+# Pregrasp 계열은 판이 박스 면 4 cm 바깥에 놓인 상태만 배워서 실물에서 MoveIt 배치가 조금만 어긋나도 약하다.
+# Wide-J1Mirror(바닥 시작, 5 s)에 FaceGrip-BoxDrop-Scratch의 plate_face_tilt ramp와 박스 관측 지연·끊김(privileged critic)을 더한다.
+# Wide-J1Mirror 4999(박스 회전 제한 물리)는 들 때 판 V자 26도, 들 때 박스 기울기 최대 median 12도였다(FG-BD 2999는 5도, 5도).
+# 두 계열의 보상·패널티 커리큘럼은 이 두 항 말고 같다(params/env.yaml 비교).
+# 박스 yaw를 ±0.1에서 ±10도로 넓히고(yawtrack으로 똑바로 세운다), goal xy를 박스 위치와 따로 고정 범위에서 뽑는다(P13 이전처럼).
+WIDE_READY_YAW_RANGE = (-0.175, 0.175)  # rad, 박스 스폰 yaw (±10도)
+WIDE_READY_GOAL_X_RANGE = (0.40, 0.50)  # m, base frame goal x (Wide 박스 중심 x 0.40~0.50과 같은 범위)
+WIDE_READY_GOAL_Y_RANGE = (-0.10, 0.10)  # m, base frame goal y
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror
+):
+    """Wide-J1Mirror(ready pose 시작) + plate_face_tilt + 박스 관측 지연·끊김, 처음부터 학습.
+
+    - plate_face_tilt는 success EMA 3 뒤 FACEGRIP_RAMP_STEPS에 걸쳐 FACEGRIP_TILT_WEIGHT까지(FaceGrip-BoxDrop-Scratch와 같다).
+    - 박스 관측은 BoxDrop과 같은 지연·끊김(BOX_OBS_*), critic은 실제 박스 pose.
+    - 박스 스폰 yaw WIDE_READY_YAW_RANGE. yawtrack은 Wide-J1Mirror 기본 ramp 그대로.
+    - goal xy는 UniformPoseCommand로 WIDE_READY_GOAL_X/Y_RANGE에서 박스와 따로 뽑는다(옮기며 들기). z는 그대로.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        _add_privileged_critic(self)
+        self.observations.policy.object_position.func = object_position_dropout
+        self.observations.policy.object_orientation.func = object_orientation_dropout
+        self.rewards.plate_face_tilt = RewTerm(func=plate_face_tilt, weight=-1e-4)
+        self.curriculum.plate_face_tilt = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={"term_name": "plate_face_tilt", "weight": FACEGRIP_TILT_WEIGHT, "ramp_steps": FACEGRIP_RAMP_STEPS},
+        )
+        self.events.reset_object_position.params["pose_range"]["yaw"] = WIDE_READY_YAW_RANGE
+        self.commands.object_pose.class_type = UniformPoseCommand
+        self.commands.object_pose.ranges.pos_x = WIDE_READY_GOAL_X_RANGE
+        self.commands.object_pose.ranges.pos_y = WIDE_READY_GOAL_Y_RANGE
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop
+):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop visualization/evaluation cfg (지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatOnly(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop
+):
+    """Wide-J1Mirror-FaceGrip-BoxDrop + 더 기운 판 기준 평행, 면 앞뒤 중앙. 그 task의 checkpoint에서 이어 학습한다.
+
+    보상·커리큘럼 변경은 Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-FlatOnly와 같다(yawtrack 바로 1 포함).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.plate_face_tilt.func = plate_face_tilt_worst
+        self.rewards.plate_face_tilt.weight = FACEGRIP_TILT_WEIGHT
+        self.curriculum.plate_face_tilt.params.update(weight=FLATSQUEEZE_TILT_WEIGHT, ramp_steps=FLATSQUEEZE_RAMP_STEPS)
+        self.rewards.plate_face_offcenter = RewTerm(func=plate_face_offcenter, weight=-1e-4)
+        self.curriculum.plate_face_offcenter = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={
+                "term_name": "plate_face_offcenter",
+                "weight": FLATSQUEEZE_OFFCENTER_WEIGHT,
+                "ramp_steps": FLATSQUEEZE_RAMP_STEPS,
+            },
+        )
+        self.curriculum.yawtrack.params.update(trigger=0.0, ramp_steps=1)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatOnly_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatOnly
+):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatOnly visualization/evaluation cfg (지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatOnly
+):
+    """Wide-J1Mirror-FaceGrip-BoxDrop-FlatOnly + 판 법선 방향 조임(Pregrasp FlatSqueeze와 같은 min_squeeze) + 접근 중 판 기울기.
+
+    - plate_face_tilt_approach: A 1550은 첫 양판 접촉 때 더 기운 판 32도로 모서리부터 닿는다(plate_face_tilt는 접촉 뒤에만 걸림).
+      접촉 뒤 plate_face_tilt(FLATSQUEEZE_TILT_WEIGHT)와 같은 weight까지 -1e-4에서 올려 접촉 전후로 벌점이 이어지게 한다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.min_squeeze = RewTerm(
+            func=min_squeeze_normal_penalty, params={"force_min": FLATSQUEEZE_FORCE_N}, weight=-1e-4
+        )
+        self.curriculum.min_squeeze = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={"term_name": "min_squeeze", "weight": MINSQUEEZE_WEIGHT, "ramp_steps": FLATSQUEEZE_RAMP_STEPS},
+        )
+        self.rewards.plate_face_tilt_approach = RewTerm(func=plate_face_tilt_approach, weight=-1e-4)
+        self.curriculum.plate_face_tilt_approach = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={
+                "term_name": "plate_face_tilt_approach",
+                "weight": FLATSQUEEZE_TILT_WEIGHT,
+                "ramp_steps": FLATSQUEEZE_RAMP_STEPS,
+            },
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze
+):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze visualization/evaluation cfg (지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- Box410-Wide-J1Mirror-FaceGrip-BoxDrop-MinSqueeze: 처음부터 판 법선 조임 + 접근 판 기울기 (2026-11-05) ----------
+# Wide-J1Mirror-FaceGrip-BoxDrop 1550(256 env): 첫 양판 접촉 때 더 기운 판 32도(p90 39도)로 모서리부터 닿고 0.15 s 뒤 들기 시작한다.
+# 판 법선 힘은 들기 시작 10.6 N, 들기 +0.5 s 9 N(약한 판 p10 5.4 N), 들고 나서 1 s 동안 박스가 판 대비 0.9 cm(p90 2.1 cm) 내려간다.
+# plate_face_tilt는 양 판 접촉 뒤에만 걸려서 접근 중 기울기는 벌점이 없다. 실물은 판당 ~15 N은 조여야 든다.
+# A(Wide-J1Mirror-FaceGrip-BoxDrop)와 나란히 처음부터 학습해, 조임을 나중에 붙이는 B(-FlatSqueeze)와 비교한다.
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_MinSqueeze(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop
+):
+    """Wide-J1Mirror-FaceGrip-BoxDrop + 판 법선 최소 조임(판별 FLATSQUEEZE_FORCE_N) + 접근 중 판 기울기, 처음부터 학습.
+
+    - min_squeeze(min_squeeze_normal_penalty): success EMA 3 뒤 MINSQUEEZE_SCRATCH_RAMP_STEPS에 걸쳐 MINSQUEEZE_WEIGHT까지.
+    - plate_face_tilt_approach(양 판이 다 닿기 전, 면 APPROACH_TILT_GAP 안의 판 각도): 같은 방식으로 APPROACH_TILT_WEIGHT까지.
+    - plate_face_tilt(양 판 접촉 중)는 A 그대로라 접촉 전후로 판 각도 벌점이 이어진다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.min_squeeze = RewTerm(
+            func=min_squeeze_normal_penalty, params={"force_min": FLATSQUEEZE_FORCE_N}, weight=-1e-4
+        )
+        self.curriculum.min_squeeze = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={"term_name": "min_squeeze", "weight": MINSQUEEZE_WEIGHT, "ramp_steps": MINSQUEEZE_SCRATCH_RAMP_STEPS},
+        )
+        self.rewards.plate_face_tilt_approach = RewTerm(func=plate_face_tilt_approach, weight=-1e-4)
+        self.curriculum.plate_face_tilt_approach = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={
+                "term_name": "plate_face_tilt_approach",
+                "weight": APPROACH_TILT_WEIGHT,
+                "ramp_steps": MINSQUEEZE_SCRATCH_RAMP_STEPS,
+            },
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_MinSqueeze_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_MinSqueeze
+):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-MinSqueeze visualization/evaluation cfg (지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift: ready 시작 B2 + Pregrasp LowMuSoftLift DR·벌점 (2026-11-05) ----------
+# B2(-FlatSqueeze) 5400(256 env): 들고 있을 때 판 법선 16.8 N이지만, 첫 양판 접촉 0.15 s 뒤 들기 시작할 때 8.8/8.9 N, 더 기운 판 22도다.
+# sim 접촉 마찰(0.45~0.85)에서는 이렇게 들어도 안 미끄러진다. 실물 bag(FlatSqueeze 3998)은 바로 이 구간에서 판이 면을 따라 미끄러졌다.
+# Pregrasp LowMuSoftLift와 같은 마찰·박스 크기 DR과 box_lift_accel·plate_box_slip을 넣는다.
+# box_yaw_drift(시작 대비 yaw 변화)는 ready 시작의 박스 yaw ±10도를 yawtrack으로 돌려 세우는 것까지 벌한다 -> 시작보다 base x에서
+# 더 멀어진 만큼만 보는 box_yaw_away로 바꾼다.
+
+
+def box_yaw_away(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """박스 yaw 오차(_box_yaw_error, base x 기준)가 에피소드 시작보다 커진 만큼 [rad] (0 아래는 0).
+
+    시작 오차는 episode_length_buf <= 1인 step에 env별로 다시 적는다. 바로 세우는 쪽으로 돌리는 것은 0이다.
+    """
+    err = _box_yaw_error(env, robot_cfg, object_cfg)
+    err0 = getattr(env, "_box_yaw_err0", None)
+    if err0 is None:
+        err0 = err.clone()
+    err0 = torch.where(env.episode_length_buf <= 1, err, err0)
+    env._box_yaw_err0 = err0
+    return torch.nan_to_num((err - err0).clamp(min=0.0), nan=0.0)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze
+):
+    """Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze + 낮은 접촉 마찰·박스 크기 DR + 들기 가속 상한·판-박스 미끄럼·박스 yaw 벌점. B2 5400에서 이어 학습한다.
+
+    - 마찰·크기 DR은 Pregrasp LowMuSoftLift와 같다(박스 SOFTLIFT_BOX_*, 판 SOFTLIFT_PLATE_*, 축마다 ±BOX_SIZE_DR_M).
+    - B2가 배운 항(plate_face_tilt, plate_face_offcenter, min_squeeze, plate_face_tilt_approach)은 처음부터 최종 값으로 둔다.
+    - box_lift_accel, plate_box_slip, box_yaw_away: -1e-4에서 SOFTLIFT_RAMP_STEPS에 걸쳐 각 weight까지. 낮은 마찰에서 success EMA가
+      3 아래로 떨어지면 끝까지 안 켜질 수 있어 trigger 0으로 바로 올린다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        sx, sy, sz = self.scene.object.spawn.size
+        self.events.randomize_box_size.params["scale_range"] = {
+            "x": (1.0 - BOX_SIZE_DR_M / sx, 1.0 + BOX_SIZE_DR_M / sx),
+            "y": (1.0 - BOX_SIZE_DR_M / sy, 1.0 + BOX_SIZE_DR_M / sy),
+            "z": (1.0 - BOX_SIZE_DR_M / sz, 1.0 + BOX_SIZE_DR_M / sz),
+        }
+        self.events.randomize_box_friction.params.update(
+            static_friction_range=SOFTLIFT_BOX_FRICTION_STATIC, dynamic_friction_range=SOFTLIFT_BOX_FRICTION_DYNAMIC
+        )
+        self.events.randomize_plate_friction = EventTerm(
+            func=mdp.randomize_rigid_body_material,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=[".*_fr3_link7"]),
+                "static_friction_range": SOFTLIFT_PLATE_FRICTION_STATIC,
+                "dynamic_friction_range": SOFTLIFT_PLATE_FRICTION_DYNAMIC,
+                "restitution_range": (0.0, 0.0),
+                "num_buckets": 64,
+                "make_consistent": True,
+            },
+        )
+        self.rewards.plate_face_tilt.weight = FLATSQUEEZE_TILT_WEIGHT
+        self.rewards.plate_face_offcenter.weight = FLATSQUEEZE_OFFCENTER_WEIGHT
+        self.rewards.min_squeeze.weight = MINSQUEEZE_WEIGHT
+        self.rewards.plate_face_tilt_approach.weight = FLATSQUEEZE_TILT_WEIGHT
+        for name, func, weight in (
+            ("box_lift_accel", box_lift_accel, SOFTLIFT_ACCEL_WEIGHT),
+            ("plate_box_slip", plate_box_slip, SLIP_WEIGHT),
+            ("box_yaw_away", box_yaw_away, BOX_YAW_DRIFT_WEIGHT),
+        ):
+            setattr(self.rewards, name, RewTerm(func=func, weight=-1e-4))
+            setattr(
+                self.curriculum,
+                name,
+                CurrTerm(
+                    func=ramp_reward_weight_on_success,
+                    params={"term_name": name, "weight": weight, "trigger": 0.0, "ramp_steps": SOFTLIFT_RAMP_STEPS},
+                ),
+            )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift
+):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift visualization/evaluation cfg (DR·지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
