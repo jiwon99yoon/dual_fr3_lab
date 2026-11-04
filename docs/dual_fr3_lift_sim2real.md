@@ -890,25 +890,27 @@ Play는 같은 rate의 `-Play-v0` / `-Play-Noisy-v0`를 쓴다.
 - 측정 도구: scratchpad `yaw_probe.py`(판별 yaw, 판 회전 vs 박스 회전, 관절별 기여, PD target에서의 yaw).
 - 실로봇용 export: `fr3_husky_nn_policy/models/facegrip_boxdrop_scratch_model_2999.npz`, `facegrip_squeezelift14_model_6697.npz`(+ start poses yaml, 5698과 같은 5박스).
 
-### 더 기운 판 기준 평행 + 판 법선 조임 (`-FaceGrip-BoxDrop-FlatSqueeze`, 2026-11-05)
+### 더 기운 판 기준 평행 (+ 판 법선 조임) (`-FaceGrip-BoxDrop-FlatOnly`, `-FlatSqueeze`, 2026-11-05)
 
-FaceGrip-BoxDrop-Scratch 2999에서 이어 학습한다. 관측·행동·critic 그룹·박스 관측 지연·끊김은 그대로라 실물 노드도 그대로 쓴다.
+둘 다 FaceGrip-BoxDrop-Scratch 2999에서 이어 학습한다. 관측·행동·critic 그룹·박스 관측 지연·끊김은 그대로라 실물 노드도 그대로 쓴다.
+FlatOnly는 아래 표의 앞 두 항만, FlatSqueeze는 FlatOnly에 `min_squeeze`를 더한다. 나란히 학습해 조임 페널티가 평행·대칭에 주는 영향을 가른다.
 
 | 항 | 바꾼 것 | 최종 weight |
 |---|---|---|
 | `plate_face_tilt` | 두 판 평균 → 더 기운 판(`plate_face_tilt_worst`). 학습된 −10에서 시작 | −20 |
 | `plate_face_offcenter` (새) | 판 중심이 박스 면 중심에서 앞뒤(박스 x)로 벗어난 거리, 양 판 합, 양 판 접촉 중 | −20 /m |
-| `min_squeeze` | 합력 norm → 판 법선(TCP z) 성분(`min_squeeze_normal_penalty`), 14 → 16 N | −0.5 |
+| `min_squeeze` (FlatSqueeze만) | 합력 norm → 판 법선(TCP z) 성분(`min_squeeze_normal_penalty`), 14 → 16 N | −0.5 |
 
 - 세 항 모두 success EMA 3 뒤 100 iter에 걸쳐 올린다. 이어 학습이라 yawtrack은 FaceGrip처럼 바로 1로 둔다.
 - 높이(박스 z)는 중앙으로 끌지 않는다. 판이 박스 중심보다 위를 잡아야 박스가 판-판 축에 매달린 진자처럼 바로 선다. 중앙성을 들기 보상에 곱한 P30은 정밀 유지가 무너졌으므로 따로 둔 페널티다.
 - 2999에서 잰 값(양 판 접촉·들린 동안): 더 기운 판 0.5~0.6 s 11.8~12.2°(평균식 6.4°), 앞뒤 오차 합 ~2 cm, 판 법선 힘 9.5~13.9 N(norm과 차이 0.3 N 안쪽), 16 N 부족분 평균 8.2 N.
   - 최종 weight에서 들고 있는 동안 초당 tilt −1.5(평균식 −10이면 −0.4), offcenter −0.45, min_squeeze −4.1.
-- 확인: `train.py` 3 iter(64 env, init_fgbd_2999/model_2999.pt 로드) 정상, curriculum이 바로 ramp를 시작한다.
-- 학습 명령(이 PC, 1000 iter):
+- 확인: 두 task 모두 `train.py` 3 iter(64 env, 각 experiment의 `init_fgbd_2999/model_2999.pt` 로드) 정상, curriculum이 바로 ramp를 시작한다.
+  reward·curriculum 설정 차이는 FlatOnly vs FaceGrip-BoxDrop-Scratch가 위 표의 앞 두 항과 yawtrack, FlatSqueeze vs FlatOnly가 `min_squeeze` 하나뿐이다.
+- 학습 명령(이 PC, 각 1000 iter, `<V>`는 `FlatOnly` 또는 `FlatSqueeze`, run 이름은 `flatonly_from_fgbd2999` / `flatsqueeze_from_fgbd2999`):
 
   ```bash
-  python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-FlatSqueeze-v0 \
-      --viz none --max_iterations 1000 --run_name flatsqueeze_from_fgbd2999 \
+  python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-<V>-v0 \
+      --viz none --max_iterations 1000 --run_name <run 이름> \
       --resume --load_run init_fgbd_2999 --checkpoint model_2999.pt
   ```

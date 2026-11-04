@@ -4247,7 +4247,7 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Face
         self.observations.policy.enable_corruption = False
 
 
-# ---------- -FaceGrip-BoxDrop-FlatSqueeze: 더 기운 판 기준 평행 + 면 앞뒤 중앙 + 판 법선 방향 조임 (2026-11-05) ----------
+# ---------- -FaceGrip-BoxDrop-FlatOnly / -FlatSqueeze: 더 기운 판 기준 평행 + 면 앞뒤 중앙 (+ 판 법선 방향 조임) (2026-11-05) ----------
 # FaceGrip-BoxDrop-Scratch 2999는 판 V자가 없지만(0.5 s pitch +1도) 들어 올릴 때(0.25~1 s) 왼판만 수직축 둘레로 ~11도 돌아간다
 # (오른판 0도). 박스는 1도 안쪽으로만 돌고, 왼팔 j4·j6(들기)와 j5가 판을 돌리는데 오른팔은 같은 때 j5로 되돌린다.
 # plate_face_tilt는 두 판 평균이라 이것을 5.5도로 세고 ~1 s뿐이라 에피소드당 ~-1(총 보상 ~200)밖에 안 된다.
@@ -4338,16 +4338,17 @@ def min_squeeze_normal_penalty(
 
 
 @configclass
-class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze(
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatOnly(
     DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_Scratch
 ):
-    """FaceGrip-BoxDrop + 더 기운 판 기준 평행, 면 앞뒤 중앙, 판 법선 방향 조임. FaceGrip-BoxDrop-Scratch 2999에서 이어 학습한다.
+    """FaceGrip-BoxDrop + 더 기운 판 기준 평행, 면 앞뒤 중앙. 조임은 2999 그대로(min_squeeze 없음). FaceGrip-BoxDrop-Scratch 2999에서 이어 학습한다.
 
     - plate_face_tilt: func를 plate_face_tilt_worst로 바꾸고, weight는 학습된 FACEGRIP_TILT_WEIGHT에서 시작해 success EMA 3 뒤
       FLATSQUEEZE_RAMP_STEPS에 걸쳐 FLATSQUEEZE_TILT_WEIGHT까지 올린다.
-    - plate_face_offcenter, min_squeeze(min_squeeze_normal_penalty, 판별 FLATSQUEEZE_FORCE_N): -1e-4에서 같은 방식으로 올린다.
+    - plate_face_offcenter: -1e-4에서 같은 방식으로 FLATSQUEEZE_OFFCENTER_WEIGHT까지 올린다.
     - 이어 학습하면 env가 새로 만들어져 curriculum이 처음부터 다시 돈다. yawtrack은 FaceGrip과 같은 이유로 바로 1로 둔다.
     - 관측·행동·critic 그룹·박스 관측 지연·끊김은 그대로라 checkpoint와 실물 노드를 그대로 쓴다.
+    - FlatSqueeze(+ 판 법선 조임)와 나란히 학습해 조임 페널티가 평행·대칭에 주는 영향을 가른다.
     """
 
     def __post_init__(self):
@@ -4364,6 +4365,34 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Face
                 "ramp_steps": FLATSQUEEZE_RAMP_STEPS,
             },
         )
+        self.curriculum.yawtrack.params.update(trigger=0.0, ramp_steps=1)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatOnly_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatOnly
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-FlatOnly visualization/evaluation cfg (지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatOnly
+):
+    """FaceGrip-BoxDrop-FlatOnly + 판 법선 방향 조임. FaceGrip-BoxDrop-Scratch 2999에서 이어 학습한다.
+
+    - min_squeeze(min_squeeze_normal_penalty, 판별 FLATSQUEEZE_FORCE_N): -1e-4에서 success EMA 3 뒤 FLATSQUEEZE_RAMP_STEPS에 걸쳐
+      MINSQUEEZE_WEIGHT까지 올린다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
         self.rewards.min_squeeze = RewTerm(
             func=min_squeeze_normal_penalty, params={"force_min": FLATSQUEEZE_FORCE_N}, weight=-1e-4
         )
@@ -4371,7 +4400,6 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Face
             func=ramp_reward_weight_on_success,
             params={"term_name": "min_squeeze", "weight": MINSQUEEZE_WEIGHT, "ramp_steps": FLATSQUEEZE_RAMP_STEPS},
         )
-        self.curriculum.yawtrack.params.update(trigger=0.0, ramp_steps=1)
 
 
 @configclass
