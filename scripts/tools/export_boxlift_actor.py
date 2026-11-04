@@ -61,6 +61,9 @@ _HELD_TERM_FUNCS = {
     "object_position": "object_position_at_reset",
     "object_orientation": "object_orientation_at_reset",
 }
+# -DR tasks add a training-only joint-state latency to joint_pos. On the robot the latency is real and the node
+# computes the plain term, so the manifest records the plain name.
+_DR_TERM_FUNCS = {"joint_pos": "joint_pos_rel_delayed"}
 
 
 class _ParamsLoader(yaml.SafeLoader):
@@ -175,6 +178,7 @@ def build_manifest(env: dict, agent: dict, checkpoint: Path, env_yaml: Path, che
     policy_obs = env["observations"]["policy"]
     terms = [(name, str(term["func"]).split(":")[-1]) for name, term in policy_obs.items()
              if isinstance(term, dict) and "func" in term]
+    terms = [(name, _TERM_FUNCS[name] if func == _DR_TERM_FUNCS.get(name) else func) for name, func in terms]
     for name, func in terms:
         _require(func in (_TERM_FUNCS.get(name), _HELD_TERM_FUNCS.get(name)),
                  f"unexpected policy observation term {name} -> {func}")
@@ -262,6 +266,10 @@ def build_manifest(env: dict, agent: dict, checkpoint: Path, env_yaml: Path, che
             "clip": _pair(clip[".*"], "clip"),
             "reference_mode": str(action["reference_mode"]),
             "target_limits": [_pair(pair, "target_limits") for pair in limits],
+            # latency randomized in training (-DR tasks, DelayedReachRelativeJointPositionAction); [0, 0] = none
+            "trained_joint_state_delay_s": _pair(action.get("obs_delay_range_s", [0.0, 0.0]), "obs_delay_range_s"),
+            "trained_command_delay_s": [physics_dt * v for v in _pair(action.get("cmd_delay_steps_range", [0, 0]),
+                                                                      "cmd_delay_steps_range")],
         },
         "box": {
             "size": size,

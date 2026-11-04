@@ -61,6 +61,7 @@ from dual_fr3_lab.tasks.manager_based.lift_cube.joint_pos_env_cfg import (  # is
 )
 # Reach Sim2Real 관절 순서 계약 (left joint1~7, right joint1~7)
 from dual_fr3_lab.tasks.manager_based.reach.joint_pos_env_cfg import DUAL_ARM_JOINT_NAMES  # isort: skip
+from dual_fr3_lab.tasks.manager_based.reach.mdp.actions import DelayedReachRelativeJointPositionActionCfg  # isort: skip
 
 
 # ---------- 배치 상수 (world 기준) ----------
@@ -259,6 +260,33 @@ def plate_face_alignment(
     # 수평 factor: box_upright = 1 - z_box·z_world (0=수평). success 조건과 같은 15도(0.034)에서 0
     upright_factor = (1.0 - box_upright(env, object_cfg) / upright_std).clamp(0.0, 1.0)
     return torch.minimum(a_l, a_r) * gate * upright_factor
+
+
+def plate_face_tilt(
+    env,
+    finger1_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    finger2_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    threshold: float = 1.0,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """판 법선(TCP z축)과 담당 박스 면 법선 사이 각도(rad)의 양 판 평균. 양 판 접촉(G) 중에만 (면-면 파지 페널티).
+
+    Wide-RollAlign 2999는 들 때 판을 V자로 젖혀(중앙값 최대 ~25도, 법선이 위로) 아래 모서리로 박스를 받친다.
+    plate_face_alignment(cos, 양의 보상)는 25도에서도 0.91이라 차이가 작아 각도 자체를 쓴다.
+    V자는 양 판 법선이 함께 위로 향해서 박스를 굴려 면을 맞추는 것으로는 줄지 않는다(박스 기울기는 box_upright가 따로 본다).
+    """
+    obj = env.scene[object_cfg.name]
+    ee_frame = env.scene[ee_frame_cfg.name]
+    li, ri, y_axis_w, _, _, _, _ = _face_dists(env, object_cfg, ee_frame_cfg)
+    z_axis = torch.zeros_like(obj.data.root_pos_w.torch)
+    z_axis[:, 2] = 1.0
+    n_l = quat_apply(ee_frame.data.target_quat_w.torch[:, li], z_axis)  # 왼판은 박스 -y 방향을 봐야 한다
+    n_r = quat_apply(ee_frame.data.target_quat_w.torch[:, ri], z_axis)
+    ang_l = torch.acos((-(n_l * y_axis_w).sum(dim=-1)).clamp(-1.0, 1.0))
+    ang_r = torch.acos(((n_r * y_axis_w).sum(dim=-1)).clamp(-1.0, 1.0))
+    gate = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
+    return 0.5 * (ang_l + ang_r) * gate
 
 
 def plates_pair_misalignment(
@@ -1050,7 +1078,9 @@ class DualFR3PlateBoxLiftEnvCfg(LiftEnvCfg):
                     # object_position obs 오염 -> value loss inf -> 정책 NaN(std<0) 크래시.
                     # 물리적으로 정상 범위(들기 ~1m/s)만 허용하는 상한 - 정상 학습엔 무영향
                     max_linear_velocity=10.0,
-                    max_angular_velocity=30.0,
+                    # 단위는 deg/s (m/s 아님). 2026-11-04까지 30(=0.52 rad/s)이라 박스가 판 사이에서 거의 못 돌았고,
+                    # 외란 토크도 사실상 무효였다. 1000 deg/s(17 rad/s, lift_cube와 같음)는 상한 역할만 한다.
+                    max_angular_velocity=1000.0,
                 ),
                 # density 지정 -> scale DR 후 부피에 비례해 질량이 정해짐
                 mass_props=sim_utils.MassPropertiesCfg(density=BOX_DENSITY),
@@ -1501,6 +1531,50 @@ def ramp_yawtrack_on_success(
         return 0.0
     env._yawtrack_scale = max(scale, min(1.0, (cur - start) / ramp_steps))
     return env._yawtrack_scale
+
+
+def ramp_event_params_by_steps(env, env_ids, term_name: str, start: dict, end: dict, ramp_steps: int):
+    """첫 호출부터 ramp_steps env-step에 걸쳐 event term_name의 params를 start에서 end로 선형으로 바꾼다.
+
+    반환값(Curriculum/<curriculum 이름>)은 end의 첫 항목의 현재 값이다.
+    """
+    t0 = env.__dict__.setdefault("_event_ramp_start", {}).setdefault(term_name, env.common_step_counter)
+    frac = min(1.0, (env.common_step_counter - t0) / ramp_steps)
+    cfg = env.event_manager.get_term_cfg(term_name)
+    for k in end:
+        cfg.params[k] = start[k] + (end[k] - start[k]) * frac
+    env.event_manager.set_term_cfg(term_name, cfg)
+    return cfg.params[next(iter(end))]
+
+
+def ramp_reward_weight_on_success(
+    env, env_ids, term_name: str, weight: float, success_term: str = "success", trigger: float = 3.0, ramp_steps: int = 4800
+):
+    """success EMA가 처음 trigger에 닿은 뒤 ramp_steps env-step에 걸쳐 term_name의 weight를 cfg 값에서 weight로 선형으로 올린다.
+
+    ramp_yawtrack_on_success와 같은 방식(발동은 success, 속도는 step 수). 반환값은 Curriculum/<curriculum 이름>에 기록된다.
+    """
+    term_cfg = env.reward_manager.get_term_cfg(term_name)
+    st = env.__dict__.setdefault("_reward_ramp", {}).setdefault(term_name, {"w0": term_cfg.weight, "start": None})
+    if term_cfg.weight == weight:
+        return weight
+    cur = env.common_step_counter
+    if st["start"] is None:
+        if not hasattr(env, "_lift_curriculum_ema"):
+            env._lift_curriculum_ema = {}
+        success_level = env.reward_manager._episode_sums[success_term][env_ids].mean().item()
+        alpha = min(0.5, 3.0 * len(env_ids) / env.num_envs)
+        key = f"_ramp_{term_name}_succ"
+        ema = env._lift_curriculum_ema.get(key, 0.0)
+        ema = ema + alpha * (success_level - ema)
+        env._lift_curriculum_ema[key] = ema
+        if ema < trigger:
+            return term_cfg.weight
+        st["start"] = cur
+    scale = min(1.0, (cur - st["start"]) / ramp_steps)
+    term_cfg.weight = st["w0"] + (weight - st["w0"]) * scale
+    env.reward_manager.set_term_cfg(term_name, term_cfg)
+    return term_cfg.weight
 
 
 def plate_height_symmetry(
@@ -2930,7 +3004,8 @@ def reset_from_pregrasp_table(
     """
     robot = env.scene[robot_cfg.name]
     obj = env.scene[object_cfg.name]
-    table = getattr(env, "_pregrasp_table", None)
+    tables = env.__dict__.setdefault("_start_tables", {})
+    table = tables.get(table_path)
     if table is None:
         data = np.load(table_path)
         names = [str(x) for x in data["joint_names"]]
@@ -2939,7 +3014,7 @@ def reset_from_pregrasp_table(
             "q": torch.tensor(data["joint_pos"][:, order], dtype=torch.float32, device=env.device),
             "box": torch.tensor(data["box_pose"], dtype=torch.float32, device=env.device),
         }
-        env._pregrasp_table = table
+        tables[table_path] = table
     if env_ids is None or isinstance(env_ids, slice):
         env_ids = torch.arange(env.num_envs, device=env.device)
     n = len(env_ids)
@@ -2955,6 +3030,8 @@ def reset_from_pregrasp_table(
 
     box = table["box"][k]
     pos = box[:, :3] + env.scene.env_origins[env_ids]
+    # 표는 기준 크기 박스의 바닥 안착 높이다. 크기 DR(-DR)이면 env마다 반높이 차이만큼 올리거나 내린다.
+    pos[:, 2] += _box_halves(env, object_cfg)[1][env_ids] - env.cfg.scene.object.spawn.size[2] / 2.0
     pos[:, :2] += (2 * torch.rand(n, 2, device=env.device) - 1) * box_pos_noise
     yaw = (2 * torch.rand(n, device=env.device) - 1) * box_yaw_noise
     z = torch.zeros(n, 3, device=env.device)
@@ -3173,6 +3250,493 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_BoxD
     DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_BoxDrop
 ):
     """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-BoxDrop visualization/evaluation cfg (지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# -FaceGrip: 판 면과 박스 면 사이 각도 페널티. Wide-RollAlign 2999에서 이어 학습한다.
+FACEGRIP_TILT_WEIGHT = -10.0  # rad당 초당 페널티. 25도(0.44 rad)면 -4.4/s, 이 run 총 보상은 ~52/s
+FACEGRIP_RAMP_STEPS = 4800  # 200 iter(24 step/iter)에 걸쳐 0 -> FACEGRIP_TILT_WEIGHT
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign
+):
+    """Wide-RollAlign + plate_face_tilt 페널티(판-박스 면 각도, 양 판 접촉 중). 판 V자 기울기를 줄여 면으로 잡게 한다.
+
+    - 페널티는 success EMA가 3을 넘은 뒤 FACEGRIP_RAMP_STEPS에 걸쳐 FACEGRIP_TILT_WEIGHT까지 올린다.
+    - Wide-RollAlign 2999에서 이어 학습하는 용도라 yawtrack은 바로 1로 둔다. 이어 학습하면 env가 새로 만들어져 curriculum이
+      처음부터 다시 돌고, yawtrack은 기본 3000 iter ramp라 그대로 두면 2999(0.955)와 success 보상이 달라진다.
+    - 관측·행동·나머지 보상은 Wide-RollAlign 그대로라 checkpoint를 그대로 읽는다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.plate_face_tilt = RewTerm(func=plate_face_tilt, weight=-1e-4)
+        self.curriculum.plate_face_tilt = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={"term_name": "plate_face_tilt", "weight": FACEGRIP_TILT_WEIGHT, "ramp_steps": FACEGRIP_RAMP_STEPS},
+        )
+        self.curriculum.yawtrack.params.update(trigger=0.0, ramp_steps=1)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# -Disturb: 박스 외란을 질량 비례 기본값(±0.625 N, ±0.125 Nm)에서 키운다. Wide-RollAlign 2999에서 이어 학습한다.
+DISTURB_BIG_FORCE = 2.5  # N, 각 축 ±. 박스 무게(0.4~0.6 kg, 4~6 N)의 절반쯤
+DISTURB_BIG_TORQUE = 0.3  # Nm, 각 축 ±
+DISTURB_BIG_RAMP_STEPS = 7200  # 300 iter(24 step/iter)에 걸쳐 기본값 -> 위 값
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Disturb(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign
+):
+    """Wide-RollAlign + 박스 외란 확대. 더 단단히 조이고 미끄러짐을 바로잡게 해서 덜 놓치게 한다.
+
+    - 세기만 DISTURB_BIG_RAMP_STEPS에 걸쳐 DISTURB_BIG_FORCE/TORQUE까지 올린다. 방향·주기(0.4~0.8 s)와
+      success 기반 on/off(ramp_disturbance_on_success)는 그대로다.
+    - 너무 크면 박스가 goal에서 계속 흔들려 success가 무너진다(P23: 4 kg 박스에 ±10 N).
+    - Wide-RollAlign 2999에서 이어 학습하는 용도라 yawtrack은 바로 1로 둔다(FaceGrip과 같은 이유).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        p = self.events.disturb_box.params
+        self.curriculum.disturb_strength = CurrTerm(
+            func=ramp_event_params_by_steps,
+            params={
+                "term_name": "disturb_box",
+                "start": {"force": p["force"], "torque": p["torque"]},
+                "end": {"force": DISTURB_BIG_FORCE, "torque": DISTURB_BIG_TORQUE},
+                "ramp_steps": DISTURB_BIG_RAMP_STEPS,
+            },
+        )
+        self.curriculum.yawtrack.params.update(trigger=0.0, ramp_steps=1)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Disturb_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Disturb
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-Disturb visualization/evaluation cfg (외란은 처음부터 최대)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+        self.events.disturb_box.params.update(force=DISTURB_BIG_FORCE, torque=DISTURB_BIG_TORQUE)
+        self.curriculum.disturb_strength = None
+
+
+# ---------- Regrasp: 놓친 박스를 다시 잡기 (2026-11-04) ----------
+# Wide-RollAlign 2999는 박스를 놓치면 다시 잡지 않는다(scripts/tools/box_slip_probe.py: 1.5 s에 마찰 0으로 0.3 s
+# 미끄러뜨리면 100% 바닥까지 떨어지고, 박스는 서서 7 cm 밀려 착지, 남은 6.5 s 동안 다시 든 env 0%). 보상은 이미 다시
+# 잡기를 막지 않는다(낙하 종료 없음, success는 매 step, reaching은 항상 켜짐). 놓친 경험과 다시 잡을 시간이 없었다.
+# - 미끄러짐: 들고 있는 동안 박스와 양 판의 마찰을 잠깐 낮춘다. MuJoCo에서 본, 판 사이로 미끄러져 내려가는 낙하에 가깝다.
+# - 놓친 직후 상태에서 시작: 2999로 미끄러뜨려 박스가 바닥에 멈춘 뒤의 (로봇 관절, 박스 pose) 표.
+# - 에피소드 8 s.
+REGRASP_EPISODE_S = 8.0
+BOX_SLIP_PROB = 0.5  # 에피소드당 미끄러짐을 한 번 예약할 확률
+BOX_SLIP_T = (1.0, 4.0)  # s, 에피소드 시작부터. 이 시각 뒤 처음 양 판으로 들고 있을 때 일으킨다
+BOX_SLIP_DUR = (0.05, 0.4)  # s. 0.1 s 이하면 판이 다시 잡을 수 있고, 0.3 s면 바닥까지 떨어진다(probe 0.35 s)
+BOX_SLIP_MU = 0.02  # 미끄러지는 동안 박스·판 정/동 마찰 계수 (PhysX 기본 average 결합)
+REGRASP_DROP_STATE_PROB = 0.3  # reset 중 놓친 직후 상태 표에서 시작할 비율
+REGRASP_DROP_TABLE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(PREGRASP_TABLE_PATH)), "regrasp", "plate_box410wide_dropstates_wra2999.npz"
+)
+
+
+class box_slip(ManagerTermBase):
+    """interval(매 policy step, global): 에피소드마다 prob로 미끄러짐 한 번을 예약하고, t_range 시각 뒤 처음 양 판으로
+    박스를 들고 있을 때 박스와 양 판(fr3_link7 shape)의 마찰을 mu로 낮췄다가 dur_range 뒤 되돌린다.
+
+    마찰은 PhysX tensor API(root_view.set_material_properties, CPU)로 바꾼다. 원래 값은 첫 호출 때(startup 마찰 DR 뒤) 저장한다.
+    reset되는 env가 미끄러지는 중이면 마찰을 되돌리고 다시 예약한다.
+    """
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        n, dev = env.num_envs, env.device
+        self._robot = env.scene[cfg.params.get("robot_cfg", SceneEntityCfg("robot")).name]
+        self._box = env.scene[cfg.params.get("object_cfg", SceneEntityCfg("object")).name]
+        self._t_slip = torch.full((n,), float("inf"), device=dev)
+        self._dur = torch.zeros(n, device=dev)
+        self._end_t = torch.full((n,), float("inf"), device=dev)
+        self._active = torch.zeros(n, dtype=torch.bool, device=dev)
+        self._done = torch.zeros(n, dtype=torch.bool, device=dev)
+        self._box_mat0 = None
+        self.count = 0  # 일으킨 미끄러짐 수 (확인용)
+        self._schedule(torch.arange(n, device=dev))
+
+    def _schedule(self, ids):
+        p = self.cfg.params
+        k = len(ids)
+        on = torch.rand(k, device=ids.device) < p["prob"]
+        lo, hi = p["t_range"]
+        t = lo + (hi - lo) * torch.rand(k, device=ids.device)
+        self._t_slip[ids] = torch.where(on, t, torch.full_like(t, float("inf")))
+        lo, hi = p["dur_range"]
+        self._dur[ids] = lo + (hi - lo) * torch.rand(k, device=ids.device)
+        self._done[ids] = False
+
+    def _set(self, ids, low: bool):
+        if self._box_mat0 is None:
+            self._box_mat0 = wp.to_torch(self._box.root_view.get_material_properties()).clone()
+            self._rob_mat0 = wp.to_torch(self._robot.root_view.get_material_properties()).clone()
+            view = self._robot._physics_sim_view
+            cols, start = [], 0
+            for path in self._robot.root_view.link_paths[0]:
+                k = view.create_rigid_body_view(path).max_shapes
+                if path.endswith("fr3_link7"):
+                    cols += list(range(start, start + k))
+                start += k
+            self._plate_cols = cols
+            self._box_mat = self._box_mat0.clone()
+            self._rob_mat = self._rob_mat0.clone()
+        idx = ids.cpu()
+        mu = self.cfg.params["mu"]
+        if low:
+            self._box_mat[idx, :, 0:2] = mu
+            self._rob_mat[idx[:, None], torch.tensor(self._plate_cols)[None, :], 0:2] = mu
+        else:
+            self._box_mat[idx] = self._box_mat0[idx]
+            self._rob_mat[idx] = self._rob_mat0[idx]
+        wi = wp.from_torch(idx.to(torch.int32), dtype=wp.int32)
+        self._box.root_view.set_material_properties(wp.from_torch(self._box_mat.contiguous(), dtype=wp.float32), wi)
+        self._robot.root_view.set_material_properties(wp.from_torch(self._rob_mat.contiguous(), dtype=wp.float32), wi)
+
+    def reset(self, env_ids=None):
+        if env_ids is None or isinstance(env_ids, slice):
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        env_ids = torch.as_tensor(env_ids, device=self.device)
+        back = env_ids[self._active[env_ids]]
+        if len(back):
+            self._set(back, low=False)
+            self._active[back] = False
+        self._end_t[env_ids] = float("inf")
+        self._schedule(env_ids)
+        return {}
+
+    def __call__(
+        self,
+        env,
+        env_ids,
+        prob: float,
+        t_range: tuple,
+        dur_range: tuple,
+        mu: float,
+        lift_delta: float = 0.05,
+        finger1_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+        finger2_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+        threshold: float = 1.0,
+        robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ):
+        t = env.episode_length_buf.float() * env.step_dt
+        stop = self._active & (t >= self._end_t)
+        if stop.any():
+            ids = stop.nonzero().squeeze(-1)
+            self._set(ids, low=False)
+            self._active[ids] = False
+        due = ~self._done & (t >= self._t_slip)
+        if due.any():
+            lifted = _lifted_perenv(env, lift_delta, object_cfg).bool()
+            grasped = mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold).bool()
+            go = due & lifted & grasped
+            if go.any():
+                ids = go.nonzero().squeeze(-1)
+                self._set(ids, low=True)
+                self._active[ids] = True
+                self._done[ids] = True
+                self._end_t[ids] = t[ids] + self._dur[ids]
+                self.count += len(ids)
+
+
+def reset_from_drop_states(
+    env,
+    env_ids,
+    prob: float,
+    table_path: str,
+    box_pos_noise: float,
+    box_yaw_noise: float,
+    joint_noise: float,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+):
+    """reset: env_ids 중 prob 비율을 놓친 직후 상태 표(로봇 관절 + 바닥의 박스 pose, env frame)에서 시작시킨다.
+
+    표 형식은 Pregrasp 표와 같아 reset_from_pregrasp_table로 쓴다. reset_from_pregrasp 뒤에 와야 한다(덮어쓴다).
+    goal(x, y)은 command reset이 이벤트 뒤에 박스 위치로 다시 잡는다.
+    """
+    if env_ids is None or isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    sel = env_ids[torch.rand(len(env_ids), device=env.device) < prob]
+    if len(sel):
+        reset_from_pregrasp_table(env, sel, table_path, box_pos_noise, box_yaw_noise, joint_noise, robot_cfg, object_cfg)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Regrasp(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign
+):
+    """Wide-RollAlign + 놓친 박스 다시 잡기: 미끄러짐 이벤트(box_slip), 놓친 직후 상태에서 시작(30%), 에피소드 8 s.
+
+    - 보상·관측·행동·외란은 Wide-RollAlign 그대로다(외란 확대는 -Disturb에서 따로 본다).
+    - goal 재샘플을 에피소드보다 길게 둔다(기본 5 s라 8 s 에피소드면 중간에 goal이 바뀐다).
+    - Wide-RollAlign 2999에서 이어 학습하는 용도라 yawtrack은 바로 1로 둔다(FaceGrip과 같은 이유).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = REGRASP_EPISODE_S
+        self.commands.object_pose.resampling_time_range = (REGRASP_EPISODE_S + 1.0, REGRASP_EPISODE_S + 1.0)
+        self.events.reset_from_drop_states = EventTerm(
+            func=reset_from_drop_states,
+            mode="reset",
+            params={
+                "prob": REGRASP_DROP_STATE_PROB,
+                "table_path": REGRASP_DROP_TABLE_PATH,
+                "box_pos_noise": PREGRASP_BOX_POS_NOISE,
+                "box_yaw_noise": PREGRASP_BOX_YAW_NOISE,
+                "joint_noise": PREGRASP_JOINT_NOISE,
+            },
+        )
+        self.events.box_slip = EventTerm(
+            func=box_slip,
+            mode="interval",
+            interval_range_s=(0.0, 0.0),
+            is_global_time=True,
+            params={"prob": BOX_SLIP_PROB, "t_range": BOX_SLIP_T, "dur_range": BOX_SLIP_DUR, "mu": BOX_SLIP_MU},
+        )
+        self.curriculum.yawtrack.params.update(trigger=0.0, ramp_steps=1)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Regrasp_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Regrasp
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-Regrasp visualization/evaluation cfg (미끄러짐·놓친 상태 시작은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- DR 확장: 박스 크기, 판 마찰, 관절 상태·명령 지연 (2026-11-04) ----------
+BOX_SIZE_DR_M = 0.01  # m, 축마다 ± (실물 치수 오차)
+PLATE_FRICTION_STATIC = (0.6, 1.2)  # 고무 패드. PhysX average 결합이라 박스(0.4~1.2)와 평균한 값이 접촉 마찰이다
+PLATE_FRICTION_DYNAMIC = (0.5, 1.0)
+JOINT_STATE_DELAY_S = (0.0, 0.02)  # joint_states 나이 (추정치, 실측 전)
+COMMAND_DELAY_STEPS = (0, 3)  # 물리 step(10 ms) 단위 명령 전달 지연, 0~30 ms (추정치, 실측 전)
+
+
+def joint_pos_rel_delayed(
+    env,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    action_name: str = "arm_action",
+) -> torch.Tensor:
+    """joint_pos_rel에 action term(DelayedReachRelativeJointPositionAction)의 env별 관절 상태 지연을 1차 근사로 넣은 값.
+
+    q(t - d) = q(t) - qd(t) * d. 정책이 보는 q와 목표 기준 q가 같은 지연을 갖는다(실물 노드와 같음).
+    """
+    asset = env.scene[asset_cfg.name]
+    term = env.action_manager.get_term(action_name)
+    q = asset.data.joint_pos.torch[:, asset_cfg.joint_ids] - asset.data.default_joint_pos.torch[:, asset_cfg.joint_ids]
+    qd = asset.data.joint_vel.torch[:, asset_cfg.joint_ids]
+    return q - qd * term.obs_delay.unsqueeze(-1)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_DR(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign
+):
+    """Wide-RollAlign + 실물 차이 DR: 박스 크기 ±1 cm, 판(고무 패드) 마찰, 관절 상태 지연 0~20 ms, 명령 지연 0~30 ms.
+
+    - 박스 크기: 축마다 ±BOX_SIZE_DR_M(배율). 시작 자세 표는 기준 크기 그대로라 판-면 간격이 4 cm ± 크기 차/2가 된다
+      (MoveIt으로 표 자세에 보낸 뒤 실물 박스가 조금 다른 상황). 리셋 높이는 env별 반높이로 맞춘다.
+    - 판 마찰: fr3_link7 shape(판)에 startup 마찰 DR.
+    - 지연: action term이 env마다 관절 상태 나이와 명령 지연을 뽑는다(DelayedReachRelativeJointPositionAction).
+      joint_pos 관측과 목표 기준 q가 같은 지연을 갖는다. 비전 지연은 -BoxDrop에서 따로 본다.
+    - 그 밖의 보상·관측·외란은 Wide-RollAlign 그대로. 2999에서 이어 학습하는 용도라 yawtrack은 바로 1.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        sx, sy, sz = self.scene.object.spawn.size
+        self.events.randomize_box_size.params["scale_range"] = {
+            "x": (1.0 - BOX_SIZE_DR_M / sx, 1.0 + BOX_SIZE_DR_M / sx),
+            "y": (1.0 - BOX_SIZE_DR_M / sy, 1.0 + BOX_SIZE_DR_M / sy),
+            "z": (1.0 - BOX_SIZE_DR_M / sz, 1.0 + BOX_SIZE_DR_M / sz),
+        }
+        self.events.randomize_plate_friction = EventTerm(
+            func=mdp.randomize_rigid_body_material,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=[".*_fr3_link7"]),
+                "static_friction_range": PLATE_FRICTION_STATIC,
+                "dynamic_friction_range": PLATE_FRICTION_DYNAMIC,
+                "restitution_range": (0.0, 0.0),
+                "num_buckets": 64,
+                "make_consistent": True,
+            },
+        )
+        arm = self.actions.arm_action
+        self.actions.arm_action = DelayedReachRelativeJointPositionActionCfg(
+            asset_name=arm.asset_name,
+            joint_names=arm.joint_names,
+            preserve_order=arm.preserve_order,
+            scale=arm.scale,
+            clip=arm.clip,
+            reference_mode="policy_step",
+            target_limits=arm.target_limits,
+            obs_delay_range_s=JOINT_STATE_DELAY_S,
+            cmd_delay_steps_range=COMMAND_DELAY_STEPS,
+        )
+        self.observations.policy.joint_pos.func = joint_pos_rel_delayed
+        self.curriculum.yawtrack.params.update(trigger=0.0, ramp_steps=1)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_DR_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_DR
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-DR visualization/evaluation cfg (DR은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# -MinSqueeze: 최소 조임 페널티. FaceGrip 4699(실로봇에서 조임이 빠듯했던 정책)에서 이어 학습한다.
+# 4699는 들고 있을 때 판 접촉력 ~11 N이고, 이때 관절 1·3의 PD 오차가 0.064~0.072 rad(행동 한계 0.1의 64~72%,
+# 5~5.6 Nm / PD 상한 8 Nm)라 지금 자세로는 ~15 N이 sim 상한이다. 운반 중 보정 여유를 남겨 14 N으로 둔다.
+MINSQUEEZE_FORCE_N = 14.0
+MINSQUEEZE_WEIGHT = -0.5  # 모자란 N(양 판 합)당 초당 페널티. 4699 기준 ~6 N 부족 -> -3/s, 총 보상은 ~52/s
+MINSQUEEZE_RAMP_STEPS = 2400  # 100 iter(24 step/iter)에 걸쳐 0 -> MINSQUEEZE_WEIGHT
+MINSQUEEZE_LIFT_HEIGHT = 0.02  # 박스 중심이 안착 높이보다 이만큼 뜨면 들린 것으로 본다
+
+
+def min_squeeze_penalty(
+    env,
+    force_min: float,
+    lift_height: float = MINSQUEEZE_LIFT_HEIGHT,
+    contact_threshold: float = 1.0,
+    left_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    right_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """최소 조임 페널티: 판별 접촉력이 force_min(N)에 모자란 만큼의 합 [N]. excessive_squeeze_penalty의 반대쪽.
+
+    양 판이 닿아 있거나(들기 전 미리 조이기) 박스가 들려 있을 때만 준다. 들린 채 한 판이 떨어지면 그 판은
+    force_min 전체가 부족분이 된다. 힘은 excessive_squeeze_penalty와 같은 합력 norm(들고 있을 때 법선과 거의 같음).
+    """
+    forces = []
+    for cfg in (left_sensor_cfg, right_sensor_cfg):
+        sensor = env.scene.sensors[cfg.name]
+        forces.append(torch.norm(sensor.data.force_matrix_w.torch, dim=-1).amax(dim=(-1, -2)))
+    f = torch.nan_to_num(torch.stack(forces, dim=-1), nan=0.0, posinf=0.0)
+    gate = (f > contact_threshold).all(dim=-1).float().maximum(_lifted_perenv(env, lift_height, object_cfg))
+    return (force_min - f).clamp(min=0.0, max=force_min).sum(dim=-1) * gate
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_MinSqueeze(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip
+):
+    """FaceGrip + min_squeeze 페널티(판별 접촉력 MINSQUEEZE_FORCE_N 미만이면 부족분). 실물 조임 여유를 늘린다.
+
+    - 페널티는 success EMA가 3을 넘은 뒤 MINSQUEEZE_RAMP_STEPS에 걸쳐 MINSQUEEZE_WEIGHT까지 올린다.
+    - FaceGrip 4699에서 이어 학습하는 용도라 plate_face_tilt는 바로 FACEGRIP_TILT_WEIGHT로 둔다.
+    - excessive_squeeze(100 N 초과분)는 그대로. 관측·행동은 FaceGrip 그대로라 checkpoint를 그대로 읽는다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.min_squeeze = RewTerm(
+            func=min_squeeze_penalty, params={"force_min": MINSQUEEZE_FORCE_N}, weight=-1e-4
+        )
+        self.curriculum.min_squeeze = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={"term_name": "min_squeeze", "weight": MINSQUEEZE_WEIGHT, "ramp_steps": MINSQUEEZE_RAMP_STEPS},
+        )
+        self.curriculum.plate_face_tilt.params.update(ramp_steps=1)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_MinSqueeze_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_MinSqueeze
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-MinSqueeze visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# -FaceGrip-MinSqueeze-Scratch: FaceGrip-MinSqueeze와 같은 보상을 처음부터 학습한다(이어 학습 없음).
+# 4699 계보(Wide-RollAlign 2999 -> FaceGrip 3700 -> 4699)는 2999와 3700이 박스 회전 제한(30 deg/s) 물리에서 배웠다.
+# 고친 물리에서 판 면 파지·최소 조임을 처음부터 넣어, 그 물리에서 생긴 V자 받침 습관 없이 잡는 법을 찾게 한다.
+MINSQUEEZE_SCRATCH_RAMP_STEPS = 7200  # 300 iter. 처음부터면 성공 직후라 FaceGrip ramp(200 iter)보다 천천히 올린다
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_MinSqueeze_Scratch(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign
+):
+    """Wide-RollAlign + plate_face_tilt + min_squeeze, 처음부터 학습. 보상은 FaceGrip-MinSqueeze와 같다.
+
+    - FaceGrip·MinSqueeze의 이어 학습용 설정(yawtrack·plate_face_tilt 즉시 최대)은 쓰지 않는다. yawtrack은
+      Wide-RollAlign 기본 ramp(success EMA 1.5 이후 3000 iter), 두 페널티는 success EMA 3 이후에 ramp로 올린다.
+    - plate_face_tilt: FACEGRIP_RAMP_STEPS에 걸쳐 FACEGRIP_TILT_WEIGHT까지.
+    - min_squeeze: MINSQUEEZE_SCRATCH_RAMP_STEPS에 걸쳐 MINSQUEEZE_WEIGHT까지(판별 MINSQUEEZE_FORCE_N).
+    - 관측·행동·나머지 보상과 시작 자세 표는 Wide-RollAlign 그대로라 실물 노드·시작 자세 후보를 그대로 쓴다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.plate_face_tilt = RewTerm(func=plate_face_tilt, weight=-1e-4)
+        self.curriculum.plate_face_tilt = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={"term_name": "plate_face_tilt", "weight": FACEGRIP_TILT_WEIGHT, "ramp_steps": FACEGRIP_RAMP_STEPS},
+        )
+        self.rewards.min_squeeze = RewTerm(
+            func=min_squeeze_penalty, params={"force_min": MINSQUEEZE_FORCE_N}, weight=-1e-4
+        )
+        self.curriculum.min_squeeze = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={"term_name": "min_squeeze", "weight": MINSQUEEZE_WEIGHT, "ramp_steps": MINSQUEEZE_SCRATCH_RAMP_STEPS},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_MinSqueeze_Scratch_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_MinSqueeze_Scratch
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-MinSqueeze-Scratch visualization/evaluation cfg."""
 
     def __post_init__(self):
         super().__post_init__()

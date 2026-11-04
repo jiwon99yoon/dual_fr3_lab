@@ -55,6 +55,8 @@ cfg에 고정되어 있으므로 train/play에 플래그를 줄 필요가 없다
 - box는 정책 주기가 바뀌어 P47 보상 튜닝이 20 Hz에서도 통하는지 학습으로 확인해야 한다.
 - 모든 v3/P47 checkpoint와 호환되지 않는다. from-scratch 학습만 가능하다.
 - actor가 tanh 분포라 rsl_rl 진입점만 등록했다(skrl/rl_games/sb3 cfg는 무제한 Gaussian용).
+- **box는 2026-11-04 전까지 박스가 30°/s보다 빨리 못 도는 물리였다**(`max_angular_velocity=30`, 단위 deg/s).
+  그 전 box 정책과 평가는 모두 이 제한 아래에서 나왔다. 아래 "박스 회전 제한 버그" 절.
 
 ## 배포 측 남은 작업 (`fr3_husky_etri`)
 
@@ -565,6 +567,8 @@ Play는 같은 rate의 `-Play-v0` / `-Play-Noisy-v0`를 쓴다.
   - Wide: **비대칭**. 왼팔은 j2 1.40·j4 0.93으로 들지만, 오른팔은 j2 0.50만 쓰고 j1 1.06·j3 1.43·j5 1.03·j7 1.28 rad를 돌린다. 영상에서 오른팔 팔꿈치가 옆으로 눕는다. 관절 경로 합 L 5.5 / R 7.3 rad(RollAlign 6.0 / 5.8).
 - Wide는 V자 기울기가 작지만 좌우 판 높이가 2.3 cm 어긋나고 박스 yaw가 덜 맞는다. RollAlign은 판이 수평으로 맞고 빠르지만 V자가 크다(옛 Pregrasp와 비슷).
 - 실물 첫 후보: **Wide-RollAlign 2999**(대칭 동작, 한계 여유 큼). Wide 2999는 두 번째 후보.
+  - **(2026-11-04 정정)** 위 표는 박스 회전 제한(30°/s) 물리 결과다. 고친 물리에서 Wide-RollAlign 2999는 성공 79%,
+    들 때 박스 기울기 p90 42°라 실물 후보에서 뺐다. 후속 후보는 FaceGrip 4699("FaceGrip 4699" 절).
 - 실물 시작 자세 다섯 줄(박스 x 0.419~0.477, y ±0.05)에서 노이즈 없이 500 env: 두 정책 모두 성공 100%, 한계 여유 최소 RollAlign 0.129 / Wide 0.112 rad.
 - export: `fr3_husky_etri/model/dual_fr3_boxlift_pregrasp_wide[_rollalign]_model2999.npz` (+ `_start_poses.yaml`).
   - 실로봇 노드 launch에 `box_size_m:="[0.310, 0.410, 0.280]"`을 준다(이번에 launch 인자 추가). 기본값 [0.41, 0.31, 0.28]이면 매니페스트 검사에서 거부된다.
@@ -597,3 +601,189 @@ Play는 같은 rate의 `-Play-v0` / `-Play-Noisy-v0`를 쓴다.
     - 에피소드의 10%는 도중(0.05~2 s)부터 끝까지 끊김.
   - critic은 FrozenBox와 같이 실제 박스 pose를 받는다.
   - 실로봇 노드는 지금 박스 pose가 0.30 s 넘게 안 들어오면 fault를 낸다(`box_pose_timeout_s`). 이 정책을 쓰려면 끊긴 동안 마지막 pose를 계속 넣게 고쳐야 한다.
+  - 확인(2026-11-04): 5 iter 처음부터, 2999에서 이어 3 iter 둘 다 정상. PLAY env 256개 × 240 step에서 끊긴 step 23.6%, 끊긴 동안 값 유지 14487/14487, 지연 0·끊김 없음이면 실제 pose와 같음 12435/12435, 끊김 길이 중앙값 10 step(최대 30, 연달아 끊기면 이어짐), 끝까지 끊김 11.7%.
+  - 4090에서 2999로부터 이어 1000 iter 학습 예정. 이어 학습할 때는 `env.curriculum.yawtrack.params.trigger=0.0 env.curriculum.yawtrack.params.ramp_steps=1`을 준다(FaceGrip과 같은 이유).
+
+### 판 면 파지 (`-Wide-RollAlign-FaceGrip`, 2026-11-04)
+
+> 이 절의 학습(2999 → 3998)과 평가는 박스 회전 제한(30°/s) 물리에서 했다. 고친 물리에서 3700을 다시 평가하고
+> 이어 학습한 결과는 "FaceGrip 4699" 절에 있다.
+
+- 목적: Wide-RollAlign 2999는 들 때 판을 V자로 젖혀(판 법선이 위로, 0.75 s에 중앙값 25.7°) 아래 모서리로 박스를 받친다. 선 접촉이라 MuJoCo·실물에서 미끄러질 수 있다.
+- task `Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip[-Play]-v0`:
+  - `plate_face_tilt`: 판 법선과 담당 박스 면 법선 사이 각도(rad)의 양 판 평균, 양 판 접촉(> 1 N) 중에만. `pg_parallel`의 `tot`과 같은 정의.
+  - `ramp_reward_weight_on_success`: success EMA ≥ 3이 된 뒤 200 iter에 걸쳐 weight를 −1e-4 → −10(`FACEGRIP_TILT_WEIGHT`).
+  - yawtrack은 바로 1(`trigger=0, ramp_steps=1`). 이어 학습하면 curriculum이 처음부터 다시 돌고 yawtrack은 기본 3000 iter ramp라, 그대로 두면 2999와 success 보상이 달라진다.
+  - 그 밖의 보상·관측·행동은 Wide-RollAlign 그대로다.
+- run `dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_facegrip/2026-11-04_14-16-51_facegrip_w10_from_wra2999`: 2999에서 이어 1000 iter(마지막 checkpoint `model_3998`). stdout `box_facegrip.log`.
+  - 학습 중 판-면 각도(에피소드 평균, 비접촉은 0): 3200대 6.7° → 3400대 4.5° → 3600대 5.6° → 3800대 10.9° → 3900대 9.4°. 줄었다가 다시 늘었다.
+- 평가(1024 env, 외란 1.0, 80 step, `-Wide-RollAlign-Play-v0`):
+
+  | | 2999 | FaceGrip 3400 | FaceGrip 3998 |
+  |---|---|---|---|
+  | 성공 (0.5 s 유지) | 100% | 100% | 99.7% |
+  | 성공까지 중앙값 / p90 | 1.40 / 1.60 s | 1.55 / 1.70 s | 1.55 / 1.85 s |
+  | 끝 goal 거리 | 2.4 cm | **7.2 cm** | 2.6 cm |
+  | 끝 박스 기울기 / 들 때 최대 | 2.9° / 12.0° | 5.3° / 10.2° | 6.2° / 9.6° |
+  | 판 최대 힘 L/R | 20.3 / 20.6 N | 17.3 / 17.1 N | 15.0 / 14.4 N |
+  | 판-면 각도 0.2 s | 10.8° | 8.5° | 7.5° |
+  | 판-면 각도 0.5 s | 24.4° | 14.1° | 17.9° |
+  | 판-면 각도 0.75 s | **25.7°** | **8.9°** | **13.9°** (p90 23.1°) |
+  | 판-면 각도 1.5 s (들고 있는 중) | 6.6° | 1.8° | 4.6° (p90 16.1°) |
+  | 판 yaw(수직축 회전) 1.0 s, p10 | −6.2° | −0.7° | **−18.9°** |
+
+  - 들 때 V자 최대는 25.7°에서 15°(3400)·18°(3998)로 줄었다. 각도는 거의 다 pitch(V자) 성분이다.
+  - 3400은 판이 가장 평평하지만 goal에 덜 올라간다(끝 goal 거리 7.2 cm).
+  - 3998은 goal은 2999 수준으로 돌아왔다. 대신 일부 env에서 판이 수직축으로 15~19° 돌아간다(yaw p10). 학습 후반에 평균 각도가 다시 오른 것과 맞는다.
+  - 둘 다 박스 들 때 최대 기울기와 판 힘은 2999보다 작다.
+- 중간 checkpoint (같은 평가):
+
+  | ckpt | 성공 | 끝 goal 거리 | 판-면 각도 0.5 / 0.75 / 1.5 s | 판 yaw 1.0 s p10 |
+  |---|---|---|---|---|
+  | 2999 | 100% | 2.4 cm | 24.4 / 25.7 / 6.6° | −6.2° |
+  | 3400 | 100% | 7.2 cm | 14.1 / 8.9 / 1.8° | −0.7° |
+  | 3500 | 100% | 8.3 cm | 14.2 / 8.2 / 1.3° | −0.5° |
+  | 3600 | 100% | 6.4 cm | 14.5 / 7.9 / 1.7° | −2.2° |
+  | **3700** | 100% | 3.4 cm | 16.2 / 11.3 / 4.4° | −2.5° |
+  | 3800 | 100% | 3.0 cm | 22.2 / 19.1 / 8.3° | −8.9° |
+  | 3998 | 99.7% | 2.6 cm | 17.9 / 13.9 / 4.6° | −18.9° |
+
+  - 판을 평평하게 할수록 goal에서 멀어진다(3400~3600). 정책이 두 쪽을 오갔다.
+  - 3700이 절충점이다: goal 3.4 cm, V자 최대 약 16°(2999 26°), 판 비틀림 없음.
+- 영상: `<run>/videos/model_3998_views_ep4.mp4`.
+
+### 외란 확대 (`-Wide-RollAlign-Disturb`, 2026-11-04)
+
+- 목적: 박스가 흔들려도 더 단단히 조이고 미끄러짐을 바로잡게 해서 덜 놓치게 한다(MuJoCo·실물 접촉 차이 대비).
+- 지금 외란은 질량 비례로 줄인 ±0.625 N, ±0.125 Nm(4 kg 박스 ±5 N 기준)라 박스 무게(4~6 N)의 13%이고, 판 마찰 한계(12~36 N)에 비해 거의 영향이 없다.
+- task: 세기만 300 iter(`DISTURB_BIG_RAMP_STEPS` 7200 step)에 걸쳐 ±2.5 N, ±0.3 Nm(`DISTURB_BIG_*`)로 올린다(`ramp_event_params_by_steps`). 방향·주기(0.4~0.8 s)와 success 기반 on/off는 그대로, yawtrack은 바로 1. `-Play`는 처음부터 최대 세기.
+- run `..._wide_rollalign_disturb/2026-11-04_15-08-51_disturb4x_from_wra2999`: 2999에서 이어 1000 iter(마지막 `model_3998`). stdout `box_disturb.log`.
+- **결과는 쓰지 않는다.** 박스 회전 제한(30°/s) 물리에서 학습했고, 그 물리에서는 외란 토크가 박스를 거의 못 돌렸다
+  ("박스 회전 제한 버그" 절). 외란을 다시 볼 때는 고친 물리에서 FaceGrip 계열로 새로 학습한다.
+
+### 다시 잡기 (`-Wide-RollAlign-Regrasp`, 2026-11-04)
+
+- 진단(`scripts/tools/box_slip_probe.py`, Wide-RollAlign 2999, 512 env, 8 s):
+  - 미끄러짐 없이 8 s: 0.5 m 들어 끝까지 유지, success zone 100%(학습 4 s보다 길어도 문제없음).
+  - 1.5 s에 박스·판 마찰을 0으로 0.3 s: 들고 있던 env 100%가 0.35 s(중앙값) 만에 바닥까지 떨어진다. 박스는 서서 착지(넘어짐 0%), 7 cm(p90 13 cm) 밀리고 yaw 2° 바뀜.
+  - 남은 6.5 s 동안 다시 든 env **0%**. 보상은 이미 다시 잡기를 막지 않는다(낙하 종료 없음, success 매 step, reaching 항상 켜짐). 놓친 경험과 다시 잡을 시간이 없었다.
+  - 마찰은 PhysX tensor API(`root_view.set_material_properties`)로 에피소드 중에도 바뀐다. 판은 `fr3_link7` shape 2개씩(마찰 0.5), PhysX 기본 average 결합이라 박스만 0으로 하면 0.25가 남아서 판도 같이 낮춘다.
+- task:
+  - `box_slip`(interval, 매 step): 에피소드마다 50%로 미끄러짐 한 번을 예약, 1~4 s 뒤 처음 양 판으로 들고 있을 때 박스·판 마찰 0.02를 0.05~0.4 s(`BOX_SLIP_*`). 짧으면 다시 받을 수 있고 0.3 s 넘으면 바닥까지 떨어진다.
+  - `reset_from_drop_states`: reset의 30%를 놓친 직후 상태 표에서 시작(`assets/regrasp/plate_box410wide_dropstates_wra2999.npz`, 1536줄: 2999로 seed·미끄러짐 시각·저장 시각을 바꿔 3번 만든 것, 박스 x 0.30~0.75, y ±0.27). 표 형식은 Pregrasp 표와 같다(`reset_from_pregrasp_table`, 표 캐시를 경로별로 바꿈).
+  - 에피소드 8 s, goal 재샘플 9 s(기본 5 s면 중간에 goal이 바뀜). 보상·관측·행동·외란은 Wide-RollAlign 그대로, yawtrack 바로 1.
+  - 확인(`-Play`, 256 env, 400 step): 미끄러짐 272번, 끝난 뒤 마찰이 startup 값으로 돌아옴, 놓친 상태 시작 27%.
+- run `..._wide_rollalign_regrasp/2026-11-04_15-16-18_regrasp_from_wra2999`: 2999에서 이어 학습, iter 3997에서 멈춤(마지막 `model_3950`). stdout `box_regrasp.log`.
+- 결과(model_3300, 회전 제한 물리):
+  - 바닥에서 다시 들기 **0%** 그대로.
+  - 놓친 직후 두 판이 안쪽으로 닫혀 판 간격 6 cm(박스 41 cm), 판이 박스 중심 위 50 cm, x로 20~28 cm 어긋난다.
+    pregrasp 시작과 전혀 다른 상태라 RL이 다시 잡는 길을 못 찾는다.
+  - 받아내기는 배웠다: 0.1 s 미끄러짐 낙하 20% → 4%. 0.2 s 이상은 2999·3300 모두 100% 낙하.
+  - action std 0.29 → 0.55로 커졌다.
+- 결론: 바닥 재파지는 RL 대신 노드에서 한다(낙하 감지 → MoveIt으로 pregrasp 자세 복귀 → `start_policy` 다시).
+  이 결과도 회전 제한 물리라 받아내기 수치는 다시 재야 한다.
+
+### DR: 박스 크기·판 마찰·지연 (`-Wide-RollAlign-DR`, 2026-11-04)
+
+- 목적: 실물 차이를 학습에 넣는다. 박스 치수 오차, 판에 붙일 고무 패드 마찰, 관절 상태·명령 전달 지연.
+- task `Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-DR[-Play]-v0` (Wide-RollAlign 2999에서 이어 학습용, yawtrack 바로 1):
+  - 박스 크기: 축마다 ±1 cm(`BOX_SIZE_DR_M`). 시작 자세 표는 기준 크기 그대로라 판-면 간격이 4 cm ± 크기 차/2가 된다.
+    `reset_from_pregrasp_table`은 env별 반높이로 리셋 높이를 맞춘다(크기 1.0이면 변화 없음).
+  - 판 마찰: `fr3_link7` shape(판)에 startup DR, 정지 0.6~1.2 / 동 0.5~1.0(`PLATE_FRICTION_*`, 고무 패드 가정).
+  - 지연: `DelayedReachRelativeJointPositionAction`(`reach/mdp/actions.py`)이 env마다 리셋 때 뽑는다.
+    - 관절 상태 0~20 ms(`JOINT_STATE_DELAY_S`): 1차 근사 `q(t−d) = q(t) − qd(t)·d`. joint_pos 관측(`joint_pos_rel_delayed`)과 목표 기준 q가 같은 지연을 쓴다(실물 노드와 같음).
+    - 명령 0~3 physics step = 0~30 ms(`COMMAND_DELAY_STEPS`): 그동안 이전 목표를 유지한다.
+  - export: `export_boxlift_actor.py`는 `joint_pos_rel_delayed`를 `joint_pos_rel`로 적고(실물은 지연이 실제로 있고 노드는 일반 항을 계산),
+    manifest `action`에 `trained_joint_state_delay_s`, `trained_command_delay_s`를 남긴다(DR 없는 task는 [0, 0]).
+- 2999 평가(회전 제한 물리, 1024 env): 이 DR 범위에서 이미 성공 100%, goal 2.5 cm.
+- 지연 한계(2999, 관절 상태 + 명령):
+
+  | 지연 | 성공 |
+  |---|---|
+  | 20 + 30 ms | 100% |
+  | 40 + 50 ms | 97% |
+  | 60 + 50 ms | 15% (조임 35 N으로 두 배, 붕괴) |
+
+- **학습은 취소했다.** 회전 제한 버그를 찾은 뒤 시작 전에 접었다. task 코드는 남아 있다.
+- 주의: 판 마찰 범위(0.6~1.2)는 지금 판(PhysX 기본 0.5, average 결합이라 판-박스 0.45~0.85)보다 높다. 마찰이 높으면 정책이 덜 조인다.
+  고무 패드를 붙이기 전에는 쓰지 않는다.
+
+### 박스 회전 제한 버그 (`max_angular_velocity`, 2026-11-04)
+
+- lift_plate 박스 `rigid_props.max_angular_velocity=30.0`의 단위는 **deg/s**다(Isaac Lab docstring: "in deg/s"). m/s처럼 읽고 넣은 값이라, 박스가 30°/s(0.52 rad/s)보다 빨리 돌 수 없었다.
+- 확인(판·팔 없이 박스만, scratch `wrench_api_test*.py`):
+  - +10 N 힘: 0.3 s에 48 cm 상승(계산 46 cm). 병진은 정상.
+  - 3 Nm 토크, 공중: 30°/s에서 더 안 빨라진다. 바닥 위: 0°.
+  - → 판 사이에서 박스가 거의 못 돌았고, 외란 토크도 사실상 효과가 없었다.
+- 수정: `max_angular_velocity=1000.0`(17 rad/s, lift_cube와 같음, 상한 역할만). `joint_pos_env_cfg.py` box spawn에 주석.
+- 고친 물리로 다시 평가(1024 env, 외란 1.0, 80 step):
+
+  | | 제한 30°/s | 제한 1000°/s |
+  |---|---|---|
+  | Wide-RollAlign 2999 성공 / 들 때 기울기 median, p90 | 100% / 12.1°, 14.1° | **79.3% / 16.8°, 42.1°** |
+  | FaceGrip 3700 성공 / 들 때 기울기 median, p90 | 100% / 11.0°, 13.1° | 99.7% / 13.0°, 16.5° |
+
+  - MuJoCo에서 RollAlign 2999가 약 55° 돌던 것과 맞는다. V자로 판 아래 모서리를 받치는 잡기는 박스가 못 돌 때만 버텼다.
+- 영향: 그 전 box 정책은 전부 제한 아래에서 학습했다. Wide-RollAlign 2999, FaceGrip 3700, Disturb, Regrasp, DR 평가, 4090의 BoxDrop.
+  이 커밋을 pull하면 BoxDrop도 고친 물리로 바뀐다.
+
+### FaceGrip 4699: 고친 물리로 이어 학습 (2026-11-04)
+
+- run `..._wide_rollalign_facegrip/2026-11-04_16-05-53_facegrip_angvel1000_from_fg3700`: FaceGrip 3700에서 이어 1000 iter(→ 4699), 고친 물리.
+  보상은 FaceGrip 그대로, `env.curriculum.plate_face_tilt.params.ramp_steps=1`(판 각도 벌점 바로 −10). stdout `box_facegrip_av.log`.
+- 평가(고친 물리, 1024 env, 외란 1.0, 80 step):
+
+  | | 3700 | 4200 | 4699 |
+  |---|---|---|---|
+  | 성공 | 99.7% | 100% | 100% |
+  | 끝 goal 거리 | 3.7 cm | 2.8 cm | 3.2 cm |
+  | 들 때 최대 기울기 median / p90 | 13.0 / 16.5° | 8.9 / 12.4° | 8.2 / 11.1° |
+  | 판 V자 0.5 s | 16° | 15° | 9.5° |
+  | 끝 박스 기울기 | 4.0° | 5.5° | 7.7° |
+  | 판 힘 2 s | 13.2 N | 10.1 N | 10.8 N |
+  | 회전 시작 토크 +y / −y | 0.93 / 0.80 Nm | 0.70 / 0.57 Nm | 0.73 / 0.65 Nm |
+
+  - 회전 시작 토크: MuJoCo 쪽 방식(들고 있는 목표 고정, 박스에 0.5 Nm/s로 토크를 올려 2° 돌 때), scratch `torque_ramp_probe.py`(저장소에 없음).
+    MuJoCo 3700은 0.27(pyramidal), 0.26~0.56 Nm(elliptic)이다. 같은 조임(13~14 N)에서 Isaac이 2~3배 더 버틴다.
+  - 첫 접촉 때 판 기울기: 2999·3700 8.6°, 4699 4.4°. 판 각도 벌점은 양 판이 닿은 뒤에만 걸린다.
+  - Isaac 3700, 2 s: 박스 pitch +0.8°, TCP가 박스 중심 위 10.5~10.8 cm, 평균 접촉점 z +9.3 / +7.3 cm(L/R).
+    MuJoCo는 0.45 s 뒤에도 판이 계속 미끄러져 올라가 TCP +17 cm, 박스 pitch 23~26°.
+- export: `fr3_husky_etri/fr3_husky_nn_policy/models/facegrip_angvel1000_model_4699.npz`,
+  시작 자세 `model/dual_fr3_boxlift_pregrasp_wide_rollalign_facegrip_model4699_start_poses.yaml`(표는 RollAlign과 같음).
+- 영상: `<4699 run>/videos/model_4699_views_ep4.mp4`(4 에피소드 모두 유지, goal 1.1~2.9 cm).
+  고친 물리로 다시 찍은 `model_2999_views_ep4_angvel1000.mp4`(Wide-RollAlign run), `model_3700_views_ep4_angvel1000.mp4`(FaceGrip run).
+- 실로봇(2026-11-04): 들기는 되지만 빠듯했다. 판 V자가 약간 남고, 박스를 충분히 세게 조이지 않는 것처럼 보였다(2999도 같은 경향).
+
+### 최소 조임 (`-Wide-RollAlign-FaceGrip-MinSqueeze`, 2026-11-04)
+
+- 과조임 벌점 `excessive_squeeze`(판별 100 N 초과분, lifting 학습 후 −0.05)는 4699에서 꺼져 있는 것과 같다. 들고 있을 때 11 N이다.
+- 조임을 더 하라는 보상이 없다. 양 판 접촉 기준은 1 N이고, `squeezing_object`는 접촉 여부 × 면 접촉 품질만 본다.
+  그래서 정책은 sim에서 안 떨어질 만큼만 조인다.
+  - sim 최악(0.6 kg, 판-박스 마찰 0.45): 판당 필요 6.5 N, 11 N이면 1.7배 여유.
+  - 실물 마찰이 0.3이면 판당 9.8 N이 필요해 여유가 거의 없다.
+- 행동 범위 확인(scratch `squeeze_sat_probe.py`, 저장소에 없음, 4699, 512 env, 1.5 s 뒤 들고 있는 동안):
+
+  | 관절 | `q_target − q` median (L / R) | 토크 median (L / R) |
+  |---|---|---|
+  | j1 | 0.064 / 0.072 rad | 5.0 / 5.6 Nm |
+  | j3 | 0.060 / 0.064 rad | 4.9 / 5.3 Nm |
+  | 나머지 | ≤ 0.023 rad | ≤ 1.3 Nm |
+
+  - 판 힘 11.2 / 10.7 N(합력과 박스 y 법선이 같음). clip(±0.1)에 닿는 step은 없다.
+  - policy-step에서 PD 오차는 행동(≤ 0.1 rad)과 같아 관절 토크 상한은 80 × 0.1 = 8 Nm다. 조임은 거의 j1·j3이 만들고 이미 64~72%를 쓴다.
+    → 이 자세로는 판당 약 15 N(오른팔 j1)이 sim 상한이다.
+  - 더 조이려면 action scale이나 PD 강성을 키워야 한다. 실물 `policy_control_action_server.hpp`의 `kIsaacStiffness`(reach와 공유)와 노드 `max_policy_target_delta_rad`(0.20)도 같이 바뀐다.
+- task `Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-MinSqueeze[-Play]-v0` (FaceGrip 4699에서 이어 학습):
+  - `min_squeeze_penalty`: 판별 접촉력이 14 N(`MINSQUEEZE_FORCE_N`)에 모자란 만큼의 합 [N]. 양 판이 닿아 있거나(들기 전 미리 조이기) 박스가 2 cm 넘게 들려 있을 때만.
+    들린 채 한 판이 떨어지면 그 판은 14 N 전체가 부족분이다. 힘은 `excessive_squeeze`와 같은 합력 norm.
+  - weight: success EMA ≥ 3 뒤 100 iter에 걸쳐 −1e-4 → −0.5(`MINSQUEEZE_*`). 4699 기준 판당 3 N 부족이면 −3/s(총 보상 약 52/s).
+  - `plate_face_tilt`는 바로 −10. 과조임 벌점(100 N)과 나머지는 FaceGrip 그대로, checkpoint 호환.
+- run `..._facegrip_minsqueeze/2026-11-04_19-38-04_minsqueeze14_from_fg4699`: 4699에서 이어 1000 iter(→ 5699), 학습 중. stdout `box_minsqueeze.log`.
+  4699는 `init_facegrip_4699/`에 복사해 두고 `--resume --load_run init_facegrip_4699 --checkpoint model_4699.pt`로 시작했다.
+- 처음부터 학습하는 task `...-FaceGrip-MinSqueeze-Scratch[-Play]-v0`도 만들었다. **아직 학습하지 않았다.**
+  - 이유: 4699 계보(2999 → 3700 → 4699)는 2999·3700을 회전 제한 물리에서 배웠다. 약 11 N으로 판 아래 모서리를 받치는 습관이 남아 있을 수 있다.
+  - Wide-RollAlign을 바로 상속한다. 보상은 MinSqueeze와 똑같고, 이어 학습용 설정은 쓰지 않는다:
+    yawtrack은 기본(success EMA 1.5 뒤 3000 iter), `plate_face_tilt`는 success EMA 3 뒤 200 iter, `min_squeeze`는 300 iter(`MINSQUEEZE_SCRATCH_RAMP_STEPS`)에 걸쳐 올린다.
+  - 확인: 설정 비교로 보상 항목·weight가 MinSqueeze와 같음, env 16개 × 0 행동 5 step에서 관측 56 / 행동 14, 보상 유한.
+  - 학습은 `--max_iterations 3000` from scratch(Wide-RollAlign 2999와 같은 길이).
+  - 조임 상한(판당 약 15 N)은 scratch여도 같다. j1·j3에 덜 기대는 자세를 찾으면 여유가 생길 수 있다.

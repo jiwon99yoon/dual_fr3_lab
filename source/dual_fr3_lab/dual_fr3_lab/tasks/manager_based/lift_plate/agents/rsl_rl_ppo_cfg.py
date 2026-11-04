@@ -300,3 +300,45 @@ class LiftPlateSim2Real100HzLightPregraspWideRollAlignBoxDropPPORunnerCfg(LiftPl
 
     obs_groups = {"actor": ["policy"], "critic": ["critic"]}
     experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_boxdrop"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip: Wide-RollAlign과 같은 actor/PPO, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_facegrip"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignDisturbPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-Disturb: Wide-RollAlign과 같은 actor/PPO, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_disturb"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignRegraspPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-Regrasp: Wide-RollAlign과 같은 actor/PPO, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_regrasp"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignDRPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-DR: Wide-RollAlign과 같은 actor/PPO, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_dr"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripMinSqueezePPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-MinSqueeze: FaceGrip과 같은 actor/PPO, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_facegrip_minsqueeze"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripMinSqueezeScratchPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-MinSqueeze-Scratch: Wide-RollAlign과 같은 actor/PPO, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_facegrip_minsqueeze_scratch"
