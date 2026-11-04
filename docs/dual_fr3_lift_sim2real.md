@@ -778,12 +778,88 @@ Play는 같은 rate의 `-Play-v0` / `-Play-Noisy-v0`를 쓴다.
     들린 채 한 판이 떨어지면 그 판은 14 N 전체가 부족분이다. 힘은 `excessive_squeeze`와 같은 합력 norm.
   - weight: success EMA ≥ 3 뒤 100 iter에 걸쳐 −1e-4 → −0.5(`MINSQUEEZE_*`). 4699 기준 판당 3 N 부족이면 −3/s(총 보상 약 52/s).
   - `plate_face_tilt`는 바로 −10. 과조임 벌점(100 N)과 나머지는 FaceGrip 그대로, checkpoint 호환.
-- run `..._facegrip_minsqueeze/2026-11-04_19-38-04_minsqueeze14_from_fg4699`: 4699에서 이어 1000 iter(→ 5699), 학습 중. stdout `box_minsqueeze.log`.
+- run `..._facegrip_minsqueeze/2026-11-04_19-38-04_minsqueeze14_from_fg4699`: 4699에서 이어 1000 iter(마지막 `model_5698`). stdout `box_minsqueeze.log`.
+  - 학습 중 `min_squeeze` 보상(초당): weight가 −0.5에 닿은 직후(약 5000 iter) −3.3 → 끝 −2.2. success 보상은 10.4까지 내려갔다가 11.1로 회복.
   4699는 `init_facegrip_4699/`에 복사해 두고 `--resume --load_run init_facegrip_4699 --checkpoint model_4699.pt`로 시작했다.
-- 처음부터 학습하는 task `...-FaceGrip-MinSqueeze-Scratch[-Play]-v0`도 만들었다. **아직 학습하지 않았다.**
+- 결과(고친 물리, 4699와 같은 평가):
+
+  | | 4699 | MinSqueeze 5698 |
+  |---|---|---|
+  | 성공 (1024 env) | 100% | 100% |
+  | 끝 goal 거리 | 3.2 cm | 1.9 cm |
+  | 들 때 최대 기울기 median / p90 | 8.2 / 11.1° | 8.7 / 11.7° |
+  | 끝 박스 기울기 | 7.7° | 3.7° |
+  | 들고 있을 때 판 힘 L / R (1.5 s 뒤) | 11.2 / 10.7 N | **16.1 / 16.3 N** |
+  | j1 PD 오차 L / R (p90) | 0.064 / 0.072 (0.079) rad | 0.077 / 0.086 (0.092) rad |
+  | j3 PD 오차 L / R (p90) | 0.060 / 0.064 (0.073) rad | 0.085 / 0.080 (0.090) rad |
+  | 회전 시작 토크 +y / −y median | 0.73 / 0.65 Nm | **1.18 / 1.33 Nm** |
+  | 판 V자 0.5 s median (p90) | 9.5° (14.5°) | 8.3° (14.9°) |
+  | 판 각도 1.5 s median (p90) | 2.5° (5.2°) | 4.8° (11.8°) |
+
+  - 조임 약 1.5배, 회전 시작 토크 약 1.7배. 성공·goal·끝 기울기는 같거나 좋아졌다.
+  - 예상 상한 15 N을 넘었다. j1·j3만 보던 추정이었고, 정책이 j4·j6(오른팔 j6 2.8 Nm)도 더 쓴다.
+    대신 j1·j3이 행동 한계의 77~90%(p90 0.087~0.092 rad)라 남은 여유는 약 10%다. 실물 관절 마찰이 더 크면 여기서 막힌다.
+  - 들고 있을 때 판 각도 꼬리(1.5 s p90 11.8°)가 4699보다 길다. 영상(`<run>/videos/model_5698_views_ep4.mp4`) 4 에피소드에서
+    판 높이 차(L−R)가 +3.0~+4.5 cm로 4699(−1.6~−2.8 cm)와 반대쪽이다. 2 s 때 오른판 접촉점이 박스 중심 −x로 3.8 cm 치우친다.
+- 처음부터 학습하는 task `...-FaceGrip-MinSqueeze-Scratch[-Play]-v0`. run `..._facegrip_minsqueeze_scratch/2026-11-04_20-10-17_facegrip_minsqueeze14_scratch`(3000 iter, 학습 중), stdout `box_minsqueeze_scratch.log`.
   - 이유: 4699 계보(2999 → 3700 → 4699)는 2999·3700을 회전 제한 물리에서 배웠다. 약 11 N으로 판 아래 모서리를 받치는 습관이 남아 있을 수 있다.
   - Wide-RollAlign을 바로 상속한다. 보상은 MinSqueeze와 똑같고, 이어 학습용 설정은 쓰지 않는다:
     yawtrack은 기본(success EMA 1.5 뒤 3000 iter), `plate_face_tilt`는 success EMA 3 뒤 200 iter, `min_squeeze`는 300 iter(`MINSQUEEZE_SCRATCH_RAMP_STEPS`)에 걸쳐 올린다.
   - 확인: 설정 비교로 보상 항목·weight가 MinSqueeze와 같음, env 16개 × 0 행동 5 step에서 관측 56 / 행동 14, 보상 유한.
   - 학습은 `--max_iterations 3000` from scratch(Wide-RollAlign 2999와 같은 길이).
-  - 조임 상한(판당 약 15 N)은 scratch여도 같다. j1·j3에 덜 기대는 자세를 찾으면 여유가 생길 수 있다.
+  - 행동 한계(PD 오차 ≤ 0.1 rad)는 scratch여도 같다. MinSqueeze 5698처럼 j1·j3에 덜 기대는 자세를 찾으면 여유가 생길 수 있다.
+- Scratch 결과(3000 iter, 21:25 끝, 같은 평가):
+
+  | | 1500 | 1750 | 2999 |
+  |---|---|---|---|
+  | 성공 (1024 env) | 98.7% | **0.2%** | 100% |
+  | 끝 goal 거리 | 6.3 cm | 19.8 cm | 2.7 cm |
+  | 들 때 최대 기울기 median / p90 | 4.5 / 7.3° | 9.2 / 13.0° | 8.7 / 12.2° |
+  | 들고 있을 때 판 힘 L / R | 16.1 / 16.1 N | 13.4 / 13.1 N | 17.2 / 17.2 N |
+  | 조임 관절 PD 오차 median (p90 최대) | j1·j3 0.081~0.095 (0.098) | j1·j3 0.068~0.091 | j1·j4 0.081~0.084 (0.091) |
+
+  - 1500~1750에 성공 보상이 11 → 0으로 무너졌다가 2999에 9.8로 회복했다. 들기 보상(13.5)은 그대로, goal 추종 10 → 5.5, min_squeeze −0.8 → −2.5.
+    1500은 오른팔 j1 p90 0.098 rad로 행동 한계에 붙어 있었다. 조임과 goal로 옮기기를 같은 j1·j3로 해야 해서 부딪힌 것으로 본다(추정).
+    2999는 j3 대신 j4로 조이는 자세로 바뀌어 회복했다. yawtrack은 3000 iter 안에 0.96까지만 올랐다.
+  - 2999는 4699·5698 대비 조임이 가장 세고 좌우 같다(17.2 N), 첫 접촉 판 기울기 2.0°(5698 5.7°), 좌우 판 높이 차 1.1~2.5 cm.
+    회전 시작 토크 1.27 / 1.18 Nm(5698과 비슷). 판 V자는 그대로다: 0.3 s 2.0° → 0.5 s 10.8°(p90 15.5°), 1.5 s 5.5°.
+    접촉 전 기울기보다 들 때 박스 무게에 판이 돌아가는 것이 V자의 주원인이다 → SqueezeLift.
+  - 영상 `<run>/videos/model_2999_views_ep4.mp4`(4/4 유지, goal 0.6~1.7 cm).
+
+### 조인 다음 들기 (`-FaceGrip-SqueezeLift`, `-SqueezeLift-LowMuHeavy-Act015-Scratch`, 2026-11-04)
+
+- 진단: 5698도 판이 닿자마자(0.2 s) 다 조이기 전에 든다. 판 힘(min L/R) 0.55 s 7 N → 1 s 11 N → 2 s 16 N, 0.55 s에 이미 100% 들림.
+  그동안 판이 V자로 돌아간다(4699 판 pitch 0.3 s 3.7° → 0.5 s 8° → 1.5 s 0°). 접촉 전에도 판이 3~6° 기울어 있다(판 각도 벌점은 양 판 접촉 뒤에만).
+- 공통 추가(`_apply_squeeze_lift`):
+  - 조임 factor: 들기 보상 5개(lifting_object, lift_progress, object_goal_tracking[_fine_grained], success)에 `1 − s + s·clamp(min(F_L, F_R) / squeeze_force)`를 곱한다.
+    s(`env._squeezelift_scale`)는 success EMA 3 뒤 ramp로 0 → 1(`ramp_env_scale_on_success`). lift_monitor(커리큘럼 판정)는 그대로.
+  - `plate_face_tilt_approach`: 양 판이 다 닿기 전, 판 중심이 담당 면 바깥 6 cm 안인 판의 기울기 [rad]. weight −10(접촉 뒤 `plate_face_tilt`와 같음).
+  - `plate_box_slip`: 1 N 넘게 닿은 판마다 판 중심점의 박스 대비 접선 속도 + 0.1 m × 상대 각속도 [m/s], 양 판 합. weight −10.
+  - 5698로 잰 값(s = 1, 256 env): 들고 있을 때 factor median 1.0, 미끄럼 median 0.055 / p90 0.16 m/s(−0.5~−1.6/s),
+    접촉했는데 아직 바닥일 때 미끄럼 median 0.35 m/s, 접근 기울기 median 3.4° / p90 6.3°.
+- `-FaceGrip-SqueezeLift`: MinSqueeze + 위 추가, 조임 기준 14 N, ramp 100 iter. 행동(0.1)·관측 그대로라 5698에서 이어 학습한다.
+  init `..._facegrip_squeezelift/init_minsqueeze_5698/model_5698.pt`, `--resume --load_run init_minsqueeze_5698 --checkpoint model_5698.pt`.
+- `-FaceGrip-SqueezeLift-LowMuHeavy-Act015-Scratch`: MinSqueeze-Scratch + 위 추가 + 다음, 처음부터 학습:
+  - 박스·판(fr3_link7) 마찰 정지 0.25~0.5 / 동 0.2~0.45(average 결합이라 접촉도 0.25~0.5), 박스 0.4~0.8 kg.
+    버티는 데 판당 m g / (2μ) 최대 15.7 N(0.8 kg, 0.25).
+  - action scale·clip 0.15(PD 상한 8 → 12 Nm). 노드는 manifest의 scale/clip을 쓰고 노드 상한 0.20 rad 안이라 노드 수정 없음.
+  - min_squeeze 목표와 조임 기준 20 N, 조임 factor·두 벌점 ramp 300 iter.
+- 확인: 두 task 모두 `train.py` 3 iter(64 env) 정상, A는 5698 로드 후 squeeze_lift ramp 시작. 샘플된 박스 질량 0.41~0.80 kg, 박스 마찰 0.25~0.49.
+- A 결과: run `..._facegrip_squeezelift/2026-11-04_22-13-23_squeezelift14_from_ms5698`(5698 → 6697, stdout `box_squeezelift.log`), 같은 평가:
+
+  | | MinSqueeze 5698 | SqueezeLift A 6697 |
+  |---|---|---|
+  | 성공 / 끝 goal 거리 | 100% / 1.9 cm | 99.5% / 2.0 cm |
+  | 들 때 최대 기울기 median / p90, 끝 기울기 | 8.7 / 11.7°, 3.7° | 7.8 / 10.5°, 6.2° |
+  | 0.55 s 판 힘 min(L, R) (조임 factor) | 7.1 N (0.53) | 10.8 N (0.75) |
+  | 들고 있을 때 판 힘 L / R | 16.1 / 16.3 N | 17.2 / 17.2 N |
+  | 판 V자(pitch) 0.5 s / 1.0 s median | +5.7° / +4.7° | **+0.3° / 0.0°** |
+  | 판 각도 합 0.5 s / 1.5 s median (p90) | 8.3° (14.9°) / 4.8° | 6.3° (14.8°) / 3.1° |
+  | 판 yaw 첫 접촉 / 0.5 s median | | −4.8° / −4.8° |
+  | 들 때 판 높이 차 \|zL − zR\| median (p90) | 1.5 (2.6) cm | **3.4 (4.6) cm** |
+  | 회전 시작 토크 +y / −y | 1.18 / 1.33 Nm | 1.18 / 1.52 Nm |
+  | j1·j3 PD 오차 median, clip 닿는 step 비율 p90 | 0.077~0.086 rad, 0 | 0.082~0.091 rad, 최대 0.18 |
+
+  - V자(판 아래 모서리로 받치기)는 없어졌다. 남은 판 각도는 yaw(수직축 둘레, 첫 접촉부터 −5°)다. 접근 기울기 벌점으로는 줄지 않았다(접근 중 median 3.4° → 4.6°).
+  - 대신 좌우 판 높이 차가 커졌고(영상 L − R +6.6~+7.8 cm) 끝 박스 기울기가 6.2°다. j1·j3이 행동 한계에 닿기 시작했다(왼 j3 p90 0.095).
+  - 영상 `<run>/videos/model_6697_views_ep4.mp4`.

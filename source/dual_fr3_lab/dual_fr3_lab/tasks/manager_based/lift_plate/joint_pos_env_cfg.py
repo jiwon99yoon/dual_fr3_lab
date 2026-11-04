@@ -3725,6 +3725,19 @@ MINSQUEEZE_RAMP_STEPS = 2400  # 100 iter(24 step/iter)에 걸쳐 0 -> MINSQUEEZE
 MINSQUEEZE_LIFT_HEIGHT = 0.02  # 박스 중심이 안착 높이보다 이만큼 뜨면 들린 것으로 본다
 
 
+def _plate_force_norms(
+    env,
+    left_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    right_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+) -> torch.Tensor:
+    """판별 박스 접촉 합력 크기 [N], (num_envs, 2) = (왼판, 오른판). excessive_squeeze_penalty와 같은 값."""
+    forces = []
+    for cfg in (left_sensor_cfg, right_sensor_cfg):
+        sensor = env.scene.sensors[cfg.name]
+        forces.append(torch.norm(sensor.data.force_matrix_w.torch, dim=-1).amax(dim=(-1, -2)))
+    return torch.nan_to_num(torch.stack(forces, dim=-1), nan=0.0, posinf=0.0)
+
+
 def min_squeeze_penalty(
     env,
     force_min: float,
@@ -3739,11 +3752,7 @@ def min_squeeze_penalty(
     양 판이 닿아 있거나(들기 전 미리 조이기) 박스가 들려 있을 때만 준다. 들린 채 한 판이 떨어지면 그 판은
     force_min 전체가 부족분이 된다. 힘은 excessive_squeeze_penalty와 같은 합력 norm(들고 있을 때 법선과 거의 같음).
     """
-    forces = []
-    for cfg in (left_sensor_cfg, right_sensor_cfg):
-        sensor = env.scene.sensors[cfg.name]
-        forces.append(torch.norm(sensor.data.force_matrix_w.torch, dim=-1).amax(dim=(-1, -2)))
-    f = torch.nan_to_num(torch.stack(forces, dim=-1), nan=0.0, posinf=0.0)
+    f = _plate_force_norms(env, left_sensor_cfg, right_sensor_cfg)
     gate = (f > contact_threshold).all(dim=-1).float().maximum(_lifted_perenv(env, lift_height, object_cfg))
     return (force_min - f).clamp(min=0.0, max=force_min).sum(dim=-1) * gate
 
@@ -3825,6 +3834,12 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Face
 ):
     """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-MinSqueeze-Scratch visualization/evaluation cfg."""
 
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
 
 # ---------- Box410-Wide-J1Mirror: J1Mirror를 실물 박스 배치로 (2026-11-04) ----------
 # Box410-J1Mirror model_4999는 410을 앞뒤로 둔 박스로 학습했다(3/3 들기, j1 L/R +1.06/-1.10). 박스만 Pregrasp-Wide와 같이
@@ -3888,6 +3903,332 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Face
     DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_Scratch
 ):
     """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-Scratch visualization/evaluation cfg (지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- -FaceGrip-SqueezeLift: 조인 다음 들기 + 판-박스 미끄럼 벌점 (2026-11-04) ----------
+# MinSqueeze 5698(고친 물리)도 판이 닿자마자(0.2 s) 다 조이기 전에 들기 시작한다. 판 힘이 4699는 1 s 6.7 N -> 2 s 11 N,
+# 5698은 10 N -> 16 N이고, 그동안 판이 박스 무게에 V자로 돌아간다(4699 판 pitch 0.3 s 3.7도 -> 0.5 s 8도 -> 1.5 s 0도).
+# 접촉 전에도 판이 4~6도 기울어(plate_face_tilt는 양 판 접촉 뒤에만 걸림) 모서리부터 닿는다.
+# - 들기 보상(lifting_object, lift_progress, object_goal_tracking[_fine_grained], success)에 조임 factor를 곱한다:
+#   min(판 힘 L, R) / squeeze_force (0~1). 덜 조인 채 들면 들기 보상을 덜 받는다. lift_monitor(커리큘럼 판정)는 그대로.
+# - plate_face_tilt_approach: 양 판이 다 닿기 전, 담당 면에서 APPROACH_TILT_GAP 안에 있는 판의 기울기 [rad].
+# - plate_box_slip: 닿아 있는 판마다 판 중심점의 박스 대비 접선 속도 + 상대 각속도 x SLIP_ANG_LEVER [m/s].
+SQUEEZELIFT_FORCE_N = MINSQUEEZE_FORCE_N  # 판별 이 힘 이상이면 들기 보상을 다 받는다
+SQUEEZELIFT_RAMP_STEPS = 2400  # 100 iter: 조임 factor 0 -> 1, 두 벌점 0 -> weight
+APPROACH_TILT_GAP = 0.06  # m, 판 중심이 담당 면 바깥 이 거리 안이면 본다 (시작 자세 판-면 4 cm)
+APPROACH_TILT_WEIGHT = FACEGRIP_TILT_WEIGHT  # 접촉 뒤 plate_face_tilt와 같은 weight라 접촉 전후로 벌점이 이어진다
+SLIP_ANG_LEVER = 0.1  # m, 상대 각속도를 판 가장자리 속도로 바꾸는 길이 (판 140 mm 정사각형 반대각선 ~0.1 m)
+SLIP_WEIGHT = -10.0  # (m/s)당 초당. 0.1 m/s 미끄러지면 -1/s (MinSqueeze 5698 success 보상 ~11/s)
+
+
+def ramp_env_scale_on_success(
+    env, env_ids, attr: str, success_term: str = "success", trigger: float = 3.0, ramp_steps: int = SQUEEZELIFT_RAMP_STEPS
+):
+    """success EMA가 처음 trigger에 닿은 뒤 ramp_steps env-step에 걸쳐 env.<attr>를 0에서 1로 올린다(비감소).
+
+    ramp_yawtrack_on_success와 같은 방식(발동은 success, 속도는 step 수)을 속성 이름만 받아 쓴다.
+    반환값은 Curriculum/<curriculum 이름>에 기록된다.
+    """
+    scale = getattr(env, attr, 0.0)
+    if scale >= 1.0:
+        return 1.0
+    starts = env.__dict__.setdefault("_scale_ramp_start", {})
+    cur = env.common_step_counter
+    if attr not in starts:
+        if not hasattr(env, "_lift_curriculum_ema"):
+            env._lift_curriculum_ema = {}
+        success_level = env.reward_manager._episode_sums[success_term][env_ids].mean().item()
+        alpha = min(0.5, 3.0 * len(env_ids) / env.num_envs)
+        key = f"_scale_{attr}_succ"
+        ema = env._lift_curriculum_ema.get(key, 0.0)
+        ema = ema + alpha * (success_level - ema)
+        env._lift_curriculum_ema[key] = ema
+        if ema < trigger:
+            return 0.0
+        starts[attr] = cur
+    value = max(scale, min(1.0, (cur - starts[attr]) / max(ramp_steps, 1)))
+    setattr(env, attr, value)
+    return value
+
+
+def _squeeze_lift_factor(env, force_ref: float, left_sensor_cfg: SceneEntityCfg, right_sensor_cfg: SceneEntityCfg):
+    """1 - s + s * clamp(min(판 힘 L, R) / force_ref, 0, 1). s = env._squeezelift_scale (커리큘럼, 0 -> 1)."""
+    s = getattr(env, "_squeezelift_scale", 0.0)
+    f = _plate_force_norms(env, left_sensor_cfg, right_sensor_cfg).amin(dim=-1)
+    return 1.0 - s + s * (f / force_ref).clamp(0.0, 1.0)
+
+
+def object_is_lifted_perenv_and_squeezed_firm(
+    env,
+    lift_delta: float,
+    finger1_sensor_cfg: SceneEntityCfg,
+    finger2_sensor_cfg: SceneEntityCfg,
+    threshold: float = 0.5,
+    tilt_gate: float = LEVEL_TILT_GATE,
+    force_ref: float = PLATE_ONLY_FORCE_REF,
+    squeeze_force: float = SQUEEZELIFT_FORCE_N,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """판 전용 들기 x 조임 factor."""
+    lifted = object_is_lifted_perenv_and_squeezed_plateonly(
+        env, lift_delta, finger1_sensor_cfg, finger2_sensor_cfg, threshold, tilt_gate, force_ref, object_cfg
+    )
+    return lifted * _squeeze_lift_factor(env, squeeze_force, finger1_sensor_cfg, finger2_sensor_cfg)
+
+
+def lift_progress_firm(
+    env,
+    lift_delta: float,
+    finger1_sensor_cfg: SceneEntityCfg,
+    finger2_sensor_cfg: SceneEntityCfg,
+    threshold: float = 1.0,
+    tilt_gate: float = LEVEL_TILT_GATE,
+    force_ref: float = PLATE_ONLY_FORCE_REF,
+    squeeze_force: float = SQUEEZELIFT_FORCE_N,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """판 전용 들기 진행도 x 조임 factor."""
+    progress = lift_progress_plateonly(
+        env, lift_delta, finger1_sensor_cfg, finger2_sensor_cfg, threshold, tilt_gate, force_ref, object_cfg
+    )
+    return progress * _squeeze_lift_factor(env, squeeze_force, finger1_sensor_cfg, finger2_sensor_cfg)
+
+
+def object_goal_distance_perenv_squeezed_firm(
+    env,
+    std: float,
+    lift_delta: float,
+    command_name: str,
+    finger1_sensor_cfg: SceneEntityCfg,
+    finger2_sensor_cfg: SceneEntityCfg,
+    threshold: float = 0.5,
+    tilt_gate: float = LEVEL_TILT_GATE,
+    force_ref: float = PLATE_ONLY_FORCE_REF,
+    squeeze_force: float = SQUEEZELIFT_FORCE_N,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """판 전용 goal 추종 x 조임 factor."""
+    tracking = object_goal_distance_perenv_squeezed_plateonly(
+        env, std, lift_delta, command_name, finger1_sensor_cfg, finger2_sensor_cfg, threshold, tilt_gate, force_ref,
+        robot_cfg, object_cfg,
+    )
+    return tracking * _squeeze_lift_factor(env, squeeze_force, finger1_sensor_cfg, finger2_sensor_cfg)
+
+
+class success_bonus_firm(success_bonus_plateonly):
+    """success_bonus_plateonly x 조임 factor (지급만 깎고 hold 카운터는 그대로)."""
+
+    def __call__(
+        self,
+        env,
+        dist_threshold: float,
+        tilt_threshold: float,
+        hold_steps: int,
+        finger1_sensor_cfg: SceneEntityCfg,
+        finger2_sensor_cfg: SceneEntityCfg,
+        threshold: float = 1.0,
+        command_name: str = "object_pose",
+        robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+        sustained: bool = False,
+        yaw_alpha: float = 0.0,
+        yaw_std: float = 0.35,
+        force_ref: float = PLATE_ONLY_FORCE_REF,
+        squeeze_force: float = SQUEEZELIFT_FORCE_N,
+    ) -> torch.Tensor:
+        reward = super().__call__(
+            env, dist_threshold, tilt_threshold, hold_steps, finger1_sensor_cfg, finger2_sensor_cfg, threshold,
+            command_name, robot_cfg, object_cfg, sustained, yaw_alpha, yaw_std, force_ref,
+        )
+        return reward * _squeeze_lift_factor(env, squeeze_force, finger1_sensor_cfg, finger2_sensor_cfg)
+
+
+def plate_face_tilt_approach(
+    env,
+    gap_max: float = APPROACH_TILT_GAP,
+    finger1_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    finger2_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    threshold: float = 1.0,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """접근 중 판 기울기 [rad]: 양 판이 다 닿기 전(G = 0), 판 중심이 담당 면 바깥 gap_max 안(안쪽 포함)인 판의 각도, 양 판 평균.
+
+    각도는 plate_face_tilt(양 판 접촉 중)와 같아서 접촉 전후로 벌점이 이어진다. 시작 자세는 판-면 4 cm라 처음부터 걸린다.
+    """
+    ee_frame = env.scene[ee_frame_cfg.name]
+    li, ri, y_axis_w, face_l, face_r, _, _ = _face_dists(env, object_cfg, ee_frame_cfg)
+    p = ee_frame.data.target_pos_w.torch
+    near_l = (((p[:, li] - face_l) * y_axis_w).sum(dim=-1) < gap_max).float()  # 왼판은 +y면 바깥
+    near_r = (((face_r - p[:, ri]) * y_axis_w).sum(dim=-1) < gap_max).float()
+    z_axis = torch.zeros_like(face_l)
+    z_axis[:, 2] = 1.0
+    n_l = quat_apply(ee_frame.data.target_quat_w.torch[:, li], z_axis)
+    n_r = quat_apply(ee_frame.data.target_quat_w.torch[:, ri], z_axis)
+    ang_l = torch.acos((-(n_l * y_axis_w).sum(dim=-1)).clamp(-1.0, 1.0))
+    ang_r = torch.acos(((n_r * y_axis_w).sum(dim=-1)).clamp(-1.0, 1.0))
+    gate = 1.0 - mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
+    return 0.5 * (ang_l * near_l + ang_r * near_r) * gate
+
+
+def plate_box_slip(
+    env,
+    ang_lever: float = SLIP_ANG_LEVER,
+    threshold: float = 1.0,
+    left_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    right_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """판-박스 미끄럼 [m/s]: threshold N 넘게 닿은 판마다 |판 중심점의 박스 대비 접선 속도| + ang_lever x |상대 각속도|, 양 판 합.
+
+    판 중심점(TCP) p에서 판(link7) 위 점의 속도 v7 + w7 x (p - x7)와 박스 위 같은 점의 속도 vb + wb x (p - xb)를 뺀 뒤
+    박스 면 법선 성분(조이고 푸는 움직임)을 뺀다. 상대 각속도는 판이 V자로 돌아가는 것과 박스가 판 사이에서 도는 것을 같이 본다.
+    """
+    robot = env.scene["robot"]
+    obj = env.scene[object_cfg.name]
+    ee_frame = env.scene[ee_frame_cfg.name]
+    if not hasattr(env, "_link7_ids"):
+        env._link7_ids = {s: robot.find_bodies(f"{s}_fr3_link7")[0][0] for s in ("left", "right")}
+    li, ri = _ee_lr_indices(ee_frame)
+    xb = obj.data.root_link_pos_w.torch
+    vb = obj.data.root_link_lin_vel_w.torch
+    wb = obj.data.root_link_ang_vel_w.torch
+    y_axis = torch.zeros_like(xb)
+    y_axis[:, 1] = 1.0
+    n = quat_apply(obj.data.root_link_quat_w.torch, y_axis)
+    f = _plate_force_norms(env, left_sensor_cfg, right_sensor_cfg)
+    out = torch.zeros(env.num_envs, device=env.device)
+    for k, (side, idx) in enumerate((("left", li), ("right", ri))):
+        bid = env._link7_ids[side]
+        p = ee_frame.data.target_pos_w.torch[:, idx]
+        x7 = robot.data.body_link_pos_w.torch[:, bid]
+        v7 = robot.data.body_link_lin_vel_w.torch[:, bid]
+        w7 = robot.data.body_link_ang_vel_w.torch[:, bid]
+        v_rel = v7 + torch.cross(w7, p - x7, dim=-1) - vb - torch.cross(wb, p - xb, dim=-1)
+        v_t = v_rel - (v_rel * n).sum(dim=-1, keepdim=True) * n
+        slip = v_t.norm(dim=-1) + ang_lever * (w7 - wb).norm(dim=-1)
+        out += slip * (f[:, k] > threshold).float()
+    return torch.nan_to_num(out, nan=0.0, posinf=0.0)
+
+
+def _apply_squeeze_lift(cfg, squeeze_force: float, ramp_steps: int) -> None:
+    """들기 보상에 조임 factor(판별 squeeze_force), 접근 기울기·미끄럼 벌점을 붙인다. 셋 다 success EMA 3 뒤 ramp_steps에 걸쳐 켠다."""
+    firm = {
+        object_is_lifted_perenv_and_squeezed_plateonly: object_is_lifted_perenv_and_squeezed_firm,
+        lift_progress_plateonly: lift_progress_firm,
+        object_goal_distance_perenv_squeezed_plateonly: object_goal_distance_perenv_squeezed_firm,
+    }
+    for name in ("lifting_object", "lift_progress", "object_goal_tracking", "object_goal_tracking_fine_grained"):
+        term = getattr(cfg.rewards, name)
+        term.func = firm[term.func]
+        term.params["squeeze_force"] = squeeze_force
+    cfg.rewards.success.func = success_bonus_firm
+    cfg.rewards.success.params["squeeze_force"] = squeeze_force
+    cfg.curriculum.squeeze_lift = CurrTerm(
+        func=ramp_env_scale_on_success, params={"attr": "_squeezelift_scale", "ramp_steps": ramp_steps}
+    )
+    cfg.rewards.plate_face_tilt_approach = RewTerm(func=plate_face_tilt_approach, weight=-1e-4)
+    cfg.curriculum.plate_face_tilt_approach = CurrTerm(
+        func=ramp_reward_weight_on_success,
+        params={"term_name": "plate_face_tilt_approach", "weight": APPROACH_TILT_WEIGHT, "ramp_steps": ramp_steps},
+    )
+    cfg.rewards.plate_box_slip = RewTerm(func=plate_box_slip, weight=-1e-4)
+    cfg.curriculum.plate_box_slip = CurrTerm(
+        func=ramp_reward_weight_on_success,
+        params={"term_name": "plate_box_slip", "weight": SLIP_WEIGHT, "ramp_steps": ramp_steps},
+    )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_SqueezeLift(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_MinSqueeze
+):
+    """FaceGrip-MinSqueeze + 조인 다음 들기(_apply_squeeze_lift, 판별 SQUEEZELIFT_FORCE_N). MinSqueeze 5698에서 이어 학습한다.
+
+    - 조임 factor·접근 기울기·미끄럼 벌점은 success EMA 3 뒤 SQUEEZELIFT_RAMP_STEPS(100 iter)에 걸쳐 켠다.
+    - 관측·행동(action scale 0.1)·시작 자세 표는 그대로라 checkpoint를 그대로 읽고 실물 노드도 그대로 쓴다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_squeeze_lift(self, SQUEEZELIFT_FORCE_N, SQUEEZELIFT_RAMP_STEPS)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_SqueezeLift_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_SqueezeLift
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-SqueezeLift visualization/evaluation cfg."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- -FaceGrip-SqueezeLift-LowMuHeavy-Act015-Scratch: 미끄럽고 무거운 박스 + 행동 범위 0.15 (2026-11-04) ----------
+# 판-박스 마찰을 0.25~0.5로 낮추고 박스를 0.4~0.8 kg으로 무겁게 하면 버티는 데 판당 m g / (2 mu)가 최대 15.7 N
+# (0.8 kg, 0.25) 든다. 행동 범위 0.1 rad(PD 상한 80 x 0.1 = 8 Nm)로는 MinSqueeze 5698이 16 N에서 관절 1·3을 77~90% 쓰므로
+# 모자라다 -> action scale·clip을 0.15로 올린다(PD 상한 12 Nm). 실물 노드는 manifest의 scale/clip을 쓰고, 한 step 목표
+# 변화 0.15 rad는 노드 상한(max_policy_target_delta_rad 0.20) 안이라 노드 수정은 없다. 행동 크기가 바뀌므로 처음부터 학습한다.
+HARDGRIP_ACTION_SCALE = 0.15
+HARDGRIP_FORCE_N = 20.0  # min_squeeze 목표와 조임 factor 기준 (최악 15.7 N + 여유)
+HARDGRIP_MASS_RANGE = (0.4, 0.8)  # kg (실측 501~561 g)
+HARDGRIP_FRICTION_STATIC = (0.25, 0.5)  # 박스·판 둘 다. PhysX average 결합이라 접촉 마찰도 0.25~0.5
+HARDGRIP_FRICTION_DYNAMIC = (0.2, 0.45)
+HARDGRIP_RAMP_STEPS = 7200  # 300 iter. 처음부터라 min_squeeze(MINSQUEEZE_SCRATCH_RAMP_STEPS)와 같이 천천히
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_SqueezeLift_LowMuHeavy_Act015_Scratch(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_MinSqueeze_Scratch
+):
+    """FaceGrip-MinSqueeze-Scratch + 조인 다음 들기 + 낮은 마찰·무거운 박스 + action scale 0.15. 처음부터 학습.
+
+    - 행동: scale·clip HARDGRIP_ACTION_SCALE (q_target = q + clip(0.15 a, ±0.15)). export manifest에 그대로 실린다.
+    - 박스 질량 HARDGRIP_MASS_RANGE, 박스·판(fr3_link7) 마찰 HARDGRIP_FRICTION_* (startup DR).
+    - min_squeeze 목표와 조임 factor 기준 HARDGRIP_FORCE_N. 조임 factor·두 벌점은 success EMA 3 뒤 HARDGRIP_RAMP_STEPS에 걸쳐.
+    - 관측·시작 자세 표는 Wide-RollAlign 그대로.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.actions.arm_action.scale = HARDGRIP_ACTION_SCALE
+        self.actions.arm_action.clip = {".*": (-HARDGRIP_ACTION_SCALE, HARDGRIP_ACTION_SCALE)}
+        self.events.randomize_box_density.params["mass_distribution_params"] = HARDGRIP_MASS_RANGE
+        self.events.randomize_box_friction.params.update(
+            static_friction_range=HARDGRIP_FRICTION_STATIC, dynamic_friction_range=HARDGRIP_FRICTION_DYNAMIC
+        )
+        self.events.randomize_plate_friction = EventTerm(
+            func=mdp.randomize_rigid_body_material,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=[".*_fr3_link7"]),
+                "static_friction_range": HARDGRIP_FRICTION_STATIC,
+                "dynamic_friction_range": HARDGRIP_FRICTION_DYNAMIC,
+                "restitution_range": (0.0, 0.0),
+                "num_buckets": 64,
+                "make_consistent": True,
+            },
+        )
+        self.rewards.min_squeeze.params["force_min"] = HARDGRIP_FORCE_N
+        _apply_squeeze_lift(self, HARDGRIP_FORCE_N, HARDGRIP_RAMP_STEPS)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_SqueezeLift_LowMuHeavy_Act015_Scratch_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_SqueezeLift_LowMuHeavy_Act015_Scratch
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-SqueezeLift-LowMuHeavy-Act015-Scratch visualization/evaluation cfg."""
 
     def __post_init__(self):
         super().__post_init__()
