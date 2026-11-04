@@ -356,3 +356,12 @@ class LiftPlateSim2Real100HzLightBox410WideJ1MirrorPPORunnerCfg(LiftPlateSim2Rea
     """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror: Light와 같은 actor/PPO, dedicated log namespace."""
 
     experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripBoxDropScratchPPORunnerCfg(LiftPlateSim2Real100HzPPORunnerCfg):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-Scratch: actor는 policy 그룹(박스 pose 지연·끊김),
+    critic은 critic 그룹(실제 박스 pose)."""
+
+    obs_groups = {"actor": ["policy"], "critic": ["critic"]}
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_facegrip_boxdrop_scratch"

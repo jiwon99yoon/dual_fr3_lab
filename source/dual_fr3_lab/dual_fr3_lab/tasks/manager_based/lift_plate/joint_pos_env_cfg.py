@@ -3856,3 +3856,41 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_PLAY(
         self.scene.num_envs = 50
         self.scene.env_spacing = 3.0
         self.observations.policy.enable_corruption = False
+
+
+
+# ---------- FaceGrip-BoxDrop-Scratch: 판 면 파지 + 비전 지연·끊김, 처음부터 (2026-11-04) ----------
+# FaceGrip 4699(고친 물리)는 실로봇에서 들기가 확인됐다. 4699 계보는 앞 단계를 박스 회전 제한 물리에서 배웠으므로
+# 이어 학습 대신 고친 물리에서 처음부터 학습한다(FaceGrip-MinSqueeze-Scratch와 같은 이유).
+# Wide-RollAlign-BoxDrop(박스 관측 지연·끊김 BOX_OBS_*, 실제 pose critic)에 FaceGrip의 plate_face_tilt를 더한다.
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_Scratch(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_BoxDrop
+):
+    """Wide-RollAlign-BoxDrop + plate_face_tilt, 처음부터 학습. 보상은 FaceGrip과 같다.
+
+    - yawtrack은 Wide-RollAlign 기본 ramp(success EMA 1.5 이후 3000 iter), plate_face_tilt는 success EMA 3 이후
+      FACEGRIP_RAMP_STEPS에 걸쳐 FACEGRIP_TILT_WEIGHT까지(FaceGrip-MinSqueeze-Scratch와 같은 방식).
+    - 관측 지연·끊김과 critic 그룹은 BoxDrop 그대로, 시작 자세 표는 Wide-RollAlign 그대로다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.plate_face_tilt = RewTerm(func=plate_face_tilt, weight=-1e-4)
+        self.curriculum.plate_face_tilt = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={"term_name": "plate_face_tilt", "weight": FACEGRIP_TILT_WEIGHT, "ramp_steps": FACEGRIP_RAMP_STEPS},
+        )
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_Scratch_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_Scratch
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-Scratch visualization/evaluation cfg (지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False
