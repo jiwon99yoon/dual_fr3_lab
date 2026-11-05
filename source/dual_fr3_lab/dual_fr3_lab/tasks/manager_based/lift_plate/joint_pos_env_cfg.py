@@ -4885,3 +4885,37 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGri
         self.scene.num_envs = 50
         self.scene.env_spacing = 3.0
         self.observations.policy.enable_corruption = False
+
+
+# ---------- -FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift-GoalXY: goal xy를 박스와 따로 뽑기 (2026-11-05) ----------
+# Pregrasp 계열은 VerticalLiftPoseCommand로 goal xy = 리셋 때 박스 xy(제자리 수직 들기)만 배웠다.
+# Box410-Wide-J1Mirror-FaceGrip-BoxDrop처럼 goal xy를 WIDE_READY_GOAL_X/Y_RANGE에서 박스와 따로 뽑는다(옮기며 들기).
+# Pregrasp Wide 표의 박스 중심(x 0.40~0.50, y ±0.107)과 같은 범위라 제자리 들기도 분포 안에 있다.
+# 실물 노드(make_goal)는 goal xy = 시작 박스 xy를 그대로 쓴다.
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift_GoalXY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift
+):
+    """Pregrasp LowMuSoftLift + goal xy를 UniformPoseCommand로 WIDE_READY_GOAL_X/Y_RANGE에서 박스와 따로 뽑는다. z는 그대로(base 0.15~0.35).
+
+    관측·행동·시작 자세 표는 그대로라 FlatSqueeze 3998, LowMuSoftLift checkpoint에서 이어 학습할 수 있다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.commands.object_pose.class_type = UniformPoseCommand
+        self.commands.object_pose.ranges.pos_x = WIDE_READY_GOAL_X_RANGE
+        self.commands.object_pose.ranges.pos_y = WIDE_READY_GOAL_Y_RANGE
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift_GoalXY_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift_GoalXY
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift-GoalXY visualization/evaluation cfg (DR·지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False

@@ -402,6 +402,15 @@ class LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripBoxDropFlatSqueeze
 
 
 @configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripBoxDropFlatSqueezeLowMuSoftLiftGoalXYPPORunnerCfg(
+    LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripBoxDropScratchPPORunnerCfg
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift-GoalXY: FlatSqueeze와 같은 actor/critic 그룹, dedicated log namespace."""
+
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_facegrip_boxdrop_flatsqueeze_lowmusoftlift_goalxy"
+
+
+@configclass
 class LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripBoxDropFlatOnlyPPORunnerCfg(
     LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripBoxDropScratchPPORunnerCfg
 ):

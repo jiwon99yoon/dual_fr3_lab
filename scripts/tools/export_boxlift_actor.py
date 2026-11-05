@@ -25,6 +25,17 @@ the robot must latch the pose measured at ``start_policy`` and keep feeding it).
 live vision pose itself, so the export writes the live terms (``box_pose`` ``live``); the robot should keep feeding
 the last pose while vision drops out instead of faulting.
 
+``manifest["goal"]`` holds the goal ranges the run sampled (base frame). ``z_range_base`` is the lift height of the box
+center. The x/y goal depends on the command class:
+
+* ``VerticalLiftPoseCommand``: goal x/y = box x/y at reset (pure vertical lift), written as
+  ``xy_offset_range_base`` ``{"x": [0, 0], "y": [0, 0]}`` (goal minus box start).
+* ``UniformPoseCommand`` (``-GoalXY``, Wide-J1Mirror-FaceGrip-BoxDrop line): goal x/y sampled in an absolute range
+  independently of the box, written as ``xy_range_base`` ``{"x": [low, high], "y": [low, high]}``. This is not an
+  offset range: which offsets were trained depends on where the box starts, so the robot must check the final goal
+  (box start + offset) against it. A node that reads only ``xy_offset_range_base`` treats such a checkpoint as a
+  vertical lift (offset 0 only), which is inside the trained range.
+
 The export refuses when ``params/env.yaml`` is missing; it never reconstructs the training
 configuration from the current source tree, which may have changed since the run.
 
@@ -234,6 +245,14 @@ def build_manifest(env: dict, agent: dict, checkpoint: Path, env_yaml: Path, che
     ranges = command["ranges"]
     for axis in ("roll", "pitch", "yaw"):
         _require(_pair(ranges[axis], axis) == [0.0, 0.0], f"goal {axis} range must be zero (identity goal quaternion)")
+    _require(str(command.get("body_name")) == "base", f"goal command must be in the base frame, got {command.get('body_name')!r}")
+    command_class = str(command["class_type"])
+    if command_class.endswith(":VerticalLiftPoseCommand"):
+        goal_xy = {"xy_offset_range_base": {"x": [0.0, 0.0], "y": [0.0, 0.0]}}
+    elif command_class.endswith(":UniformPoseCommand"):
+        goal_xy = {"xy_range_base": {"x": _pair(ranges["pos_x"], "pos_x"), "y": _pair(ranges["pos_y"], "pos_y")}}
+    else:
+        _require(False, f"unsupported goal command {command_class}")
 
     def start_range(axis: int, key: str) -> list[float]:
         low, high = _pair(pose_range.get(key, [0.0, 0.0]), f"pose_range.{key}")
@@ -295,9 +314,10 @@ def build_manifest(env: dict, agent: dict, checkpoint: Path, env_yaml: Path, che
             "rest_center_z_base": 0.5 * size[2] - root_pos[2],
         },
         "goal": {
-            "command_class": str(command["class_type"]),
+            "command_class": command_class,
             "z_range_base": _pair(ranges["pos_z"], "pos_z"),
             "quat_xyzw": [0.0, 0.0, 0.0, 1.0],
+            **goal_xy,
         },
         "robot": {"root_height_m": root_pos[2]},
     }
