@@ -6,6 +6,7 @@
 > 상속: `DualFR3PlateBoxLiftEnvCfg` → V1 → V2 → P39 → P44 → P47 → Sim2Real100Hz → Offset03 → Offset03-Level →
 > Offset03-PlateOnly → Light → Light-Margin → Light-Box410 → T6 → J1Mirror → Wide-J1Mirror → FaceGrip-BoxDrop.
 > 실험별 경과는 [`dual_fr3_lift_sim2real.md`](dual_fr3_lift_sim2real.md), 공통 원칙은 [`sim2real_gap.md`](sim2real_gap.md).
+> MoveIt pregrasp 시작 계열(실로봇 80%인 SqueezeLift 6697 등)의 현황·실로봇 후보는 [`dual_fr3_box_lift_summary.md`](dual_fr3_box_lift_summary.md).
 
 실물에서 통하는 이유는 세 가지로 묶인다.
 
@@ -72,9 +73,9 @@ cube 진단(2026-07-27): 노이즈만, 물성 DR만 넣으면 떨어뜨리지 �
 
 | 항목 | 지금 | 비고 |
 |---|---|---|
-| 들기 시작 순간 조임 | A 4999: 들고 있을 때 판당 ~15 N, 들기 시작할 때 7~8 N, 첫 접촉 판 각도 ~40° | FG-BD 2999 실로봇 미끄러짐. `-MinSqueeze`, `-FlatSqueeze`로 대응 중 |
-| 박스 크기 오차 | 크기 DR 꺼짐 (V2에서 scale 1.0) | `-Wide-RollAlign-DR`에 ±1 cm 구현, 학습 안 함 |
-| 판 재질 마찰 | 판 0.5 고정 | `-Wide-RollAlign-DR`에 0.6~1.2(고무 패드 가정) 구현, 학습 안 함 |
+| 들기 시작 순간 조임 | A 4999: 들기 시작 7~8 N. LMSL 5800: 12 N(약한 판 p10 9.4 N), 대신 판 각도 ~30° | `-FlatSqueeze-LowMuSoftLift` 5800이 낮은 마찰에서 100% (A·B2는 77~80%). 결과는 [`dual_fr3_lift_sim2real.md`](dual_fr3_lift_sim2real.md) "box ready 시작" |
+| 박스 크기 오차 | A·B2 계열은 크기 DR 꺼짐 (V2에서 scale 1.0) | `-LowMuSoftLift`부터 ±1 cm |
+| 판 재질 마찰 | A·B2 계열은 판 0.5 고정 | `-LowMuSoftLift`부터 판 0.3~0.5, 박스 0.1~0.8 (접촉 0.2~0.65) |
 | 관절 상태·명령 지연 | 없음 | `-Wide-RollAlign-DR`에 0~20 ms / 0~30 ms 구현. 2999 평가에서 40+50 ms까지 성공 97% |
 | 카메라 고정 바이어스 | 매 step Gaussian만 | 카메라-base 캘리브레이션 오차처럼 한 방향으로 계속 틀어진 오차는 없다 |
 | 물리 주기 | 100 Hz | 실제 FR3 토크 루프는 1 kHz. `-Sim2Real1kHz` cfg는 있다 |

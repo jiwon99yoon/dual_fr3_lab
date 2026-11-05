@@ -2,6 +2,7 @@
 
 판(plate) 박스 들기 작업을 잠시 멈추면서, 지금까지 한 것과 배운 것, 실로봇 후보, 다음에 할 일을 한곳에 정리한다.
 날짜별 상세 기록은 `docs/dual_fr3_lift_sim2real.md`, 6697 보고서는 `fr3_husky_etri/docs/dual_fr3_boxlift_6697_report.md`에 있다.
+이 문서는 MoveIt pregrasp 시작(`-Light-Pregrasp-Wide-*`) 계열이다. ready 자세 시작 계열(`-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-*`, 4090, 실로봇 후보 LMSL 5800)의 sim2real 요소는 [`dual_fr3_box_sim2real_summary.md`](dual_fr3_box_sim2real_summary.md)에 있다.
 
 ## 1. 현황
 

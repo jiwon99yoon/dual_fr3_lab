@@ -1560,3 +1560,25 @@ gym.register(
     },
     disable_env_checker=True,
 )
+
+# Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift + goal 정밀 추종(fine_grained) weight 5 -> 15, LowMuSoftLift 6399에서 이어 학습
+# 로그 dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop_flatsqueeze_lowmusoftlift_goalfine
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift-GoalFine-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift_GoalFine",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropFlatSqueezeLowMuSoftLiftGoalFinePPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift-GoalFine-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift_GoalFine_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropFlatSqueezeLowMuSoftLiftGoalFinePPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
