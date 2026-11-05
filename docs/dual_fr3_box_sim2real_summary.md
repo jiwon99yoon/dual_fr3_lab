@@ -72,9 +72,9 @@ cube 진단(2026-07-27): 노이즈만, 물성 DR만 넣으면 떨어뜨리지 �
 
 | 항목 | 지금 | 비고 |
 |---|---|---|
-| 들기 시작 순간 조임 | A 4999: 들고 있을 때 판당 ~15 N, 들기 시작할 때 7~8 N, 첫 접촉 판 각도 ~40° | FG-BD 2999 실로봇 미끄러짐. `-MinSqueeze`, `-FlatSqueeze`로 대응 중 |
-| 박스 크기 오차 | 크기 DR 꺼짐 (V2에서 scale 1.0) | `-Wide-RollAlign-DR`에 ±1 cm 구현, 학습 안 함 |
-| 판 재질 마찰 | 판 0.5 고정 | `-Wide-RollAlign-DR`에 0.6~1.2(고무 패드 가정) 구현, 학습 안 함 |
+| 들기 시작 순간 조임 | A 4999: 들기 시작 7~8 N. LMSL 5800: 12 N(약한 판 p10 9.4 N), 대신 판 각도 ~30° | `-FlatSqueeze-LowMuSoftLift` 5800이 낮은 마찰에서 100% (A·B2는 77~80%). 결과는 [`dual_fr3_lift_sim2real.md`](dual_fr3_lift_sim2real.md) "box ready 시작" |
+| 박스 크기 오차 | A·B2 계열은 크기 DR 꺼짐 (V2에서 scale 1.0) | `-LowMuSoftLift`부터 ±1 cm |
+| 판 재질 마찰 | A·B2 계열은 판 0.5 고정 | `-LowMuSoftLift`부터 판 0.3~0.5, 박스 0.1~0.8 (접촉 0.2~0.65) |
 | 관절 상태·명령 지연 | 없음 | `-Wide-RollAlign-DR`에 0~20 ms / 0~30 ms 구현. 2999 평가에서 40+50 ms까지 성공 97% |
 | 카메라 고정 바이어스 | 매 step Gaussian만 | 카메라-base 캘리브레이션 오차처럼 한 방향으로 계속 틀어진 오차는 없다 |
 | 물리 주기 | 100 Hz | 실제 FR3 토크 루프는 1 kHz. `-Sim2Real1kHz` cfg는 있다 |

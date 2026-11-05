@@ -4885,3 +4885,40 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGri
         self.scene.num_envs = 50
         self.scene.env_spacing = 3.0
         self.observations.policy.enable_corruption = False
+
+
+# ---------- ...-FlatSqueeze-LowMuSoftLift-GoalFine: goal 정밀 추종 weight 3배 (2026-11-05) ----------
+# LowMuSoftLift 6399: 낮은 마찰에서 들기 시작 판 법선 12.3/12.5 N(약한 판 p10 10.6 N, B2 5400은 4.0 N), 끝까지 100% 들지만
+# goal 오차가 9.4~10.1 cm(영상 3 ep), success EMA 2.6 -> 0.5. 끝 무렵 fine_grained(std 0.05)는 0.06/ep로 거의 0이다.
+# 새 벌점(가속·미끄럼·yaw, 합 ~-2.2/ep)이 들고 옮기는 동작을 깎았는데 goal 근처 보상은 그대로라 goal을 포기한 것으로 본다.
+LMSL_GOAL_FINE_WEIGHT = 15.0  # object_goal_tracking_fine_grained, 기본 5.0
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift_GoalFine(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift
+):
+    """LowMuSoftLift + object_goal_tracking_fine_grained weight LMSL_GOAL_FINE_WEIGHT. LowMuSoftLift 6399에서 이어 학습한다.
+
+    LowMuSoftLift의 새 벌점 3개는 6399에서 이미 최종 값이라 처음부터 최종 값으로 둔다(curriculum은 weight가 같으면 아무것도 안 한다).
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.object_goal_tracking_fine_grained.weight = LMSL_GOAL_FINE_WEIGHT
+        self.rewards.box_lift_accel.weight = SOFTLIFT_ACCEL_WEIGHT
+        self.rewards.plate_box_slip.weight = SLIP_WEIGHT
+        self.rewards.box_yaw_away.weight = BOX_YAW_DRIFT_WEIGHT
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift_GoalFine_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift_GoalFine
+):
+    """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift-GoalFine visualization/evaluation cfg (DR·지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 3.0
+        self.observations.policy.enable_corruption = False

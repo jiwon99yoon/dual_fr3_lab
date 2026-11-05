@@ -1047,3 +1047,69 @@ FlatSqueeze 3998에서 이어 학습한다. 판은 실물 그대로(고무 패�
 - 새 세 항은 −1e-4에서 success EMA 3 뒤 2400 env-step(100 iter)에 걸쳐 올린다. 질량(0.4~0.6 kg)·관측·행동(scale 0.1)·시작 자세 표는 그대로라 checkpoint와 실물 노드를 그대로 쓴다.
 - 행동이 현재 q 기준 ±0.1 rad라 조임 상한(PD 오차)은 박스 폭과 무관하다. 폭은 닫는 양만 바꾼다.
 - 3998을 이 task Play(1024 env, 외란 1.0, 4 s)로 돌리면 성공 92.3%(박스 μ 0.6 미만 91%, 0.6~0.8 97%), 끝 판 힘 18 N, 끝 박스 yaw median 0.4°다. 새 항을 최종 weight로 계산하면 에피소드(4 s)당 가속 −4.5, 미끄럼 −2.8, yaw −2.8이다(가속 초과분 시간 적분 median 0.20 m/s, 끝 yaw 변화 median 3.0° / p90 6.7°).
+
+## box ready 시작: 바닥 박스를 ready 자세부터 전부 RL (`-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop` 계열, 2026-11-05, 4090)
+
+Pregrasp 계열은 판이 박스 면 4 cm 바깥에 놓인 상태만 배워서 MoveIt 배치가 어긋나면 약하다. ready 자세에서 접근부터 들기까지 한 정책으로 학습한다.
+sim2real 요소 전체 정리는 [`dual_fr3_box_sim2real_summary.md`](dual_fr3_box_sim2real_summary.md).
+
+| task (`Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop...`) | 시작 | 내용 |
+|---|---|---|
+| (A) `-v0` | 처음부터 5000 iter | Wide-J1Mirror + `plate_face_tilt`(success EMA 3 뒤 −10) + 박스 관측 지연·끊김(`BOX_OBS_*`, privileged critic). 박스 yaw ±10°, goal xy를 `UniformPoseCommand`로 base x 0.40~0.50 / y ±0.10에서 따로 뽑는다(z 0.15~0.35 그대로). 5 s |
+| (A') `-MinSqueeze-v0` | 처음부터 5000 iter | A + `min_squeeze_normal_penalty` 16 N(−0.5) + `plate_face_tilt_approach`(−10), 둘 다 success EMA 3 뒤 300 iter ramp |
+| `-FlatOnly-v0` | 학습 안 함 | A + Pregrasp FlatOnly(`plate_face_tilt_worst` −20, `plate_face_offcenter` −20) |
+| (B2) `-FlatSqueeze-v0` | A 4999에서 1000 iter | FlatOnly + `min_squeeze` 16 N + `plate_face_tilt_approach` −20 |
+| (LMSL) `-FlatSqueeze-LowMuSoftLift-v0` | B2 5400에서 1000 iter | Pregrasp LowMuSoftLift와 같은 마찰(접촉 0.2~0.65)·박스 크기 ±1 cm·`box_lift_accel`·`plate_box_slip`. `box_yaw_drift` 대신 `box_yaw_away`(base x 기준 yaw 오차가 시작보다 커진 만큼만, 바로 세우는 회전은 0). 새 세 항은 trigger 0으로 100 iter ramp, B2가 배운 항은 처음부터 최종 값 |
+| `-FlatSqueeze-LowMuSoftLift-GoalFine-v0` | LMSL 6399에서 1000 iter | LMSL + `object_goal_tracking_fine_grained` 5 → 15, 새 세 항 처음부터 최종 값 |
+
+### 평가 (256 env, 1 에피소드, scratch `grip_force_eval.py` / `goal_eval.py` / `face_tilt_eval.py`)
+
+`grip_force_eval`은 env마다 첫 양 판 접촉과 들기 시작(박스 2 cm 상승)에 맞춰 판 법선 힘, 더 기운 판의 판-면 각도, 판 대비 박스 미끄럼을 잰다.
+
+학습 마찰(접촉 0.45~0.85) env:
+
+| | A 4999 | A' 4999 | B2 5400 | B2 5998 | LMSL 6399 |
+|---|---|---|---|---|---|
+| 첫 접촉 판 각도 | 39° | 58° | 31° | 39° | 42° |
+| 들기 시작 힘 L/R | 7.8 / 8.8 N | 7.8 / 8.7 N | 8.8 / 8.9 N | 8.5 / 8.8 N | 12.2 / 12.4 N |
+| 들기 시작 판 각도 | 22° | 52° | 22° | 27° | 31° |
+| 들고 있는 힘 | 14.2 N | 16.6 N | 16.8 N | 16.0 N | 14.2 N |
+| 들고 있는 판 각도 median / p90 | 2.5° / 5.2° | 6.2° / 28.9° | 1.1° / 5.3° | 0.2° / 6.6° | 3.0° / 9.8° |
+| 학습 success (끝) | 4.4 | 2.6 | 4.1 | 2.0 | 0.5 |
+
+낮은 마찰(LMSL Play) env:
+
+| | A 4999 | B2 5400 | LMSL 5600 | **LMSL 5800** | LMSL 6000 | LMSL 6399 | GoalFine 7398 |
+|---|---|---|---|---|---|---|---|
+| 끝까지 듦 | 77% | 80% | 100% | **100%** | 100% | 100% | 99% |
+| 들고 1 s 미끄럼 p90 | 27.5 cm | 24.1 cm | 0.9 cm | **0.6 cm** | 0.5 cm | 0.4 cm | 0.7 cm |
+| 들기 시작 힘 L/R, 약한 판 p10 | 7.6 / 8.4, 4.1 N | 8.2 / 8.4, 4.1 N | 12.6 / 11.7, 9.0 N | **12.0 / 11.1, 9.4 N** | 12.3 / 11.4, 9.8 N | 12.3 / 12.5, 10.6 N | 14.7 / 14.8, 12.1 N |
+| 들기 시작 판 각도 | 20° | 22° | 29° | **31°** | 32° | 30° | 22° |
+| 들고 있는 힘 | 14.4 N | 16.5 N | 16.2 N | **15.9 N** | 16.2 N | 14.4 N | 17.7 N |
+| 끝 goal 거리 median / p90 | 6.1 / 53 cm | 6.1 / 53 cm | 6.9 / 10.0 cm | **6.0 / 9.1 cm** | 6.5 / 9.9 cm | 7.3 / 11.9 cm | 28.5 / 35.8 cm |
+| 끝 10 cm 이내 | 70% | 70% | 90% | **93%** | 90% | 77% | 0% |
+| 끝 z 오차 median | −2.7 cm | −3.7 cm | +3.1 cm | **−0.2 cm** | −1.9 cm | −4.2 cm | −27.5 cm |
+| 끝 박스 yaw 오차 median | 5.0° | 8.3° | 8.4° | **8.8°** | 18.4° | 9.8° | 1.7° |
+
+- A: 판은 평평하고 goal이 가장 정확하지만 들기 시작 8 N, 들고 있을 때 14 N(실물 목표 15 N 미달). 낮은 마찰에서 23%를 놓친다.
+- A': 처음부터 조임 벌점을 걸자 판을 50° 넘게 기운 채 빨리 집어 들고, 들면서 조인다. 판 높이 차 7~8 cm인 비대칭 파지가 영상에 나온다. 제외.
+- B2: 들고 있는 힘(16.8 N)과 판 평평도는 좋아졌지만 들기 시작 순간은 A와 같다(9 N, 22°). 5400 이후 success가 4.1 → 2.0으로 떨어졌다. 낮은 마찰에서 20%를 놓치고 미끄럼 p90 24 cm — 실물 FlatSqueeze 3998 bag의 실패와 같은 모양이다.
+- LMSL: 접촉 직후부터 판당 12~14 N으로 조이고 들어 낮은 마찰에서도 100% 든다. 대가로 들기 시작 판 각도가 30° 안팎이다. 6000 이후 박스 yaw를 못 세우고(15~18°) goal이 나빠진다(학습 success 2.6 → 0.5). **5800이 균형점.**
+- GoalFine: fine_grained(std 0.05)는 goal 약 5 cm 안에서만 보상이 나와 6399(7 cm)에선 거의 0이었고, 처음부터 최종 값인 가속·미끄럼 벌점이 높이 들수록 쌓여 박스를 25 cm만 들고 버티는 해로 무너졌다(success 6900 iter 이후 0). 조임(들기 시작 14.7 N)과 yaw(1.7°)는 가장 좋다.
+- 공통: 끝 xy 오차 median 4.5~5 cm, 박스 yaw 오차가 스폰(±10°)과 비슷하게 남는다(A 5°가 최선).
+
+### 실로봇 후보: LMSL 5800
+
+- export `exports/dual_fr3_boxlift_ready_wide_j1mirror_fgbd_flatsqueeze_lowmusoftlift_model5800.npz` (sha256 `8eb1d03ca50b…`, torch 대비 max |diff| 5.0e-6).
+  checkpoint `logs/rsl_rl/dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop_flatsqueeze_lowmusoftlift/2026-11-05_04-53-33_lowmusoftlift_from_b2_5400/model_5800.pt`.
+- manifest `start.mode` `ready_pose`, `observation.box_pose` `live`(비전이 끊기면 마지막 pose 유지), action scale/clip 0.1, 지연 DR 없음.
+- 배포 노드에 필요한 것:
+  - goal xy: `goal.command_class`가 `UniformPoseCommand`이고 `goal.x_range_base` [0.40, 0.50], `goal.y_range_base` [−0.10, 0.10]가 manifest에 있다(exporter에 이번에 추가, `VerticalLiftPoseCommand`면 null). 노드가 goal xy를 박스 위가 아니라 이 범위 안의 지정값으로 넣어야 한다.
+  - ready 자세에서 MoveIt pregrasp 없이 바로 정책 시작.
+  - 박스 크기 `[0.31, 0.41, 0.28]`(x 전후, y 잡는 방향), 질량 0.4~0.6 kg.
+
+### 다음에 할 것
+
+- goal 정확도: fine 보상이 아니라 벌점 균형으로 푼다. LMSL 5800에서 `box_lift_accel` −20 → −5 또는 상한 1.5 → 2.5 m/s².
+- 박스 yaw 세우기: `box_yaw_away`와 미끄럼 벌점이 회전 자체를 막는지 확인(GoalFine은 낮게 들고도 1.7°까지 세웠다).
+- 들기 시작 판 각도(30°): `plate_face_tilt_approach`가 −20인데도 남는다. 조임과 각도를 같이 맞추는 항이 필요하다.

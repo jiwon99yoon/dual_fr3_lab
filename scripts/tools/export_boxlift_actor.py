@@ -296,6 +296,12 @@ def build_manifest(env: dict, agent: dict, checkpoint: Path, env_yaml: Path, che
         },
         "goal": {
             "command_class": str(command["class_type"]),
+            # UniformPoseCommand (ready-start -Wide-J1Mirror-FaceGrip-BoxDrop tasks) samples goal xy on its own;
+            # VerticalLiftPoseCommand puts it above the box start, so its pos_x/pos_y ranges are unused
+            "x_range_base": (_pair(ranges["pos_x"], "pos_x")
+                             if str(command["class_type"]).endswith("UniformPoseCommand") else None),
+            "y_range_base": (_pair(ranges["pos_y"], "pos_y")
+                             if str(command["class_type"]).endswith("UniformPoseCommand") else None),
             "z_range_base": _pair(ranges["pos_z"], "pos_z"),
             "quat_xyzw": [0.0, 0.0, 0.0, 1.0],
         },
