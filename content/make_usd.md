@@ -96,3 +96,55 @@ cd ~/IsaacLab
 - root는 floating → 스폰 시 `ArticulationRootPropertiesCfg(fix_root_link=True)` 필요
 - URDF의 finger mimic joint는 변환에서 소실됨 → 제어에서 두 finger에 동일 명령을 주는 방식으로 대응 (공식 FRANKA_PANDA_CFG와 동일한 관행)
 - **joint4 [-176.3°, -6.7°], joint6 [25.2°, 264.8°]는 0을 포함하지 않음** (FR3 하드웨어 스펙). 초기자세를 반드시 `ArticulationCfg.init_state.joint_pos`로 지정할 것 (예: joint4=-2.36, joint6=1.57)
+
+## UMI 그리퍼 USD (`dual_fr3_umi.usd`, 2026-11-05)
+
+캐비닛·책 작업용. franka hand 손가락 끝을 UMI 팁으로 바꾼 버전. robot cfg는 `robots/dual_fr3_umi.py`.
+
+### 소스
+
+| 패키지 (`~/fr3_ws/src`) | 출처 | 비고 |
+|---|---|---|
+| `fr3_husky` | https://github.com/JunHeonYoon/fr3_husky `devel` (`9d37f90`) | `fr3_husky_description/robots/dual_fr3_husky.urdf.xacro`. 예전 Downloads 복사본은 `~/fr3_ws/backup_fr3_husky_description_20261105`(COLCON_IGNORE) |
+| `franka_description` | JunHeonYoon/franka_description `main` (`954350f`) | `umi_tip` 인자 |
+| `husky` | JunHeonYoon/husky `humble-devel` (`6f7dd1f`, remote `junheon`, 브랜치 `junheon-humble-devel`) | 공식 husky에는 `as_two_wheels`·`fixed_wheels` 인자가 없어 xacro가 실패한다 |
+
+### 명령
+
+```bash
+cd ~/fr3_ws
+source /opt/ros/jazzy/setup.bash
+colcon build --packages-select husky_description franka_description fr3_husky_description
+source install/setup.bash
+xacro src/fr3_husky/fr3_husky_description/robots/dual_fr3_husky.urdf.xacro \
+  umi_tip:=true use_d435i:=false with_sc:=false > dual_fr3_umi.urdf
+```
+
+그다음 두 가지를 URDF에서 고친다(xacro는 그대로).
+
+1. 바퀴 고정: xacro가 `fixed_wheels="false"`를 박아 두어서 바퀴 4개가 continuous로 나온다. `(front|rear)_(left|right)_wheel_joint`의 type을 `fixed`로 바꾼다(예전 USD와 같음).
+2. root를 팔 장착 상판으로: devel 트리의 root는 husky `base_link`이고 팔 장착점 `tmp_base`가 그 자식(0.345, 0, 0.26)이다.
+   `tmp_base_joint`를 뒤집어(parent `tmp_base`, child `base_link`, xyz −0.345 0 −0.26) `tmp_base`를 `base`로 이름을 바꾼다. 예전 USD와 실로봇 base frame(두 팔 base 중점)이 같아진다. 바닥은 base 아래 0.392 m(바퀴 반지름 0.1651)로 예전과 같다.
+3. mesh 경로 절대화: `package://franka_description/` → `/home/dyros/fr3_ws/src/franka_description/`, `package://husky_description/` → `/home/dyros/fr3_ws/src/husky/husky_description/`, `package://fr3_husky_description/` → `/home/dyros/fr3_ws/src/fr3_husky/fr3_husky_description/`.
+
+결과 `~/fr3_ws/dual_fr3_umi_abs_base.urdf`를 Isaac Lab 3로 변환한다.
+
+```bash
+conda activate isaac_601_300b2
+python ~/IsaacLab3/scripts/tools/convert_urdf.py /home/dyros/fr3_ws/dual_fr3_umi_abs_base.urdf \
+  /home/dyros/fr3_ws/usd_umi/dual_fr3_umi_raw --merge-joints --headless
+```
+
+- Isaac Sim 6 변환기는 폴더(`<이름>/<urdf이름>/<urdf이름>.usda` + `payloads/`)를 만든다. `Usd.Stage.Open(..., LoadAll).Flatten().Export("dual_fr3_umi.usd")`로 한 파일로 만든다.
+- 변환기가 붙이는 `Newton*` API(`NewtonArticulationRootAPI`, `NewtonCollisionAPI`, `NewtonMimicAPI`)를 지운다. 그대로 두면 `fix_root_link=True`일 때 Isaac Lab이 articulation root를 2개(`Geometry`, `Geometry/base`)로 보고 spawn이 실패한다.
+- Isaac Sim 6 변환기는 링크를 `Geometry/base/left_fr3_link1/left_fr3_link2/...`처럼 중첩한다. Isaac Lab의 `rigid_props`·`activate_contact_sensors`는 처음 만난 rigid body(`base`)에만 적용되고 아래로 내려가지 않는다(예전 USD는 링크가 형제라 문제 없었다).
+  그래서 팔 링크 중력이 켜진 채로 남아 PD 80/4에서 팔이 14° 처졌다. 모든 rigid body에 `PhysxRigidBodyAPI`(disableGravity true, maxDepenetrationVelocity 5)와 `PhysxContactReportAPI`(threshold 0)를 USD에 직접 넣는다(Isaac 앱 안에서 실행, `PhysxSchema` 필요).
+  **이 USD는 cfg의 `disable_gravity`와 상관없이 링크 중력이 꺼져 있다.**
+- 결과를 `source/dual_fr3_lab/dual_fr3_lab/assets/dual_fr3_umi.usd`로 복사한다(10 MB, git-lfs).
+
+### 확인한 것
+
+- rigid body 19개(`base`, 팔 link1~7 ×2, 손가락 4), 구동 joint 18개, 이름은 `dual_fr3_no_handeye.usd`와 같다. 팔 관절 범위도 같다.
+- 손가락: 1개당 0~0.04 m. visual은 `UMI_tip.stl`, collision은 상자 하나(0.039 × 0.025 × 0.111 m, 손가락 기준 x −0.020, z +0.064).
+- TCP(손가락 끝 중앙): hand 기준 z +0.1774. link7 기준 (0, 0, 0.2844), z축 −45° (`UMI_TCP_OFFSET_POS/ROT`, 쿼터니언은 Isaac Lab 3 순서 xyzw).
+- ready 자세 TCP(base 기준): 왼 (0.209, +0.242, 0.247), 오른 (0.209, −0.240, 0.247).
