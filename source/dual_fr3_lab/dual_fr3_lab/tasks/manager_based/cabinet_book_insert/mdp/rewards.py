@@ -24,6 +24,14 @@ def _lane_error(pos: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
     return torch.norm(pos[:, 1:] - goal[1:], dim=-1)
 
 
+def _upright_gate(env, gate_deg: tuple[float, float] | None) -> torch.Tensor | float:
+    """1 below ``gate_deg[0]`` of book tilt, 0 above ``gate_deg[1]``; None = no gate (v1)."""
+    if gate_deg is None:
+        return 1.0
+    lo, hi = (math.radians(d) for d in gate_deg)
+    return ((hi - _book_tilt(env)) / (hi - lo)).clamp(0.0, 1.0)
+
+
 def door_open(env, goal_deg: float = 90.0) -> torch.Tensor:
     """Door opening progress, 1 at ``goal_deg`` and beyond."""
     return (door_angle_rad(env) / math.radians(goal_deg)).clamp(0.0, 1.0)
@@ -39,12 +47,16 @@ def book_approach(
 
 
 def book_lane(
-    env, goal_pos_b: tuple[float, float, float], std: float = 0.03, gate_deg: tuple[float, float] = (60.0, 80.0)
+    env,
+    goal_pos_b: tuple[float, float, float],
+    std: float = 0.03,
+    gate_deg: tuple[float, float] = (60.0, 80.0),
+    tilt_gate_deg: tuple[float, float] | None = None,
 ) -> torch.Tensor:
-    """Fine: book centre on the insertion lane (y, z of the goal)."""
+    """Fine: book centre on the insertion lane (y, z of the goal), optionally only while the book stays upright."""
     pos, _ = book_pose_b(env)
     err = _lane_error(pos, torch.tensor(goal_pos_b, device=env.device))
-    return _door_gate(env, gate_deg) * (1.0 - torch.tanh(err / std))
+    return _door_gate(env, gate_deg) * _upright_gate(env, tilt_gate_deg) * (1.0 - torch.tanh(err / std))
 
 
 def book_depth(
@@ -55,10 +67,12 @@ def book_depth(
     lane_std: float = 0.03,
     gate_deg: tuple[float, float] = (60.0, 80.0),
     overshoot: float | None = None,
+    tilt_gate_deg: tuple[float, float] | None = None,
 ) -> torch.Tensor:
     """Insertion progress from ``start_depth`` (in front of the opening) to the goal depth, scaled by lane alignment.
 
-    ``overshoot``: past the goal depth the reward falls linearly to 0 over this distance (None: stays 1)."""
+    ``overshoot``: past the goal depth the reward falls linearly to 0 over this distance (None: stays 1).
+    ``tilt_gate_deg``: also scaled by the book staying upright (``_upright_gate``)."""
     pos, _ = book_pose_b(env)
     goal = torch.tensor(goal_pos_b, device=env.device)
     depth = pos[:, 0] - opening_x_b
@@ -67,7 +81,7 @@ def book_depth(
     if overshoot is not None:
         progress = progress * (1.0 - (depth - goal_depth) / overshoot).clamp(0.0, 1.0)
     lane = 1.0 - torch.tanh(_lane_error(pos, goal) / lane_std)
-    return _door_gate(env, gate_deg) * lane * progress
+    return _door_gate(env, gate_deg) * _upright_gate(env, tilt_gate_deg) * lane * progress
 
 
 def book_orientation(env, power: int = 8) -> torch.Tensor:
@@ -86,6 +100,11 @@ def _book_tilt(env) -> torch.Tensor:
 def book_upright(env, std_deg: float = 10.0) -> torch.Tensor:
     """exp(-(tilt / std)^2): unlike cos(tilt / 2)^8 (0.97 at 10 deg) it still pays for the last few degrees."""
     return torch.exp(-(_book_tilt(env) / math.radians(std_deg)).square())
+
+
+def book_upright_tanh(env, std: float = 0.3) -> torch.Tensor:
+    """1 - tanh(tilt / std) (Upright task, std in rad)."""
+    return 1.0 - torch.tanh(_book_tilt(env) / std)
 
 
 def book_tilt_excess(env, threshold_deg: float = 15.0) -> torch.Tensor:

@@ -541,3 +541,33 @@ class DualFR3CabinetBookInsertSlowOpenDoorEnvCfg_PLAY(DualFR3CabinetBookInsertSl
         super().__post_init__()
         self.scene.num_envs = 4
         self.observations.policy.enable_corruption = False
+
+
+# ---------- Upright (2026-11-06, run upright_4090; plan 7-11) ----------
+# v1_4090 (15000 it) never reached insert_success: by 2 s it opened the door to 119 deg and rolled the book 77-113 deg
+# with the right wrist so the 45 deg hand clears the cabinet's top front edge, then held it 14 cm deep on the lane
+# (book_depth/lane pay for the centre only; success needs tilt < 10 deg). Upright: book_lane/book_depth only pay while
+# the book is within 10 deg (full) to 30 deg (zero) of its start orientation, plus a dense upright term.
+# Rewards as trained on top of the v1 rewards: v2's book_orientation and link1-3 contact penalty are taken out again.
+BOOK_TILT_GATE_DEG = (10.0, 30.0)
+
+
+@configclass
+class DualFR3CabinetBookInsertUprightEnvCfg(DualFR3CabinetBookInsertEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        rew = self.rewards
+        rew.book_orientation = None
+        rew.contact.params["sensor_names"] = CONTACT_SENSORS
+        rew.contact.weight = -0.01
+        rew.book_lane.params["tilt_gate_deg"] = BOOK_TILT_GATE_DEG
+        rew.book_depth.params["tilt_gate_deg"] = BOOK_TILT_GATE_DEG
+        rew.book_upright = RewTerm(func=mdp.book_upright_tanh, params={"std": 0.3}, weight=0.5)
+
+
+@configclass
+class DualFR3CabinetBookInsertUprightEnvCfg_PLAY(DualFR3CabinetBookInsertUprightEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 4
+        self.observations.policy.enable_corruption = False

@@ -58,3 +58,23 @@ for _suffix, _cfg in (("", "SlowEnvCfg"), ("-OpenDoor", "SlowOpenDoorEnvCfg")):
             },
             disable_env_checker=True,
         )
+
+gym.register(
+    id="Isaac-Cabinet-BookInsert-DualFR3-UMI-Upright-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.cabinet_book_insert_env_cfg:DualFR3CabinetBookInsertUprightEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CabinetBookInsertPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-Cabinet-BookInsert-DualFR3-UMI-Upright-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.cabinet_book_insert_env_cfg:DualFR3CabinetBookInsertUprightEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CabinetBookInsertPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)

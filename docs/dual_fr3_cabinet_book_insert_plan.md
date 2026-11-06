@@ -309,3 +309,19 @@ critic은 위 항을 노이즈 없이 받고, privileged 값을 더 받는다: �
   - handle_force 페널티가 큰지.
 - 잘 안 되면 7-4의 대비책(rule-based 궤적 중간 상태 리셋)을 쓴다.
 
+
+### 7-11. v1 결과와 Upright (2026-11-06)
+
+**v1_4090 (seed 42, 15000 iteration) 결과: 성공 0.**
+- `insert_success`는 학습 내내 0이었다. reward는 iteration 4000쯤부터 평탄했다(mean_reward 약 44).
+- 영상(`model_14999_views_ep1`)을 보면 2 s 안에 문을 86°까지 연다(끝에는 119°). 동시에 오른 손목을 돌려 **책을 77~113° 기울인 채로** 깊이 14 cm, 레인 오차 0 cm에 넣고 끝까지 버틴다.
+- 원인: `book_lane`과 `book_depth`가 책 중심 위치만 보고 자세는 보지 않는다. 성공은 기울기 < 10°를 요구하므로, 정책이 성공 없이도 깊이와 레인 보상을 거의 최대로 받는 국소해에 머물렀다(Episode_Reward book_depth 1.67/2.0, book_lane 0.84/1.0). 45° 오른손은 깊이 14.5 cm에서 캐비닛 윗판 앞 모서리에 닿는데, 책을 눕히면 이 간섭을 피할 수 있다.
+
+**Upright task (`Isaac-Cabinet-BookInsert-DualFR3-UMI-Upright-v0`, `-Upright-Play-v0`)**
+- `book_lane`과 `book_depth`에 기울기 게이트(`tilt_gate_deg` (10°, 30°))를 곱했다. 10° 이하는 1, 30° 이상은 0이고 그 사이는 선형이다. 기울기는 시작 자세(base 축 정렬) 대비 회전각이다.
+- dense 항 `book_upright` = 1 − tanh(기울기/0.3 rad)를 가중치 0.5로 추가했다.
+  - 함수 이름은 `mdp.book_upright_tanh`다(38b0cb7의 `book_upright`(exp, std_deg)와 다름). 보상 항 이름은 `book_upright`.
+- 38b0cb7(codex v2)이 기본 cfg에 넣은 `book_orientation`(가중치 2)과 link1~3 접촉 벌점(가중치 −0.03)은 Upright cfg에서 다시 뺀다. upright_4090 학습 때의 보상과 같게 하려는 것이다(관측은 같음).
+- v1 task는 그대로 둔다(`tilt_gate_deg` 기본값 None).
+- rule-based 전체 행(Upright task): 121/121 성공. book_lane 2.97, book_depth 4.94로 v1과 같고(기울기 최대 2°라 게이트 1), book_upright 5.44.
+- 학습: `--num_envs 4096 --max_iterations 15000 --run_name upright_4090` (4090, seed 42, scratch), 로그 `2026-11-06_18-38-10_upright_4090`. iteration당 3.0 s.
