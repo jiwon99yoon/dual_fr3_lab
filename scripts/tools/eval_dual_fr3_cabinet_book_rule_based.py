@@ -23,6 +23,9 @@ z, tilt < 10 deg.
     python scripts/tools/eval_dual_fr3_cabinet_book_rule_based.py --headless
     python scripts/tools/eval_dual_fr3_cabinet_book_rule_based.py --headless --all_rows --contacts
     python scripts/tools/eval_dual_fr3_cabinet_book_rule_based.py --headless --video logs/rule_based/cabinet_book/rule.mp4
+    python scripts/tools/eval_dual_fr3_cabinet_book_rule_based.py --headless --all_rows --contacts --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-v0
+
+Start table, goal, pre-insert point and success come from the task cfg (Table75: 75 cm table, cabinet 10 cm closer).
 
 ``--all_rows``: one env per start-table row (every book start). The run also prints the RL env's view of it:
 observation sizes, every reward term summed over the run, the success term, the largest handle force and the
@@ -51,7 +54,8 @@ parser.add_argument("--v_move", type=float, default=0.2, help="m/s")
 parser.add_argument("--near", type=float, default=0.02, help="book within this of the waypoint before the next phase (it sags 1-1.6 cm under its weight, DR mass up to 0.5 kg)")
 parser.add_argument("--v_insert", type=float, default=0.12, help="m/s")
 parser.add_argument("--gain", type=float, default=2.0)
-parser.add_argument("--ki", type=float, default=0.05, help="right arm only: integral gain on the TCP error (book weight sag), ki * sum(e) <= 2 cm; all rows: 0 -> 120/121 (z sag 3.3 cm), 0.05 -> 121/121, 0.2 -> 59/121 (y overshoot)")
+parser.add_argument("--ki", type=float, default=0.05, help="right arm only: integral gain on the TCP error (book weight sag), ki * sum(e) <= --ki_cap; all rows: 0 -> 120/121 (z sag 3.3 cm), 0.05 -> 121/121, 0.2 -> 59/121 (y overshoot)")
+parser.add_argument("--ki_cap", type=float, default=0.02, help="bound on the integral correction (m); Table75 (arm more stretched) sags ~3 cm: 0.02 -> 119/121")
 parser.add_argument("--null", type=float, default=0.5, help="null-space pull toward the solver path (start pose NPZ), per step")
 parser.add_argument("--lim_k", type=float, default=0.5, help="null-space push away from limits (within 0.3 rad)")
 parser.add_argument("--video", default="", help="mp4 path")
@@ -133,7 +137,11 @@ def rot_z(angle):
 
 def main():
     cfg = load_cfg_from_registry(args.task, "env_cfg_entry_point")
-    table = np.load(C.START_TABLE_PATH)
+    # layout from the task cfg (Table75 moves the table, cabinet and goal)
+    table = np.load(cfg.events.reset_start.params["table_path"])
+    success_params = dict(cfg.rewards.insert_success.params)
+    goal_b, opening_x = success_params["goal_pos_b"], success_params["opening_x_b"]
+    pre_b = cfg.rewards.book_approach.params["pre_pos_b"]
     cfg.scene.num_envs = len(table["joint_pos"]) if args.all_rows else args.num_envs
     cfg.events.reset_start.params["sequential"] = args.all_rows
     cfg.events.reset_start.params["fixed_row"] = args.row
@@ -194,14 +202,14 @@ def main():
     hp0, hq0 = hinge + quat_apply(unrot, hp - hinge), quat_mul(unrot, hq)
     grasp0_p, grasp0_q = compose(hp0, hq0, C.LEFT_GRASP_POS, C.LEFT_GRASP_ROT)
 
-    center = base + torch.tensor(C.CABINET_INNER_CENTER_B, device=dev)
+    center = base + torch.tensor((opening_x + C.CABINET_INNER_HALF, goal_b[1] - C.BOOK_INSERT_DY, goal_b[2]), device=dev)
     book_ref_p = T(book.data.root_pos_w).clone()
     book_ref_q = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=dev).repeat(n, 1)
     row = env.book_start_row.clone()
     start_b = torch.tensor(table["book_start_b"], device=dev, dtype=torch.float32)[row]
-    wp = torch.stack([torch.tensor(C.book_path_points(s), device=dev) for s in start_b.tolist()]) + base[:, None]
+    wp = torch.stack([torch.tensor(C.book_path_points(s, pre_b, goal_b), device=dev) for s in start_b.tolist()]) + base[:, None]
     if args.insert_depth is not None:
-        wp[:, 4, 0] = base[:, 0] + C.CABINET_OPENING_X_B + args.insert_depth
+        wp[:, 4, 0] = base[:, 0] + opening_x + args.insert_depth
     lane = wp[:, 4] - base  # inserted book centre (base frame): x goal, y/z = lane
     # joint paths the start solver followed from these starts (null-space references)
     l_door = torch.tensor(table["left_path_door"], device=dev, dtype=torch.float32)
@@ -284,7 +292,7 @@ def main():
             e = torch.cat([e_p, e_r], -1)
             # the left reference leads the door on purpose, so only the right arm (book weight) gets the integral
             ki = args.ki if side == "right" else 0.0
-            err_int[side] = (err_int[side] + e).clamp(-0.02 / max(ki, 1e-9), 0.02 / max(ki, 1e-9))
+            err_int[side] = (err_int[side] + e).clamp(-args.ki_cap / max(ki, 1e-9), args.ki_cap / max(ki, 1e-9))
             dq = (jpinv @ (args.gain * e + ki * err_int[side])[..., None])[..., 0]
             q_ref = null_ref(side, phi_ref, book_ref_p - base)
             dq += ((eye7 - jpinv @ jac) @ (args.null * (q_ref - qj) + args.lim_k * push)[..., None])[..., 0]
@@ -297,7 +305,7 @@ def main():
         handle_t = torch.where(hf > handle_max, (k + 1) * dt, handle_t)
         handle_max = torch.maximum(handle_max, hf)
         rl_contact_max = torch.maximum(rl_contact_max, mdp.contact_force_norms(env, C.CONTACT_SENSORS))
-        ok_now = mdp.insert_success(env, **C.SUCCESS_PARAMS).bool()
+        ok_now = mdp.insert_success(env, **success_params).bool()
         t_success = torch.where(ok_now & torch.isnan(t_success), (k + 1) * dt, t_success)
         if args.contacts:
             for name, (_, filt) in SENSED.items():
@@ -358,7 +366,7 @@ def main():
           f"{100 * err_max['right'].max():.1f} cm")
     # ---- RL env view (plan 7) ----
     rm = env.reward_manager
-    print(f"[rule] RL obs dims {obs_dims} | success term at the end {int(mdp.insert_success(env, **C.SUCCESS_PARAMS).sum())}/{n}, "
+    print(f"[rule] RL obs dims {obs_dims} | success term at the end {int(mdp.insert_success(env, **success_params).sum())}/{n}, "
           f"first success at {np.nanmin(t_success.cpu().numpy()):.2f}-{np.nanmax(t_success.cpu().numpy()):.2f} s")
     print("[rule] RL reward terms summed over the run (weighted, x dt; mean / min / max over envs):")
     for name in rm.active_terms:

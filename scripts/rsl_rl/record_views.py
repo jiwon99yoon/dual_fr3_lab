@@ -146,15 +146,16 @@ def measure(raw, family: str) -> dict:
         pos, quat = book_pose_b(raw)
         up = quat_apply(quat[:1], torch.tensor([[0.0, 0.0, 1.0]], device=raw.device))[0]
         tilt = math.degrees(math.acos(max(-1.0, min(1.0, float(up[2])))))
-        goal = C.BOOK_INSERT_POS_B
+        success_params = raw.cfg.rewards.insert_success.params  # the task layout (Table75 moves the goal)
+        goal = success_params["goal_pos_b"]
         m = {
             "z": float(pos[0, 2]),
             "tilt_deg": tilt,
             "door_deg": math.degrees(float(door_angle_rad(raw)[0])),
-            "depth_cm": 100.0 * float(pos[0, 0] - C.CABINET_OPENING_X_B),
+            "depth_cm": 100.0 * float(pos[0, 0] - success_params["opening_x_b"]),
             "lane_y_cm": 100.0 * float(pos[0, 1] - goal[1]),
             "lane_z_cm": 100.0 * float(pos[0, 2] - goal[2]),
-            "success": bool(insert_success(raw, **C.SUCCESS_PARAMS)[0]),
+            "success": bool(insert_success(raw, **success_params)[0]),
         }
         forces = contact_force_norms(raw, C.CONTACT_SENSORS)[0]
         for name, force in zip(C.CONTACT_SENSORS, forces):

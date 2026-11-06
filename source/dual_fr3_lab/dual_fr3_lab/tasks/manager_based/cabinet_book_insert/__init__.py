@@ -78,3 +78,32 @@ gym.register(
     },
     disable_env_checker=True,
 )
+
+# Table75 (plan 7-12): 75 cm table (base +0.345), cabinet 10 cm closer; v2 recipe: OpenDoor stage one, then closed door
+for _suffix, _cfg in (("", "Table75EnvCfg"), ("-OpenDoor", "Table75OpenDoorEnvCfg")):
+    for _play in ("", "-Play"):
+        gym.register(
+            id=f"Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75{_suffix}{_play}-v0",
+            entry_point="isaaclab.envs:ManagerBasedRLEnv",
+            kwargs={
+                "env_cfg_entry_point": f"{__name__}.cabinet_book_insert_env_cfg:DualFR3CabinetBookInsert{_cfg}"
+                + ("_PLAY" if _play else ""),
+                "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CabinetBookInsertTable75"
+                + ("OpenDoor" if _suffix else "") + "PPORunnerCfg",
+            },
+            disable_env_checker=True,
+        )
+
+# DoorFirst (2026-11-07): v2 + the book waits beside the door until it is open; same experiment as v2 so stage two
+# resumes from the open-door stage one (open_door_transfer_2026-11-06/model_2499.pt)
+for _play in ("", "-Play"):
+    gym.register(
+        id=f"Isaac-Cabinet-BookInsert-DualFR3-UMI-DoorFirst{_play}-v0",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.cabinet_book_insert_env_cfg:DualFR3CabinetBookInsertDoorFirstEnvCfg"
+            + ("_PLAY" if _play else ""),
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CabinetBookInsertPPORunnerCfg",
+        },
+        disable_env_checker=True,
+    )

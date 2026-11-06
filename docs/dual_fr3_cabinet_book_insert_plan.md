@@ -136,6 +136,8 @@ plate·cube lift 때처럼 rule-based로 작업이 물리적으로 되는지, �
   - 손잡이·책 파지 방향: 왼손 flip True, 오른손 flip True(solver가 고름, cfg와 반드시 같아야 함 — 다르면 시작부터 손가락이 책에 박혀 시뮬레이션이 튄다).
     → RL env 확인 때 왼손 flip True가 특이 자세를 지나가 손잡이에 500~1200 N이 걸려서 왼손은 flip False로 바꿨다(7-9).
 - 2026-11-05: 3단계 RL env 구현, rule-based 전체 행 확인, 학습 시작. 자세한 내용은 7-9.
+- 2026-11-06: 실물 책상 최소 70 cm → 75 cm 배치(책상 +0.30, 수납장 x −0.10) Table75 task 추가. solver 121/121, rule-based 121/121(`--ki_cap 0.04`). 7-12.
+- 2026-11-07: 실로봇에서 7498이 문을 다 열기 전에 책을 넣으려 함(sim과 같음) → DoorFirst task(v2 속도·보상 + 문 열릴 때까지 책 대기). 7-13.
 
 ## 7. RL 환경 설계 (2026-11-05, 사용자 결정 반영 — 남은 논의는 7-8)
 
@@ -325,3 +327,97 @@ critic은 위 항을 노이즈 없이 받고, privileged 값을 더 받는다: �
 - v1 task는 그대로 둔다(`tilt_gate_deg` 기본값 None).
 - rule-based 전체 행(Upright task): 121/121 성공. book_lane 2.97, book_depth 4.94로 v1과 같고(기울기 최대 2°라 게이트 1), book_upright 5.44.
 - 학습: `--num_envs 4096 --max_iterations 15000 --run_name upright_4090` (4090, seed 42, scratch), 로그 `2026-11-06_18-38-10_upright_4090`. iteration당 3.0 s.
+
+### 7-12. 75 cm 책상 (Table75, 2026-11-06)
+
+실험실 책상은 최소 70 cm라 45 cm 배치(책상 윗면 base +0.045)를 실물에서 쓸 수 없다. 실물 팔 장착면은 바닥 위 약 0.38 m다(sim 0.405, 타이어 눌림).
+
+**배치**
+- 책상 윗면 base +0.345 (+0.30). sim 바닥에서 0.75 m, 실물 바닥에서 0.725 m.
+- 수납장 (0.85, 0.10) (x −0.10). 손 접근(45°)과 책 시작 범위(x 0.53~0.73, y −0.49~−0.29)는 그대로다.
+- 넣기 직전 점과 목표는 수납장과 함께 움직인다: 목표 (0.792, 0.06, 0.54), 입구 x 0.672.
+
+**왜 10 cm 당기나 (solver, 수납장·책 없이 팔만)**
+- 수납장 그대로 + 45°: 오른팔이 넣기 끝에서 어깨→link7 0.79 m(최대의 약 98%)로 거의 펴진다. sigma_min 0.058.
+- 수납장 그대로 + 20°: 121/121이나 여유 왼 0.28 / 오른 최소 0.11 rad. 파지도 바뀐다.
+- 10 cm 당김 + 45°: 121/121, 여유 왼 0.57 / 오른 최소 0.32, 평균 0.50 rad. 45 cm 표(0.30 / 0.13 / 0.39)보다 크다.
+- 시작 표 `assets/cabinet_book/start_table_75cm.npz` (env cfg 주석에 solver 명령).
+
+**구현**
+- `apply_table75(cfg)`: 책상(다리 포함), 수납장, 책 초기 위치, 리셋 표, 관찰 `book_pos` 목표, 보상(book_approach / lane / depth / insert_success)의 목표와 입구를 옮긴다. 다른 cfg(Slow 등)에도 쓸 수 있다.
+- task: `Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75{,-OpenDoor}{,-Play}-v0`. 보상은 v2(기본 cfg) 그대로.
+- runner: 두 단계 모두 experiment `dual_fr3_cabinet_book_insert_75cm`. 그래서 2단계에서 `--load_run`으로 1단계 run을 바로 찾는다. OpenDoor는 2500 iteration.
+- rule-based 스크립트와 `record_views.py` HUD는 목표, 입구, 성공 조건, 시작 표를 상수 대신 task cfg에서 읽는다.
+- 45 cm cfg는 그대로다. 한 프로세스에서 두 cfg를 함께 만들어도 값이 섞이지 않음을 확인했다.
+
+**rule-based (전체 121행)**
+
+| task | 성공 | 깊이 | 기울기 최대 | 관절 여유 최소 | 손잡이 힘 최대 | 1 N 넘는 접촉 |
+|---|---|---|---|---|---|---|
+| 45 cm (회귀 확인) | 121/121 | 11.1~12.7 cm | 2.3° | 0.12 rad | 13 N | R_link7 27 N (1행) |
+| Table75, `--ki_cap 0.02` | 119/121 | 12.0~12.2 cm | 2.6° | 0.32 rad | 14 N | 없음 |
+| Table75, `--ki_cap 0.04` | 121/121 | 11.9~12.3 cm | 2.1° | 0.32 rad | 14 N | 없음 |
+
+- `--ki_cap 0.02`에서 실패한 2행은 책 z가 레인보다 3.1 cm 낮았다(허용 3 cm). 팔이 더 뻗어 있어 책 무게로 처지는 양이 커서, 적분 보정 한도(2 cm)를 넘었다. 한도를 `--ki_cap`으로 바꿀 수 있게 했다.
+- 보상 합(env 평균): door_open 10.2, book_approach 3.6, book_lane 3.6, book_depth 6.0, insert_success 22.9. 45 cm와 비슷하다.
+- RL smoke(OpenDoor, 256 env, 3 iteration): 정상. env.yaml에 75 cm 목표와 시작 표가 기록되어 etri exporter가 그대로 읽는다.
+
+**학습 (v2 순서)**
+```
+# 1단계: 문 열린 상태에서 시작 (2500 iteration)
+python scripts/rsl_rl/train.py --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-OpenDoor-v0 --headless --num_envs 4096 --run_name opendoor_75cm
+# 2단계: 문 닫힘, 1단계 마지막 checkpoint에서 이어서
+python scripts/rsl_rl/train.py --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-v0 --headless --num_envs 4096 --max_iterations 5000 \
+  --run_name closed_door_75cm --resume --load_run <1단계 run 폴더> --checkpoint model_2499.pt
+```
+- 보상이 v2라 속도 문제(관절 약 2 rad/s, 7-10)는 그대로다. v3 속도 제한을 다시 설계하면 `apply_table75`를 같이 적용한다.
+
+**실물 배치**: etri `docs/dual_fr3_cabinet_book_layout_75cm.md`. FK 노드 보정값은 `hinge_position_base: [0.6635, 0.2555, 0.54]`, `left_tcp_closed_position_base: [0.6241, -0.035, 0.5259]`이다.
+
+### 7-13. DoorFirst: 문을 다 연 뒤 책 (2026-11-07)
+
+**문제**: 실로봇에서 7498이 문을 다 열기 전에 책을 넣으려 했다(충돌 위험으로 정지). sim에서도 같다(121행, 결정적 행동, `sequential` 행 배정).
+
+| | 책 앞면이 입구에 닿을 때 문 | 책 중심이 입구를 지날 때 | 문 85° 도달 | 끝 기울기 |
+|---|---|---|---|---|
+| 7498 | 중앙 37° (30~44°), 0.75 s | 42° | 1.75 s | 4° |
+| v1 (`v1_5070` 14999) | 중앙 52° (46~70°), 1.15 s | 60° | 1.75 s | 31° |
+
+- 원인: 책 보상은 문 60~80°에서 켜지지만(`DOOR_GATE_DEG`), 그 전에 책을 옮기는 것을 막는 항이 없다. 정책은 문을 여는 동안 책을 미리 입구까지 가져다 둔다.
+- 속도(관절 약 2 rad/s)는 v1/v2 그대로 둔다(사용자 결정 2026-11-07). 실로봇 제어기(Isaac PD 모드)도 속도를 제한하지 않아 sim과 같은 속도로 움직인다.
+
+**구현** (`apply_door_first(cfg)`, task `Isaac-Cabinet-BookInsert-DualFR3-UMI-DoorFirst{,-Play}-v0`, runner는 v2와 같은 experiment)
+- `book_wait` = `mdp.book_early_intrusion`, 가중치 −20: 책 중심 y가 `BOOK_WAIT_Y_B`(−0.14)를 넘은 정도(5 cm에서 1로 포화) × (1 − 문 게이트 80~90°).
+  - −0.14 = 닫힌 문의 자유단 y −0.095 − 책 두께 절반 − 여유 3 cm. 책 시작 위치(y ≤ −0.29)와 rule-based WAIT 위치는 밖이다. 수납장 y가 같아 Table75에서도 같은 값이다.
+  - 책이 레인(y 0.06)에 가려면 이 선을 반드시 넘으므로, 문이 열리기 전에는 어떤 경로로도 넣을 수 없다.
+- 책 보상(접근·레인·깊이) 게이트 60~80° → 80~90°.
+- 성공 조건에 `min_door_deg` 85°.
+- 나머지(속도, book_orientation, 접촉, 손잡이 힘)는 v2와 같다.
+
+**확인**
+- rule-based 전체 행: 121/121, book_wait 평균 −0.06(가중치 −10 기준; 최소 −0.34). SLIDE가 문 75°(`--gate_deg` 기본)에서 시작해 생기는 작은 값이다. 접촉 > 1 N 없음.
+- 같은 121행에서 보상 합(가중치 −10 기준):
+
+  | | 7498 (v2 보상) | 7498 (DoorFirst) | v1 (DoorFirst) | rule-based (DoorFirst) |
+  |---|---|---|---|---|
+  | book_wait | − | −17.7 (−10.2 ~ −116) | −8.8 | −0.06 |
+  | 합 | 116.6 | 92.1 | 52.6 | 약 66 |
+
+  - rule-based 합이 7498보다 낮은 것은 순서가 아니라 속도 때문이다(첫 성공 약 7 s vs 1.2 s).
+  - 문을 기다리는 빠른 정책은 7498보다 약 1~1.5 s 늦게 넣는다(문 85° 1.7 s 후 레인까지 0.2 m 이동 + 삽입). 성공·깊이·레인 보상으로 약 10~13 손해다. 가중치 −10이면 7498식 선진입의 벌점(평균 17.7, 최소 10.2)과 비슷해서, 여유를 두려고 −20으로 정했다. −20에서 7498은 book_wait 평균 −27.3(최소 −20.4)이다.
+- 7498은 `sequential` 121행에서 115~120/121 성공이다(DR 표본에 따라; 실패 행은 문이 33~36°에서 멈춤). 위 표의 7498 수치는 실패 행을 포함한다.
+- smoke(256 env, 3 iteration, open-door 2499에서 resume): 정상. 2499는 문 닫힘 시작에서 책을 바로 들고 와서 book_wait −0.08 → −2.4로 커진다(학습으로 줄어야 할 항).
+
+**학습** (v2 순서의 2단계만 새로. 1단계 open-door는 문이 90°라 게이트 1, book_wait 0, 성공 문 조건 만족이라 v2 1단계와 같다)
+```
+python scripts/rsl_rl/train.py --task Isaac-Cabinet-BookInsert-DualFR3-UMI-DoorFirst-v0 --headless --num_envs 4096 --max_iterations 5000 \
+  --run_name door_first --resume --load_run open_door_transfer_2026-11-06 --checkpoint model_2499.pt
+```
+- 확인할 것: Episode_Reward/book_wait가 0 근처로 가는지, insert_success가 v2만큼 오르는지, 문 80° 전에 책이 대기선을 넘는 행이 없어졌는지(`scripts/tools/eval_dual_fr3_cabinet_book_door_entry.py`, 아래).
+```
+python scripts/tools/eval_dual_fr3_cabinet_book_door_entry.py --headless --task Isaac-Cabinet-BookInsert-DualFR3-UMI-DoorFirst-Play-v0 \
+  --checkpoint logs/rsl_rl/dual_fr3_cabinet_book_insert/<run>/model_7498.pt
+```
+- 7498 기준값: 대기선(y −0.14)을 문 80° 전에 넘는 행 121/121.
+- Table75·OpenDoor 변형 등록은 task 구성 논의(속도·손잡이 힘 등) 후에 한다.
+

@@ -84,6 +84,18 @@ def book_depth(
     return _door_gate(env, gate_deg) * _upright_gate(env, tilt_gate_deg) * lane * progress
 
 
+def book_early_intrusion(
+    env, y_wait: float, open_deg: tuple[float, float] = (80.0, 90.0), ramp: float = 0.05
+) -> torch.Tensor:
+    """Book centre past ``y_wait`` (toward the door's sweep) before the door is open, 0-1 over ``ramp`` (m).
+
+    Fades out as the door opens through ``open_deg``: the book waits beside the door like the rule-based WAIT phase
+    (v1/v2 carried it in while the door opened; the reward gate alone only withheld the book rewards)."""
+    pos, _ = book_pose_b(env)
+    intrusion = ((pos[:, 1] - y_wait) / ramp).clamp(0.0, 1.0)
+    return (1.0 - _door_gate(env, open_deg)) * intrusion
+
+
 def book_orientation(env, power: int = 8) -> torch.Tensor:
     """Dense alignment with the upright insertion pose (identity in the robot base frame)."""
     _, quat = book_pose_b(env)

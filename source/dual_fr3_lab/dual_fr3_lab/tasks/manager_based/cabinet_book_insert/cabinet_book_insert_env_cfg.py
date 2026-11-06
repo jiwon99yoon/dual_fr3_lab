@@ -107,15 +107,15 @@ BOOK_START_REGION_Y = (-0.49, -0.29)
 BOOK_START_POS_B = (0.5 * sum(BOOK_START_REGION_X), 0.5 * sum(BOOK_START_REGION_Y), BOOK_ON_TABLE_Z_B)
 
 
-def book_path_points(start):
+def book_path_points(start, pre=BOOK_PRE_POS_B, goal=BOOK_INSERT_POS_B):
     """Rule-based book centre path (base frame): start -> lifted -> pre-insert x -> pre-insert (lane) -> inserted."""
-    lane_z = BOOK_PRE_POS_B[2]
+    lane_z = pre[2]
     return [
         tuple(start),
         (start[0], start[1], lane_z),
-        (BOOK_PRE_POS_B[0], start[1], lane_z),
-        BOOK_PRE_POS_B,
-        BOOK_INSERT_POS_B,
+        (pre[0], start[1], lane_z),
+        tuple(pre),
+        tuple(goal),
     ]
 
 
@@ -567,6 +567,130 @@ class DualFR3CabinetBookInsertUprightEnvCfg(DualFR3CabinetBookInsertEnvCfg):
 
 @configclass
 class DualFR3CabinetBookInsertUprightEnvCfg_PLAY(DualFR3CabinetBookInsertUprightEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 4
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- Table75 (2026-11-06, plan 7-12): the lab table is at least 70 cm high ----------
+# Table top 0.30 m higher (base +0.345: 0.75 m above the sim floor, 0.725 m above the real floor with the arm mount
+# measured 0.38 m up) and the cabinet 0.10 m closer. Same grasps (45 deg) and book start region (x/y). Solver
+# (2026-11-06): same cabinet x with 45 deg grasps stretches the right arm to ~98 % of its reach at the insert end
+# (sigma_min 0.058); 10 cm closer covers 121/121 rows with path margins left 0.57 / right >= 0.32 rad (45 cm table:
+# 0.30 / 0.13). The book path (pre-insert, goal) moves with the cabinet; the start rows are in the table NPZ:
+#   python scripts/tools/solve_cabinet_book_start.py --headless --table_dz 0.30 --cabinet_x 0.85 --cabinet_y 0.10 \
+#       --grid 11 --region_x 0.63 0.83 --out source/dual_fr3_lab/dual_fr3_lab/assets/cabinet_book/start_table_75cm.npz
+# (the solver moves the book rows with the cabinet too, so --region_x is the 45 cm region + 0.10)
+TABLE75_DZ = 0.30
+TABLE75_CABINET_DX = -0.10
+TABLE75_START_TABLE_PATH = str(ASSET_DIR / "start_table_75cm.npz")
+
+
+def _moved(p, dx=TABLE75_CABINET_DX, dz=TABLE75_DZ):
+    return (p[0] + dx, p[1], p[2] + dz)
+
+
+TABLE75_TABLE_TOP_Z_B = TABLE_TOP_Z_B + TABLE75_DZ
+TABLE75_CABINET_XY_B = (CABINET_XY_B[0] + TABLE75_CABINET_DX, CABINET_XY_B[1])
+TABLE75_CABINET_OPENING_X_B = CABINET_OPENING_X_B + TABLE75_CABINET_DX
+TABLE75_BOOK_PRE_POS_B = _moved(BOOK_PRE_POS_B)
+TABLE75_BOOK_INSERT_POS_B = _moved(BOOK_INSERT_POS_B)
+TABLE75_GOAL_PARAMS = {"goal_pos_b": TABLE75_BOOK_INSERT_POS_B, "opening_x_b": TABLE75_CABINET_OPENING_X_B}
+
+
+def apply_table75(cfg: DualFR3CabinetBookInsertEnvCfg):
+    """Move the table, cabinet and goal-relative terms of any cabinet book cfg to the Table75 layout (in place)."""
+    sc = cfg.scene
+    sc.table.init_state.pos = _moved(sc.table.init_state.pos, dx=0.0)
+    for leg in (sc.table_leg_l, sc.table_leg_r):  # floor to the raised top
+        leg.spawn.size = (leg.spawn.size[0], leg.spawn.size[1], leg.spawn.size[2] + TABLE75_DZ)
+        leg.init_state.pos = _moved(leg.init_state.pos, dx=0.0, dz=0.5 * TABLE75_DZ)
+    sc.cabinet.init_state.pos = _moved(sc.cabinet.init_state.pos)
+    sc.book.init_state.pos = _moved(sc.book.init_state.pos, dx=0.0)  # the reset puts it on its start row
+    cfg.events.reset_start.params["table_path"] = TABLE75_START_TABLE_PATH
+    for group in (cfg.observations.policy, cfg.observations.critic):
+        group.book_pos.params["target_pos_b"] = TABLE75_BOOK_INSERT_POS_B
+    rew = cfg.rewards
+    rew.book_approach.params["pre_pos_b"] = TABLE75_BOOK_PRE_POS_B
+    rew.book_lane.params["goal_pos_b"] = TABLE75_BOOK_INSERT_POS_B
+    rew.book_depth.params.update(TABLE75_GOAL_PARAMS)
+    rew.insert_success.params.update(TABLE75_GOAL_PARAMS)
+    cfg.viewer.lookat = _moved(cfg.viewer.lookat, dx=0.0)
+
+
+@configclass
+class DualFR3CabinetBookInsertTable75EnvCfg(DualFR3CabinetBookInsertEnvCfg):
+    """v2 rewards (book_orientation, link1-3 contacts) on the 75 cm table; stage two (door closed)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        apply_table75(self)
+
+
+@configclass
+class DualFR3CabinetBookInsertTable75EnvCfg_PLAY(DualFR3CabinetBookInsertTable75EnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 4
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3CabinetBookInsertTable75OpenDoorEnvCfg(DualFR3CabinetBookInsertTable75EnvCfg):
+    """Stage one (v2 recipe): door already open, learn the upright insertion first."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.reset_start.params["initial_open_deg"] = 90.0
+
+
+@configclass
+class DualFR3CabinetBookInsertTable75OpenDoorEnvCfg_PLAY(DualFR3CabinetBookInsertTable75OpenDoorEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 4
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- DoorFirst (2026-11-07): open the door fully, then bring the book in ----------
+# v1/v2 carried the book into the door's sweep while the door opened (sim, 121 rows: book front at the opening at door
+# 37 deg for 7498 and 52 deg for v1; 85 deg only at 1.75 s). The 60-80 deg gate only withheld the book rewards, so
+# carrying the book in early cost nothing; on the real robot the book went at the half-open door. DoorFirst keeps the
+# v2 speed and rewards and adds: the book waits right of the door (y < BOOK_WAIT_Y_B, where the rule-based run waits)
+# until the door is open, the book rewards ramp in over 80-90 deg, and success needs the door >= 85 deg.
+DOOR_FIRST_GATE_DEG = (80.0, 90.0)
+BOOK_WAIT_MARGIN = 0.03
+# closed door's free edge (y -0.095), minus half the book thickness and the margin: -0.14
+BOOK_WAIT_Y_B = CABINET_XY_B[1] - CABINET_OUTER_HALF - 0.5 * BOOK_SIZE[1] - BOOK_WAIT_MARGIN
+DOOR_FIRST_WAIT_WEIGHT = -20.0
+DOOR_FIRST_MIN_DOOR_DEG = 85.0
+
+
+def apply_door_first(cfg: DualFR3CabinetBookInsertEnvCfg):
+    """Book waits beside the door until it is open (in place; the cabinet y is the same on the Table75 layout)."""
+    rew = cfg.rewards
+    for term in (rew.book_approach, rew.book_lane, rew.book_depth):
+        term.params["gate_deg"] = DOOR_FIRST_GATE_DEG
+    rew.book_wait = RewTerm(
+        func=mdp.book_early_intrusion,
+        params={"y_wait": BOOK_WAIT_Y_B, "open_deg": DOOR_FIRST_GATE_DEG},
+        weight=DOOR_FIRST_WAIT_WEIGHT,
+    )
+    rew.insert_success.params["min_door_deg"] = DOOR_FIRST_MIN_DOOR_DEG
+
+
+@configclass
+class DualFR3CabinetBookInsertDoorFirstEnvCfg(DualFR3CabinetBookInsertEnvCfg):
+    """v2 (speed, rewards) + DoorFirst; stage two (door closed), resumed from the v2 open-door stage one."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        apply_door_first(self)
+
+
+@configclass
+class DualFR3CabinetBookInsertDoorFirstEnvCfg_PLAY(DualFR3CabinetBookInsertDoorFirstEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 4

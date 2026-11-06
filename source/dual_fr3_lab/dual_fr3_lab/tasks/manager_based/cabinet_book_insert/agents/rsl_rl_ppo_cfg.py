@@ -62,3 +62,15 @@ class CabinetBookInsertSlowPPORunnerCfg(CabinetBookInsertPPORunnerCfg):
 @configclass
 class CabinetBookInsertSlowOpenDoorPPORunnerCfg(CabinetBookInsertSlowPPORunnerCfg):
     max_iterations = 2500
+
+
+@configclass
+class CabinetBookInsertTable75PPORunnerCfg(CabinetBookInsertPPORunnerCfg):
+    """75 cm table (plan 7-12) closed-door stage, resumed from its open-door stage (same experiment for --load_run)."""
+
+    experiment_name = "dual_fr3_cabinet_book_insert_75cm"
+
+
+@configclass
+class CabinetBookInsertTable75OpenDoorPPORunnerCfg(CabinetBookInsertTable75PPORunnerCfg):
+    max_iterations = 2500

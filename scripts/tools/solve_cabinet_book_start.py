@@ -47,13 +47,14 @@ parser.add_argument("--door_step_deg", type=float, default=5.0)
 parser.add_argument("--cabinet_x", type=float, nargs="+", default=None, help="cabinet centre x (base), sweep")
 parser.add_argument("--cabinet_y", type=float, nargs="+", default=None, help="cabinet centre y (base), sweep")
 parser.add_argument("--pitch", type=float, nargs="+", default=None, help="grasp approach pitch (deg, both arms), sweep")
-parser.add_argument("--table_dz", type=float, default=0.0, help="raise the table (cabinet, book path) by this much")
+parser.add_argument("--table_dz", type=float, default=0.0, help="raise the table (its collision box, cabinet, book path) by this much; writes nothing")
 parser.add_argument("--k_sigma", type=float, default=0.5, help="null-space ascent of the TCP Jacobian's smallest singular value")
 parser.add_argument("--sigma_cap", type=float, default=0.15, help="no ascent above this sigma_min")
 parser.add_argument("--grid", type=int, default=9, help="book start rows per axis over the start region (table)")
 parser.add_argument("--right_candidates", type=int, default=4, help="stage-2 right arms tried on the whole table")
 parser.add_argument("--region_x", type=float, nargs=2, default=None, help="explore another book start region (writes nothing)")
 parser.add_argument("--region_y", type=float, nargs=2, default=None, help="explore another book start region (writes nothing)")
+parser.add_argument("--out", default=None, help="write the start table here instead (also for --table_dz/--region/--cabinet runs; book starts shifted with the cabinet and table)")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 app = AppLauncher(args).app
@@ -126,8 +127,8 @@ else:
     pitches = [(math.radians(d), math.radians(d)) for d in args.pitch]
 places = list(itertools.product(xs, ys, pitches))
 P = len(places)
-table = P == 1 and args.table_dz == 0.0  # stage 2
-write = table and args.region_x is None and args.region_y is None
+table = P == 1  # stage 3
+write = table and (args.out is not None or (args.table_dz == 0.0 and args.region_x is None and args.region_y is None))
 G = args.grid if table else 1
 region_x, region_y = args.region_x or C.BOOK_START_REGION_X, args.region_y or C.BOOK_START_REGION_Y
 gx = np.linspace(*region_x, G) if G > 1 else [C.BOOK_START_POS_B[0]]
@@ -149,6 +150,9 @@ scene_cfg.cabinet = None  # kinematic check: frames from the cfg constants
 scene_cfg.book = None
 scene_cfg.contact_book = None  # sensors on the removed assets
 scene_cfg.cabinet_wrench = None
+if args.table_dz:  # the arms must clear the raised table top too
+    _p = scene_cfg.table.init_state.pos
+    scene_cfg.table.init_state.pos = (_p[0], _p[1], _p[2] + args.table_dz)
 sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=0.01, physics=C.PhysxCfg()))
 scene = InteractiveScene(scene_cfg)
 sim.reset()
@@ -519,9 +523,9 @@ if table:
         for s in ("left", "right"):
             for k in (1, 2):
                 q_out[:, jn.index(f"{s}_fr3_finger_joint{k}")] = fingers[s]
-        starts_b = np.array([rows_b[r] for r in ok_rows])
+        starts_b = np.array([rows_b[r] for r in ok_rows]) + shift[0].cpu().numpy()  # as solved (moved with the cabinet)
         book_pose_env = np.concatenate([starts_b + [0.0, 0.0, C.ROBOT_BASE_Z], np.tile([0.0, 0.0, 0.0, 1.0], (len(ok_rows), 1))], 1)
-        out = C.START_TABLE_PATH
+        out = args.out or C.START_TABLE_PATH
         os.makedirs(os.path.dirname(out), exist_ok=True)
         np.savez(
             out,
@@ -535,7 +539,7 @@ if table:
             # the IK paths from these starts (null-space references for the rule-based)
             left_path_door=np.array(door_path),
             left_path_q=st1["left"]["path_q"][el].cpu().numpy(),  # [door waypoints, 7]
-            right_path_book=row_paths[ok_rows].cpu().numpy(),  # [rows, W, 3] base frame
+            right_path_book=(row_paths[ok_rows] + shift[0]).cpu().numpy(),  # [rows, W, 3] base frame
             right_path_q=rr["path_q"][ok_env].cpu().numpy(),  # [rows, W, 7]
         )
         print("[start] wrote", out, f"({len(ok_rows)} rows)")
