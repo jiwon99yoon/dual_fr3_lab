@@ -42,3 +42,23 @@ class CabinetBookInsertPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class CabinetBookInsertOpenDoorPPORunnerCfg(CabinetBookInsertPPORunnerCfg):
+    """Short stage-one run to learn book alignment/insertion with the cabinet already open."""
+
+    max_iterations = 2500
+    experiment_name = "dual_fr3_cabinet_book_insert_open_door"
+
+
+@configclass
+class CabinetBookInsertSlowPPORunnerCfg(CabinetBookInsertPPORunnerCfg):
+    """v3 (plan 7-10) closed-door stage, resumed from the open-door stage (same experiment, so --load_run finds it)."""
+
+    experiment_name = "dual_fr3_cabinet_book_insert_slow"
+
+
+@configclass
+class CabinetBookInsertSlowOpenDoorPPORunnerCfg(CabinetBookInsertSlowPPORunnerCfg):
+    max_iterations = 2500

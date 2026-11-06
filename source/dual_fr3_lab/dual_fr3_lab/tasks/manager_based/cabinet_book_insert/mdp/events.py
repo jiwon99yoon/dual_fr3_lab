@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from functools import lru_cache
 
 import numpy as np
@@ -64,16 +65,17 @@ def reset_to_start_table(
     table_path: str,
     sequential: bool = False,
     fixed_row: int | None = None,
+    initial_open_deg: float = 0.0,
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     cabinet_cfg: SceneEntityCfg = SceneEntityCfg("cabinet"),
     book_cfg: SceneEntityCfg = SceneEntityCfg("book"),
 ):
-    """reset: closed door, robot joints (arms + fingers) and the attached book at one row of the start table.
+    """Reset grasps/book from one solved start row; optionally start the door open with the solved left-arm path pose.
 
     ``table_path`` is the NPZ from ``scripts/tools/solve_cabinet_book_start.py``: ``joint_names``, ``joint_pos``
     [rows, joints] and ``book_pose_env`` [rows, 7] (book root pose relative to the env origin, quat xyzw), one row per
     book start on the table. Rows are drawn uniformly (``sequential``: env i gets row i % rows; ``fixed_row``: every env
-    gets that row; both for evaluation).
+    gets that row; both for evaluation). ``initial_open_deg`` selects the closest solved left-arm/door path state.
     The joints are not perturbed: the welded hands must match the book and the handle exactly.
     The drawn row is kept in ``env.book_start_row`` (rule-based null-space reference, logging).
     """
@@ -82,7 +84,8 @@ def reset_to_start_table(
     if not hasattr(env, "book_start_row"):
         env.book_start_row = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
         env._start_table = {
-            k: torch.tensor(table[k], dtype=torch.float32, device=env.device) for k in ("joint_pos", "book_pose_env")
+            k: torch.tensor(table[k], dtype=torch.float32, device=env.device)
+            for k in ("joint_pos", "book_pose_env", "left_path_door", "left_path_q")
         }
         env._start_joint_ids = [robot.joint_names.index(str(nm)) for nm in table["joint_names"]]
     rows = len(table["joint_pos"])
@@ -94,13 +97,21 @@ def reset_to_start_table(
     else:
         row = torch.randint(0, rows, (n,), device=env.device)
     env.book_start_row[env_ids] = row
-    q = env._start_table["joint_pos"][row]
+    q = env._start_table["joint_pos"][row].clone()
+    if not 0.0 <= initial_open_deg <= 120.0:
+        raise ValueError(f"initial_open_deg must be in [0, 120], got {initial_open_deg}")
+    if initial_open_deg > 0.0:
+        target_open_rad = math.radians(initial_open_deg)
+        path_id = int(torch.argmin(torch.abs(env._start_table["left_path_door"] - target_open_rad)))
+        left_ids = [robot.joint_names.index(f"left_fr3_joint{j}") for j in range(1, 8)]
+        q[:, left_ids] = env._start_table["left_path_q"][path_id]
     ids = env._start_joint_ids
     robot.write_joint_position_to_sim_index(position=q, joint_ids=ids, env_ids=env_ids)
     robot.write_joint_velocity_to_sim_index(velocity=torch.zeros_like(q), joint_ids=ids, env_ids=env_ids)
     robot.set_joint_position_target_index(target=q, joint_ids=ids, env_ids=env_ids)
 
     door = torch.zeros(n, cabinet.num_joints, device=env.device)
+    door[:, 0] = -math.radians(initial_open_deg)  # MJCF hinge is negative when opening.
     cabinet.write_joint_position_to_sim_index(position=door, env_ids=env_ids)
     cabinet.write_joint_velocity_to_sim_index(velocity=door, env_ids=env_ids)
 

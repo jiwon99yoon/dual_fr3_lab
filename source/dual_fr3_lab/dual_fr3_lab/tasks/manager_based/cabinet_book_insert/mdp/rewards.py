@@ -54,14 +54,43 @@ def book_depth(
     start_depth: float = -0.15,
     lane_std: float = 0.03,
     gate_deg: tuple[float, float] = (60.0, 80.0),
+    overshoot: float | None = None,
 ) -> torch.Tensor:
-    """Insertion progress from ``start_depth`` (in front of the opening) to the goal depth, scaled by lane alignment."""
+    """Insertion progress from ``start_depth`` (in front of the opening) to the goal depth, scaled by lane alignment.
+
+    ``overshoot``: past the goal depth the reward falls linearly to 0 over this distance (None: stays 1)."""
     pos, _ = book_pose_b(env)
     goal = torch.tensor(goal_pos_b, device=env.device)
     depth = pos[:, 0] - opening_x_b
-    progress = ((depth - start_depth) / (goal[0] - opening_x_b - start_depth)).clamp(0.0, 1.0)
+    goal_depth = goal[0] - opening_x_b
+    progress = ((depth - start_depth) / (goal_depth - start_depth)).clamp(0.0, 1.0)
+    if overshoot is not None:
+        progress = progress * (1.0 - (depth - goal_depth) / overshoot).clamp(0.0, 1.0)
     lane = 1.0 - torch.tanh(_lane_error(pos, goal) / lane_std)
     return _door_gate(env, gate_deg) * lane * progress
+
+
+def book_orientation(env, power: int = 8) -> torch.Tensor:
+    """Dense alignment with the upright insertion pose (identity in the robot base frame)."""
+    _, quat = book_pose_b(env)
+    # book_pose_b normalizes the sign so w >= 0. Raising cos(angle / 2) to a power
+    # keeps a smooth signal while making a 20-30 degree wrist-induced tilt costly.
+    return quat[:, 3].clamp(0.0, 1.0).pow(power)
+
+
+def _book_tilt(env) -> torch.Tensor:
+    _, quat = book_pose_b(env)
+    return 2.0 * torch.acos(quat[:, 3].clamp(max=1.0))
+
+
+def book_upright(env, std_deg: float = 10.0) -> torch.Tensor:
+    """exp(-(tilt / std)^2): unlike cos(tilt / 2)^8 (0.97 at 10 deg) it still pays for the last few degrees."""
+    return torch.exp(-(_book_tilt(env) / math.radians(std_deg)).square())
+
+
+def book_tilt_excess(env, threshold_deg: float = 15.0) -> torch.Tensor:
+    """Tilt above ``threshold_deg`` (rad), at any time (v2 tilted the book ~30 deg while carrying it)."""
+    return (_book_tilt(env) - math.radians(threshold_deg)).clamp(min=0.0)
 
 
 def insert_success(
@@ -71,14 +100,21 @@ def insert_success(
     min_depth: float = 0.09,
     lane_tol: float = 0.03,
     max_tilt_deg: float = 10.0,
+    max_depth: float | None = None,
+    min_door_deg: float | None = None,
 ) -> torch.Tensor:
     """Success (plan 7-3): book centre >= ``min_depth`` past the opening, y and z within ``lane_tol`` of the lane,
-    tilt below ``max_tilt_deg``."""
-    pos, quat = book_pose_b(env)
+    tilt below ``max_tilt_deg``; optionally book centre <= ``max_depth`` past the opening and door >= ``min_door_deg``."""
+    pos, _ = book_pose_b(env)
     goal = torch.tensor(goal_pos_b, device=env.device)
-    tilt = 2.0 * torch.acos(quat[:, 3].clamp(max=1.0))
-    ok = (pos[:, 0] - opening_x_b >= min_depth) & ((pos[:, 1:] - goal[1:]).abs() < lane_tol).all(-1)
-    return (ok & (tilt < math.radians(max_tilt_deg))).float()
+    depth = pos[:, 0] - opening_x_b
+    ok = (depth >= min_depth) & ((pos[:, 1:] - goal[1:]).abs() < lane_tol).all(-1)
+    ok &= _book_tilt(env) < math.radians(max_tilt_deg)
+    if max_depth is not None:
+        ok &= depth <= max_depth
+    if min_door_deg is not None:
+        ok &= door_angle_rad(env) >= math.radians(min_door_deg)
+    return ok.float()
 
 
 def contact_excess(env, sensor_names: list[str], threshold: float = 5.0) -> torch.Tensor:

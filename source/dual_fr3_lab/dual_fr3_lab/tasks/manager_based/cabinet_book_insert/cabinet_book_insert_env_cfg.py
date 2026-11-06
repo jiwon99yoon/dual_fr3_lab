@@ -198,7 +198,21 @@ DOOR_DAMPING_RANGE = (0.5, 3.0)  # N m s / rad (MJCF 1.0)
 ARM_CONTACT_LINKS = ("link4", "link5", "link6", "link7", "leftfinger", "rightfinger")
 ARM_CONTACT_SENSORS = [f"contact_{s}_{lk}" for s in ("left", "right") for lk in ARM_CONTACT_LINKS]
 CONTACT_SENSORS = ARM_CONTACT_SENSORS + ["contact_book"]
+ARM_PROXIMAL_CONTACT_LINKS = ("link1", "link2", "link3")
+ARM_PROXIMAL_CONTACT_SENSORS = [f"contact_{s}_{lk}" for s in ("left", "right") for lk in ARM_PROXIMAL_CONTACT_LINKS]
+CONTACT_PENALTY_SENSORS = CONTACT_SENSORS + ARM_PROXIMAL_CONTACT_SENSORS
 ARM_JOINTS = SceneEntityCfg("robot", joint_names=DUAL_ARM_JOINT_NAMES, preserve_order=True)
+
+# ---------- v3 "Slow" (plan 7-10, 2026-11-06 decision) ----------
+# v2 (open-door pretrain -> closed door) reached 120/121 in sim but inserted at ~1.3 s: joints ~2 rad/s, handle force
+# median 54 N (max 233), book tilted ~30 deg while carried, 16 cm deep, door ~60 deg when the book went in.
+SLOW_JOINT_SPEED = 0.5  # rad/s, every arm joint (real controller: joint_velocity_scale 0.19 -> 0.5 rad/s on j1-4)
+SLOW_ACTION_STEP = SLOW_JOINT_SPEED * 0.05  # rad per 20 Hz policy step
+SLOW_EPISODE_LENGTH_S = 20.0
+SLOW_DOOR_GATE_DEG = (80.0, 90.0)  # book only once the door is (nearly) fully open
+SLOW_DEPTH_OVERSHOOT = 0.03  # book_depth falls to 0 at 15 cm (goal 12; the right hand hits the top edge from 14.5)
+SLOW_SUCCESS_PARAMS = {**SUCCESS_PARAMS, "max_depth": 0.14, "min_door_deg": 85.0}
+SLOW_HANDLE_FORCE_WEIGHT = -0.2  # 10x v1/v2: 24 N over the limit costs as much as the book_depth term pays
 
 
 def arm_link_path(side: str, link: str) -> str:
@@ -411,9 +425,12 @@ class RewardsCfg:
         params={"goal_pos_b": BOOK_INSERT_POS_B, "opening_x_b": CABINET_OPENING_X_B, "gate_deg": DOOR_GATE_DEG},
         weight=2.0,
     )
+    book_orientation = RewTerm(func=mdp.book_orientation, params={"power": 8}, weight=2.0)
     insert_success = RewTerm(func=mdp.insert_success, params=SUCCESS_PARAMS, weight=5.0)
     contact = RewTerm(
-        func=mdp.contact_excess, params={"sensor_names": CONTACT_SENSORS, "threshold": CONTACT_FORCE_LIMIT}, weight=-0.01
+        func=mdp.contact_excess,
+        params={"sensor_names": CONTACT_PENALTY_SENSORS, "threshold": CONTACT_FORCE_LIMIT},
+        weight=-0.03,
     )
     handle_force = RewTerm(func=mdp.handle_force_excess, params={"threshold": HANDLE_FORCE_LIMIT}, weight=-0.02)
     joint_limit = RewTerm(func=fr3_joint_limit_margin, params={"asset_cfg": ARM_JOINTS}, weight=-1.0)
@@ -452,10 +469,74 @@ class DualFR3CabinetBookInsertEnvCfg(ManagerBasedRLEnvCfg):
         for side in ("left", "right"):
             for link in ARM_CONTACT_LINKS:
                 setattr(self.scene, f"contact_{side}_{link}", ContactSensorCfg(prim_path=arm_link_path(side, link)))
+            for link in ARM_PROXIMAL_CONTACT_LINKS:
+                setattr(self.scene, f"contact_{side}_{link}", ContactSensorCfg(prim_path=arm_link_path(side, link)))
 
 
 @configclass
 class DualFR3CabinetBookInsertEnvCfg_PLAY(DualFR3CabinetBookInsertEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 4
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3CabinetBookInsertOpenDoorEnvCfg(DualFR3CabinetBookInsertEnvCfg):
+    """Pretraining stage: start with the door open and both grasps aligned; train upright insertion first."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.reset_start.params["initial_open_deg"] = 90.0
+
+
+@configclass
+class DualFR3CabinetBookInsertOpenDoorEnvCfg_PLAY(DualFR3CabinetBookInsertOpenDoorEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 4
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3CabinetBookInsertSlowEnvCfg(DualFR3CabinetBookInsertEnvCfg):
+    """v3: real-robot joint speed, strong handle-force penalty, book only once the door is open, kept upright and not
+    pushed past 14 cm (plan 7-10)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = SLOW_EPISODE_LENGTH_S
+        self.actions.arm_action.scale = SLOW_ACTION_STEP
+        self.actions.arm_action.clip = {".*": (-SLOW_ACTION_STEP, SLOW_ACTION_STEP)}
+        rew = self.rewards
+        for term in (rew.book_approach, rew.book_lane, rew.book_depth):
+            term.params["gate_deg"] = SLOW_DOOR_GATE_DEG
+        rew.book_depth.params["overshoot"] = SLOW_DEPTH_OVERSHOOT
+        rew.book_orientation = RewTerm(func=mdp.book_upright, params={"std_deg": 10.0}, weight=2.0)
+        rew.book_tilt = RewTerm(func=mdp.book_tilt_excess, params={"threshold_deg": 15.0}, weight=-2.0)
+        rew.insert_success.params = dict(SLOW_SUCCESS_PARAMS)
+        rew.handle_force.weight = SLOW_HANDLE_FORCE_WEIGHT
+
+
+@configclass
+class DualFR3CabinetBookInsertSlowEnvCfg_PLAY(DualFR3CabinetBookInsertSlowEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 4
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3CabinetBookInsertSlowOpenDoorEnvCfg(DualFR3CabinetBookInsertSlowEnvCfg):
+    """v3 stage one (v2 recipe): door already open, learn the upright insertion first."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.reset_start.params["initial_open_deg"] = 90.0
+
+
+@configclass
+class DualFR3CabinetBookInsertSlowOpenDoorEnvCfg_PLAY(DualFR3CabinetBookInsertSlowOpenDoorEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 4

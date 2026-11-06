@@ -1,7 +1,7 @@
-"""Record a cube/box lift or cube handover checkpoint from three cameras side by side, stopping after N episodes.
+"""Record lift, handover, or cabinet-book checkpoint behavior from three cameras side by side.
 
-xhand_lab `scripts/nut_bolt/record_views.py`를 이 저장소 lift task에 맞춘 것이다. 창 없이 1 env를 돌리며
-overview, front, side 세 시점을 가로로 붙여 mp4로 저장한다. 상단 HUD에 물체 들림 높이, 기울기, goal 거리,
+xhand_lab `scripts/nut_bolt/record_views.py`를 이 저장소 task에 맞춘 것이다. 창 없이 1 env를 돌리며
+overview, front, side 세 시점을 가로로 붙여 mp4로 저장한다. 상단 HUD에 task별 성능 지표를 표시하고,
 접촉력(box는 판 높이 차, handover는 단계와 양손 파지력)을 표시하고, 에피소드마다 종료 이유와 요약을 출력한다.
 정책 주기 그대로 저장하므로 실제 속도로 재생된다(Sim2Real 20 fps, P47 50 fps).
 
@@ -82,9 +82,19 @@ VIEWS = {
         "front": ((2.1, 0.0, 1.25), (0.45, 0.0, 0.88)),
         "top": ((0.05, 0.0, 2.1), (0.50, 0.0, 0.80)),
     },
+    # Cabinet is in front of the robot (+x). The first view keeps the usual
+    # three-quarter overview, the second looks from the robot toward the door,
+    # and the third shows the book/cabinet lane from above.
+    "cabinet_book": {
+        # Near the base-frame midpoint between the arms; look straight into the cabinet to expose insertion depth.
+        "base_front": ((0.0, 0.0, 1.15), (0.95, 0.10, 0.64)),
+        "robot_side": ((0.40, -1.9, 1.35), (0.62, 0.0, 0.88)),
+        "top": ((0.40, 0.0, 3.0), (0.40, 0.0, 0.65)),
+    },
 }
 LABELS = {"overview": "overview", "front": "front (robot L = image R)", "side": "side (robot right)",
-          "top": "top (robot L = image L)"}
+          "top": "top (robot L = image L)", "robot_side": "robot side -> cabinet",
+          "base_front": "base-frame front -> cabinet"}
 # contact sensors whose filter 0 is the object: (left, right). handover: per hand, both pads
 CONTACTS = {
     "box": ("left_plate_object_contact", "right_plate_object_contact"),
@@ -124,6 +134,33 @@ def hud(frame: np.ndarray, text: str, alert: bool = False) -> np.ndarray:
 
 def measure(raw, family: str) -> dict:
     """Env-0 quantities shown in the HUD (world frame, relative to the env origin)."""
+    if family == "cabinet_book":
+        from dual_fr3_lab.tasks.manager_based.cabinet_book_insert import cabinet_book_insert_env_cfg as C
+        from dual_fr3_lab.tasks.manager_based.cabinet_book_insert.mdp.observations import (
+            book_pose_b,
+            contact_force_norms,
+            door_angle_rad,
+        )
+        from dual_fr3_lab.tasks.manager_based.cabinet_book_insert.mdp.rewards import insert_success
+
+        pos, quat = book_pose_b(raw)
+        up = quat_apply(quat[:1], torch.tensor([[0.0, 0.0, 1.0]], device=raw.device))[0]
+        tilt = math.degrees(math.acos(max(-1.0, min(1.0, float(up[2])))))
+        goal = C.BOOK_INSERT_POS_B
+        m = {
+            "z": float(pos[0, 2]),
+            "tilt_deg": tilt,
+            "door_deg": math.degrees(float(door_angle_rad(raw)[0])),
+            "depth_cm": 100.0 * float(pos[0, 0] - C.CABINET_OPENING_X_B),
+            "lane_y_cm": 100.0 * float(pos[0, 1] - goal[1]),
+            "lane_z_cm": 100.0 * float(pos[0, 2] - goal[2]),
+            "success": bool(insert_success(raw, **C.SUCCESS_PARAMS)[0]),
+        }
+        forces = contact_force_norms(raw, C.CONTACT_SENSORS)[0]
+        for name, force in zip(C.CONTACT_SENSORS, forces):
+            m[f"{name}_N"] = float(force)
+        return m
+
     obj, robot = raw.scene["object"], raw.scene["robot"]
     pos = _t(obj.data.root_pos_w)[0] - raw.scene.env_origins[0]
     up = quat_apply(_t(obj.data.root_quat_w)[:1], torch.tensor([[0.0, 0.0, 1.0]], device=raw.device))[0]
@@ -164,6 +201,10 @@ def measure(raw, family: str) -> dict:
 
 
 def hud_text(ep: int, t: float, lift: float, m: dict, family: str) -> str:
+    if family == "cabinet_book":
+        return (f"ep {ep}  t {t:4.2f}s | door {m['door_deg']:5.1f} deg | depth {m['depth_cm']:+5.1f} cm"
+                f" | lane dy {m['lane_y_cm']:+4.1f} dz {m['lane_z_cm']:+4.1f} cm"
+                f" | tilt {m['tilt_deg']:4.1f} deg | success {'YES' if m['success'] else 'no'}")
     text = f"ep {ep}  t {t:4.2f}s | lift {100 * lift:+5.1f} cm | tilt {m['tilt_deg']:4.1f} deg | goal {m['goal_cm']:5.1f} cm"
     if family == "box":
         text += f" | plate dz(L-R) {m['plate_dz_cm']:+5.1f} cm | F plate L {m['force_l']:4.0f} R {m['force_r']:4.0f} N"
@@ -191,6 +232,41 @@ def dropped(steps: list[dict]) -> bool:
 
 
 def summarize(steps: list[dict], dt: float, reasons: list[str], family: str) -> dict:
+    if family == "cabinet_book":
+        depth = [s["depth_cm"] for s in steps]
+        contact_names = [k for k in steps[0] if k.startswith("contact_") and k.endswith("_N")]
+        contact_peaks = {
+            name: {
+                "max_N": round(max(s[name] for s in steps), 2),
+                "peak_time_s": round(max(range(len(steps)), key=lambda i: steps[i][name]) * dt, 2),
+            }
+            for name in contact_names
+        }
+        # Keep a compact trace around the action instead of emitting hundreds of JSON samples.
+        trace_ids = sorted(set(range(0, len(steps), max(1, round(0.25 / dt)))) | {len(steps) - 1})
+        trace = []
+        for i in trace_ids:
+            s = steps[i]
+            sample = {"time_s": round((i + 1) * dt, 2), "depth_cm": round(s["depth_cm"], 1),
+                      "tilt_deg": round(s["tilt_deg"], 1)}
+            sample.update({name: round(s[name], 2) for name in contact_names})
+            trace.append(sample)
+        return {
+            "termination": "+".join(reasons) or "?",
+            "steps": len(steps),
+            "duration_s": round(len(steps) * dt, 2),
+            "final_door_deg": round(steps[-1]["door_deg"], 1),
+            "max_depth_cm": round(max(depth), 1),
+            "final_depth_cm": round(depth[-1], 1),
+            "final_lane_error_cm": {"y": round(steps[-1]["lane_y_cm"], 1),
+                                    "z": round(steps[-1]["lane_z_cm"], 1)},
+            "max_tilt_deg": round(max(s["tilt_deg"] for s in steps), 1),
+            "final_tilt_deg": round(steps[-1]["tilt_deg"], 1),
+            "success": any(s["success"] for s in steps),
+            "contact_peaks": contact_peaks,
+            "contact_tilt_trace": trace,
+        }
+
     lift = np.array([s["lift"] for s in steps])
     lifted = lift > LIFTED
     out = {
@@ -231,9 +307,10 @@ def summarize(steps: list[dict], dt: float, reasons: list[str], family: str) -> 
 def main():
     task = args_cli.task
     family = ("box" if "Lift-Box" in task else "cube" if "Lift-Cube" in task
-              else "handover" if "Handover-Cube" in task else None)
+              else "handover" if "Handover-Cube" in task
+              else "cabinet_book" if "Cabinet-BookInsert" in task else None)
     if family is None:
-        raise ValueError(f"not a dual FR3 cube/box lift or cube handover task: {task}")
+        raise ValueError(f"unsupported task family for three-view recording: {task}")
     env_cfg = load_cfg_from_registry(task, "env_cfg_entry_point")
     agent_cfg = load_cfg_from_registry(task, "rsl_rl_cfg_entry_point")
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, metadata.version("rsl-rl-lib"))
@@ -284,9 +361,12 @@ def main():
             obs, _, dones, _ = env.step(policy(obs))
         step += 1
         m = measure(raw, family)
-        if len(steps) < REST_STEPS:
-            z_rest = min(z_rest, m["z"])
-        m["lift"] = m["z"] - z_rest
+        if family == "cabinet_book":
+            m["lift"] = 0.0  # the cabinet task HUD reports insertion metrics instead
+        else:
+            if len(steps) < REST_STEPS:
+                z_rest = min(z_rest, m["z"])
+            m["lift"] = m["z"] - z_rest
         steps.append(m)
         if success_stage is not None and args_cli.tail_s >= 0 and not cut:
             if t_success is None and m["stage"] == success_stage:
@@ -304,6 +384,8 @@ def main():
         if bool(dones[0]):
             # measure() above read the post-reset state; the episode's last valid sample is the one before
             steps.pop()
+            if ep_frames:
+                ep_frames.pop()
             n_seen += 1
             tm = raw.termination_manager
             reasons = [name for name in tm.active_terms if bool(tm.get_term(name)[0])]
