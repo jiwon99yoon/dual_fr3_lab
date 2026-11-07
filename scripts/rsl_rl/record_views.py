@@ -327,9 +327,16 @@ def main():
     raw = env.unwrapped
     origin = raw.scene.env_origins[0]
     cams = {name: raw.scene[f"rec_{name}"] for name in VIEWS[family]}
+    shift = torch.zeros(3, device=raw.device)
+    if family == "cabinet_book":
+        # VIEWS are set for the 45 cm layout; follow the task's goal (Table75: cabinet 10 cm closer, table 30 cm higher)
+        from dual_fr3_lab.tasks.manager_based.cabinet_book_insert import cabinet_book_insert_env_cfg as C
+
+        goal = raw.cfg.rewards.insert_success.params["goal_pos_b"]
+        shift = torch.tensor([g - g45 for g, g45 in zip(goal, C.BOOK_INSERT_POS_B)], device=raw.device)
     for name, (eye, lookat) in VIEWS[family].items():
-        cams[name].set_world_poses_from_view(torch.tensor([eye], device=raw.device) + origin,
-                                             torch.tensor([lookat], device=raw.device) + origin)
+        cams[name].set_world_poses_from_view(torch.tensor([eye], device=raw.device) + origin + shift,
+                                             torch.tensor([lookat], device=raw.device) + origin + shift)
 
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
