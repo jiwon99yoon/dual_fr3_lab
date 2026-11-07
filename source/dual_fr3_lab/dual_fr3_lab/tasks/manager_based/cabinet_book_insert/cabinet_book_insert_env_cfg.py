@@ -63,7 +63,7 @@ TABLE_TOP_Z_B = 0.045  # table height is adjustable on the real setup
 TABLE_X_RANGE_B = (0.40, 1.25)  # front edge pulled in so the whole book start region sits on it
 TABLE_WIDTH = 1.2  # y +-0.6 (the book start region reaches y -0.505)
 # Cabinet model origin (bottom centre) on the table, yawed 180 deg so the door faces the robot.
-# Model (codex MJCF copy, handle moved onto the door face): outer 0.39 x 0.39 x 0.39 m, inside about 0.356 m cube,
+# Model (codex MJCF copy, handle moved onto the door face): outer 0.39 x 0.39 x 0.39 m, inside 0.35 m cube (20 mm walls),
 # door hinge at robot-left, vertical bar handle on the door face near its free (robot-right) edge.
 # The UMI TCP is 0.284 m past link7 (plus 5.5 cm to the book centre), so the arms fold near the robot and run out of
 # reach deep in the cabinet. Placement x grasp pitch sweep (scripts/tools/solve_cabinet_book_start.py, 2026-11-05):
@@ -72,13 +72,14 @@ TABLE_WIDTH = 1.2  # y +-0.6 (the book start region reaches y -0.505)
 CABINET_XY_B = (0.95, 0.10)
 CABINET_ROT = (0.0, 0.0, 1.0, 0.0)
 CABINET_CENTER_Z_ABOVE_TABLE = 0.195
-CABINET_INNER_HALF = 0.178  # inner half extent along every axis (walls 17 mm)
 CABINET_OUTER_HALF = 0.195
+CABINET_WALL = 0.020  # walls and door (real cabinet measured 2026-11-07; the codex model had 17 mm)
+CABINET_INNER_HALF = CABINET_OUTER_HALF - CABINET_WALL  # inner half extent along every axis
 # inner box centre (base frame); the open side faces the robot (-x), so the opening is at x = centre - CABINET_INNER_HALF
 CABINET_INNER_CENTER_B = (CABINET_XY_B[0], CABINET_XY_B[1], TABLE_TOP_Z_B + CABINET_CENTER_Z_ABOVE_TABLE)
 # MJCF frames (model frame = cabinet root, x toward the door; the handle body has the root's orientation)
-DOOR_IN_CABINET = (0.1865, 0.0, CABINET_CENTER_Z_ABOVE_TABLE)
-HANDLE_IN_DOOR = (0.0085, 0.135, 0.0)
+DOOR_IN_CABINET = (CABINET_OUTER_HALF - 0.5 * CABINET_WALL, 0.0, CABINET_CENTER_Z_ABOVE_TABLE)  # outer face flush
+HANDLE_IN_DOOR = (0.5 * CABINET_WALL, 0.135, 0.0)  # door outer face
 DOOR_HINGE_IN_DOOR = (0.0, -0.1555, 0.0)  # drawer_joint position (axis = door z, opening is negative)
 
 # ---------- book (right hand) ----------
@@ -585,6 +586,9 @@ class DualFR3CabinetBookInsertUprightEnvCfg_PLAY(DualFR3CabinetBookInsertUpright
 TABLE75_DZ = 0.30
 TABLE75_CABINET_DX = -0.10
 TABLE75_START_TABLE_PATH = str(ASSET_DIR / "start_table_75cm.npz")
+# the real book is 0.25 kg (2026-11-07; the 45 cm tasks keep BOOK_MASS_RANGE). Table top measured on the real setup:
+# arm mount + 0.345 m, same as here, so no table height DR.
+TABLE75_BOOK_MASS_RANGE = (0.15, 0.30)
 
 
 def _moved(p, dx=TABLE75_CABINET_DX, dz=TABLE75_DZ):
@@ -609,6 +613,7 @@ def apply_table75(cfg: DualFR3CabinetBookInsertEnvCfg):
     sc.cabinet.init_state.pos = _moved(sc.cabinet.init_state.pos)
     sc.book.init_state.pos = _moved(sc.book.init_state.pos, dx=0.0)  # the reset puts it on its start row
     cfg.events.reset_start.params["table_path"] = TABLE75_START_TABLE_PATH
+    cfg.events.randomize_book_mass.params["mass_distribution_params"] = TABLE75_BOOK_MASS_RANGE
     for group in (cfg.observations.policy, cfg.observations.critic):
         group.book_pos.params["target_pos_b"] = TABLE75_BOOK_INSERT_POS_B
     rew = cfg.rewards
@@ -691,6 +696,25 @@ class DualFR3CabinetBookInsertDoorFirstEnvCfg(DualFR3CabinetBookInsertEnvCfg):
 
 @configclass
 class DualFR3CabinetBookInsertDoorFirstEnvCfg_PLAY(DualFR3CabinetBookInsertDoorFirstEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 4
+        self.observations.policy.enable_corruption = False
+
+
+@configclass
+class DualFR3CabinetBookInsertTable75DoorFirstEnvCfg(DualFR3CabinetBookInsertEnvCfg):
+    """DoorFirst on the 75 cm table; stage two, resumed from Table75-OpenDoor (DoorFirst is a no-op with the door at
+    90 deg, so that stage one stays as it is) or from scratch."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        apply_table75(self)
+        apply_door_first(self)
+
+
+@configclass
+class DualFR3CabinetBookInsertTable75DoorFirstEnvCfg_PLAY(DualFR3CabinetBookInsertTable75DoorFirstEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 4

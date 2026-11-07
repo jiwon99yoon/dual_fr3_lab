@@ -138,6 +138,7 @@ plate·cube lift 때처럼 rule-based로 작업이 물리적으로 되는지, �
 - 2026-11-05: 3단계 RL env 구현, rule-based 전체 행 확인, 학습 시작. 자세한 내용은 7-9.
 - 2026-11-06: 실물 책상 최소 70 cm → 75 cm 배치(책상 +0.30, 수납장 x −0.10) Table75 task 추가. solver 121/121, rule-based 121/121(`--ki_cap 0.04`). 7-12.
 - 2026-11-07: 실로봇에서 7498이 문을 다 열기 전에 책을 넣으려 함(sim과 같음) → DoorFirst task(v2 속도·보상 + 문 열릴 때까지 책 대기). 7-13.
+- 2026-11-07: DoorFirst 45 cm는 2499에서 이어서 학습(4000: 121/121, 문 106°에서 책 진입). 이후 학습은 75 cm: Table75-DoorFirst 등록, rule-based 121/121, 작업 공간 그림. 7-13.
 
 ## 7. RL 환경 설계 (2026-11-05, 사용자 결정 반영 — 남은 논의는 7-8)
 
@@ -413,11 +414,30 @@ python scripts/rsl_rl/train.py --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table
 python scripts/rsl_rl/train.py --task Isaac-Cabinet-BookInsert-DualFR3-UMI-DoorFirst-v0 --headless --num_envs 4096 --max_iterations 5000 \
   --run_name door_first --resume --load_run open_door_transfer_2026-11-06 --checkpoint model_2499.pt
 ```
+- from scratch도 된다(같은 task, `--resume` 없이 `--run_name door_first_scratch`). 학습 속도 근거(Episode_Reward 90% 도달):
+  - v1(scratch): door_open 41 it, book_depth 약 1700 it. 성공 0은 기울기 보상이 없어서였다(v2에 book_orientation 있음).
+  - v2 1단계(문 열림): insert_success 238 it, book_orientation 처음부터 1.95 이상. 2단계: resume 후 약 250 it에 성공.
+  - scratch는 문 열기를 수십 it에 배우고 나면 1단계와 같은 문제가 된다. 2000 it쯤 insert_success가 0인데 book_depth만 오르면 v1식 기울임 국소해이니 resume으로 바꾼다.
 - 확인할 것: Episode_Reward/book_wait가 0 근처로 가는지, insert_success가 v2만큼 오르는지, 문 80° 전에 책이 대기선을 넘는 행이 없어졌는지(`scripts/tools/eval_dual_fr3_cabinet_book_door_entry.py`, 아래).
 ```
 python scripts/tools/eval_dual_fr3_cabinet_book_door_entry.py --headless --task Isaac-Cabinet-BookInsert-DualFR3-UMI-DoorFirst-Play-v0 \
   --checkpoint logs/rsl_rl/dual_fr3_cabinet_book_insert/<run>/model_7498.pt
 ```
 - 7498 기준값: 대기선(y −0.14)을 문 80° 전에 넘는 행 121/121.
-- Table75·OpenDoor 변형 등록은 task 구성 논의(속도·손잡이 힘 등) 후에 한다.
+- 45 cm 결과(5070, `door_first_resume_5070`, 2499에서 이어서): 2900 it에 문 열기 회복(book_wait → 0), 3600 it에 insert_success가 오른 뒤 정체. model_4000 121행: 성공 121/121, 책 앞면 진입 때 문 중앙 106°(최소 101°, 7498은 37°), 대기선을 문 80° 전에 넘는 행 0, 문 최대 119°(sim 관절 한계 120°), 끝 기울기 6°.
+- **Table75-DoorFirst (2026-11-07)**: 이후 학습은 75 cm로 한다(사용자 결정). `Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirst{,-Play}-v0` = `apply_table75` + `apply_door_first`, experiment `dual_fr3_cabinet_book_insert_75cm`(Table75-OpenDoor와 같아서 그 run에서 이어서 학습할 수 있다). 대기선 y −0.14는 수납장 y가 같아 그대로다.
+  - 75 cm task 전부(`apply_table75`): 책 무게 DR 0.15~0.30 kg(실물 책 0.25 kg, 45 cm task는 0.2~0.5 그대로). 실물 책상 윗면을 팔 장착면에서 재니 +0.345로 sim과 같아서 책상 높이 DR은 넣지 않는다(사용자 결정 11-07). 높이 오차는 관측(책−목표, 문 각도)에 영향이 없고 손-수납장 윗판 여유(약 2.5 cm 추정)만 바꾼다.
+  - rule-based(`--all_rows --contacts --ki_cap 0.04`) 121/121(책 0.15~0.30 kg으로도 121/121, 기울기 최대 1.1°), 깊이 11.9~12.4 cm, 기울기 최대 2°, 관절 여유 0.32 rad, 손잡이 최대 14 N, 접촉 0, book_wait −0.24(rule-based SLIDE가 75°에 시작해서).
+  - **수납장 벽·문 두께 20 mm**(실물 측정 11-07, 처음 codex 모델은 17 mm; `CABINET_WALL`, MJCF): 바깥 0.39 m·문 0.345 m·손잡이는 실측과 같다. 안쪽 0.356 → 0.350 m, 입구(문 안쪽 면) 3 mm 안쪽(75 cm x 0.675, 목표 0.795), 경첩 1.5 mm 안쪽(0.665). 손잡이·시작 표는 그대로. 모든 task에 적용되지만 45 cm는 더 쓰지 않는다(사용자 결정 11-07, 이후 학습은 전부 75 cm).
+    - Table75-DoorFirst rule-based 121/121, 접촉 0. 손-수납장 여유: `--insert_depth 0.14`(실제 13.6~14.5 cm) 접촉 0, 0.155(15~17 cm) 오른손 link7 > 5 N 41/121 → 목표 12 cm에서 깊이 여유 약 2~3 cm.
+    - rule-based 영상(시작 행 60): `logs/rule_based/cabinet_book_75cm/rule_t75_doorfirst_row60.mp4`. rule-based 스크립트의 카메라는 task 책상 높이를 따라간다.
+  - 작업 공간 그림: `scripts/tools/draw_cabinet_book_workspace.py`(sim 화면 투영, 위·옆·뒤) → etri `docs/figures/cabinet_book_75cm_workspace_*.png`.
+```
+# 처음부터
+python scripts/rsl_rl/train.py --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirst-v0 --headless --num_envs 4096 --max_iterations 5000 --run_name door_first_75cm_scratch
+# 또는 1단계(문 열림) 뒤 이어서
+python scripts/rsl_rl/train.py --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-OpenDoor-v0 --headless --num_envs 4096 --run_name opendoor_75cm
+python scripts/rsl_rl/train.py --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirst-v0 --headless --num_envs 4096 --max_iterations 5000 \
+  --run_name door_first_75cm --resume --load_run <opendoor_75cm run> --checkpoint model_2499.pt
+```
 

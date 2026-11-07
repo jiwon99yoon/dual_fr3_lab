@@ -142,6 +142,7 @@ def main():
     success_params = dict(cfg.rewards.insert_success.params)
     goal_b, opening_x = success_params["goal_pos_b"], success_params["opening_x_b"]
     pre_b = cfg.rewards.book_approach.params["pre_pos_b"]
+    view_dz = goal_b[2] - C.BOOK_INSERT_POS_B[2]  # VIEWS are set for the 45 cm table: follow the task's table height
     cfg.scene.num_envs = len(table["joint_pos"]) if args.all_rows else args.num_envs
     cfg.events.reset_start.params["sequential"] = args.all_rows
     cfg.events.reset_start.params["fixed_row"] = args.row
@@ -242,7 +243,9 @@ def main():
     def render():
         for name, (eye, tgt) in VIEWS.items():
             cam = env.scene[f"cam_{name}"]
-            cam.set_world_poses_from_view(torch.tensor([eye], device=dev) + base[:1], torch.tensor([tgt], device=dev) + base[:1])
+            lift = torch.tensor([0.0, 0.0, view_dz], device=dev)
+            cam.set_world_poses_from_view(torch.tensor([eye], device=dev) + base[:1] + lift,
+                                          torch.tensor([tgt], device=dev) + base[:1] + lift)
         for _ in range(2):
             env.sim.render()
         env.scene.update(env.physics_dt)

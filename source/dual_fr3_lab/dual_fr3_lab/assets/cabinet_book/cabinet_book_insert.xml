@@ -13,26 +13,29 @@
   <worldbody>
     <body name="drawer" pos="0 0 0.195">
       <inertial pos="0 0 0" mass="8" diaginertia="0.2 0.2 0.2" />
-      <geom class="visual" name="lower_visual" type="box" pos="0 0 -0.1865" size="0.195 0.195 0.0085" rgba="0.36 0.20 0.10 1" />
-      <geom class="visual" name="upper_visual" type="box" pos="0 0 0.1865" size="0.195 0.195 0.0085" rgba="0.36 0.20 0.10 1" />
-      <geom class="visual" name="left_visual" type="box" pos="0 -0.1865 0" size="0.195 0.0085 0.178" rgba="0.36 0.20 0.10 1" />
-      <geom class="visual" name="right_visual" type="box" pos="0 0.1865 0" size="0.195 0.0085 0.178" rgba="0.36 0.20 0.10 1" />
-      <geom class="visual" name="back_visual" type="box" pos="-0.1865 0 0" size="0.0085 0.178 0.178" rgba="0.36 0.20 0.10 1" />
-      <geom class="collision" name="lower_collision" type="box" pos="0 0 -0.1865" size="0.195 0.195 0.0085" />
-      <geom class="collision" name="upper_collision" type="box" pos="0 0 0.1865" size="0.195 0.195 0.0085" />
-      <geom class="collision" name="left_collision" type="box" pos="0 -0.1865 0" size="0.195 0.0085 0.178" />
-      <geom class="collision" name="right_collision" type="box" pos="0 0.1865 0" size="0.195 0.0085 0.178" />
-      <geom class="collision" name="back_collision" type="box" pos="-0.1865 0 0" size="0.0085 0.178 0.178" />
-      <body name="door" pos="0.1865 0 0">
+      <geom class="visual" name="lower_visual" type="box" pos="0 0 -0.185" size="0.195 0.195 0.010" rgba="0.36 0.20 0.10 1" />
+      <geom class="visual" name="upper_visual" type="box" pos="0 0 0.185" size="0.195 0.195 0.010" rgba="0.36 0.20 0.10 1" />
+      <geom class="visual" name="left_visual" type="box" pos="0 -0.185 0" size="0.195 0.010 0.175" rgba="0.36 0.20 0.10 1" />
+      <geom class="visual" name="right_visual" type="box" pos="0 0.185 0" size="0.195 0.010 0.175" rgba="0.36 0.20 0.10 1" />
+      <geom class="visual" name="back_visual" type="box" pos="-0.185 0 0" size="0.010 0.175 0.175" rgba="0.36 0.20 0.10 1" />
+      <geom class="collision" name="lower_collision" type="box" pos="0 0 -0.185" size="0.195 0.195 0.010" />
+      <geom class="collision" name="upper_collision" type="box" pos="0 0 0.185" size="0.195 0.195 0.010" />
+      <geom class="collision" name="left_collision" type="box" pos="0 -0.185 0" size="0.195 0.010 0.175" />
+      <geom class="collision" name="right_collision" type="box" pos="0 0.185 0" size="0.195 0.010 0.175" />
+      <geom class="collision" name="back_collision" type="box" pos="-0.185 0 0" size="0.010 0.175 0.175" />
+      <body name="door" pos="0.185 0 0">
         <joint name="drawer_joint" type="hinge" pos="0 -0.1555 0" axis="0 0 1" limited="true" range="-2.0944 0" damping="1" stiffness="0.2" springref="0" />
         <inertial pos="0 0 0" mass="1.5" diaginertia="0.02 0.02 0.02" />
-        <geom class="visual" name="door_visual" type="box" pos="0 0 0" size="0.0085 0.1725 0.1725" rgba="0.36 0.20 0.10 1" />
-        <geom class="collision" name="door_collision" type="box" pos="0 0 0" size="0.0085 0.1725 0.1725" />
+        <geom class="visual" name="door_visual" type="box" pos="0 0 0" size="0.010 0.1725 0.1725" rgba="0.36 0.20 0.10 1" />
+        <geom class="collision" name="door_collision" type="box" pos="0 0 0" size="0.010 0.1725 0.1725" />
         <!-- cabinet_book_insert (2026-11-05): copy of codex content/cabinet/cabinet_bimanual_handle.xml with the handle on the door face.
              Door spans local y +-0.1725, hinge at y -0.1555. The bar handle (standoffs at top/bottom) sits on the
              door face near the free edge: bar centre y 0.135 (bar edge 2.25 cm inside the door edge), like the real
-             cabinet. With the cabinet yawed 180 deg, local +y is robot-right: hinge robot-left, handle robot-right. -->
-        <body name="handle" pos="0.0085 0.135 0">
+             cabinet. With the cabinet yawed 180 deg, local +y is robot-right: hinge robot-left, handle robot-right.
+             2026-11-07: walls and door 20 mm thick (real cabinet measured; was 17 mm). Outer 0.39 m cube, door
+             0.345 m, door outer face flush with the front, hinge and handle unchanged in the base frame
+             except the hinge 1.5 mm deeper (door mid-thickness). -->
+        <body name="handle" pos="0.010 0.135 0">
           <inertial pos="0 0 0" mass="0.15" diaginertia="0.001 0.001 0.001" />
           <geom class="visual" name="handle_upper_visual" type="box" pos="0.03 0 0.1475" size="0.03 0.015 0.015" rgba="0.02 0.02 0.02 1" />
           <geom class="visual" name="handle_lower_visual" type="box" pos="0.03 0 -0.1475" size="0.03 0.015 0.015" rgba="0.02 0.02 0.02 1" />
