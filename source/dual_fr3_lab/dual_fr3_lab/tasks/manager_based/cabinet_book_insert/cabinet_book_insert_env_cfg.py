@@ -26,6 +26,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -553,17 +554,22 @@ class DualFR3CabinetBookInsertSlowOpenDoorEnvCfg_PLAY(DualFR3CabinetBookInsertSl
 BOOK_TILT_GATE_DEG = (10.0, 30.0)
 
 
+def apply_upright(cfg: DualFR3CabinetBookInsertEnvCfg):
+    """Upright rewards (in place): tilt-gated book_lane/book_depth and book_upright instead of book_orientation."""
+    rew = cfg.rewards
+    rew.book_orientation = None
+    rew.contact.params["sensor_names"] = CONTACT_SENSORS
+    rew.contact.weight = -0.01
+    rew.book_lane.params["tilt_gate_deg"] = BOOK_TILT_GATE_DEG
+    rew.book_depth.params["tilt_gate_deg"] = BOOK_TILT_GATE_DEG
+    rew.book_upright = RewTerm(func=mdp.book_upright_tanh, params={"std": 0.3}, weight=0.5)
+
+
 @configclass
 class DualFR3CabinetBookInsertUprightEnvCfg(DualFR3CabinetBookInsertEnvCfg):
     def __post_init__(self):
         super().__post_init__()
-        rew = self.rewards
-        rew.book_orientation = None
-        rew.contact.params["sensor_names"] = CONTACT_SENSORS
-        rew.contact.weight = -0.01
-        rew.book_lane.params["tilt_gate_deg"] = BOOK_TILT_GATE_DEG
-        rew.book_depth.params["tilt_gate_deg"] = BOOK_TILT_GATE_DEG
-        rew.book_upright = RewTerm(func=mdp.book_upright_tanh, params={"std": 0.3}, weight=0.5)
+        apply_upright(self)
 
 
 @configclass
@@ -717,5 +723,88 @@ class DualFR3CabinetBookInsertTable75DoorFirstEnvCfg(DualFR3CabinetBookInsertEnv
 class DualFR3CabinetBookInsertTable75DoorFirstEnvCfg_PLAY(DualFR3CabinetBookInsertTable75DoorFirstEnvCfg):
     def __post_init__(self):
         super().__post_init__()
+        self.scene.num_envs = 4
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- Table75 DoorFirst curriculum (2026-11-07): DoorFirst from scratch in one run ----------
+# 45 cm DoorFirst from scratch never moved the book (5000 it, success 0; the -20 wait penalty came before any book
+# reward), while Upright from scratch inserted 121/121 but with the door at 37 deg. One run: Upright rewards on the
+# 75 cm table, starting without the wait penalty and with the v1 book gates (60-80 deg); once the success EMA is above
+# 0.7 the DoorFirst terms ramp in over ~1000 iterations (wait 0 -> -20, book gates 60-80 -> 80-90 deg, success door
+# 0 -> 85 deg), pausing while the success EMA is below 0.7.
+DOOR_FIRST_CURRICULUM_PARAMS = {
+    "wait_term": "book_wait",
+    "wait_weight": DOOR_FIRST_WAIT_WEIGHT,
+    "gate_terms": ["book_approach", "book_lane", "book_depth"],
+    "gate_start_deg": DOOR_GATE_DEG,
+    "gate_end_deg": DOOR_FIRST_GATE_DEG,
+    "success_term": "insert_success",
+    "min_door_end_deg": DOOR_FIRST_MIN_DOOR_DEG,
+    "promote_success": 0.7,
+    "ramp_steps": 1000 * 24,  # env steps (24 per iteration)
+    "ema_episodes": 2000.0,
+    "initial_progress": 0.0,
+}
+
+
+@configclass
+class DoorFirstCurriculumCfg:
+    door_first = CurrTerm(func=mdp.door_first_ramp, params=DOOR_FIRST_CURRICULUM_PARAMS)
+
+
+@configclass
+class DualFR3CabinetBookInsertTable75DoorFirstCurriculumEnvCfg(DualFR3CabinetBookInsertEnvCfg):
+    """Table75 + Upright rewards + DoorFirst, ramped in by ``mdp.door_first_ramp`` (from scratch)."""
+
+    curriculum: DoorFirstCurriculumCfg = DoorFirstCurriculumCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        apply_table75(self)
+        apply_upright(self)
+        apply_door_first(self)
+        # 4096 envs overflowed 64K (PhysX asked for ~75K, Upright run); room for 8192+ envs
+        self.sim.physics.gpu_total_aggregate_pairs_capacity = 512 * 1024
+
+
+@configclass
+class DualFR3CabinetBookInsertTable75DoorFirstCurriculumEnvCfg_PLAY(DualFR3CabinetBookInsertTable75DoorFirstCurriculumEnvCfg):
+    """Final stage (progress 1): the DoorFirst task as trained at the end."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.curriculum.door_first.params = {**DOOR_FIRST_CURRICULUM_PARAMS, "initial_progress": 1.0}
+        self.scene.num_envs = 4
+        self.observations.policy.enable_corruption = False
+
+
+# ---------- Table75 DoorFirst curriculum + tilt penalty (2026-11-07) ----------
+# The curriculum run tilted the book 31-35 deg (model_2000) and 42-47 deg (model_3700) while carrying it beside the
+# opening door, then straightened it at the opening: only book_lane/book_depth (tilt gate) and book_upright (0.5) cared
+# about the tilt. On the robot the book can slip in the gripper. Tilt above 15 deg is penalized at all times from the
+# start (Slow's book_tilt term, weight -2 there; -5 here so the 45 deg carry costs more than the time it saves).
+TILT_PENALTY_THRESHOLD_DEG = 15.0
+TILT_PENALTY_WEIGHT = -5.0
+
+
+@configclass
+class DualFR3CabinetBookInsertTable75DoorFirstCurriculumTiltEnvCfg(DualFR3CabinetBookInsertTable75DoorFirstCurriculumEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.book_tilt = RewTerm(
+            func=mdp.book_tilt_excess, params={"threshold_deg": TILT_PENALTY_THRESHOLD_DEG}, weight=TILT_PENALTY_WEIGHT
+        )
+
+
+@configclass
+class DualFR3CabinetBookInsertTable75DoorFirstCurriculumTiltEnvCfg_PLAY(
+    DualFR3CabinetBookInsertTable75DoorFirstCurriculumTiltEnvCfg
+):
+    """Final stage (progress 1): the DoorFirst task as trained at the end."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.curriculum.door_first.params = {**DOOR_FIRST_CURRICULUM_PARAMS, "initial_progress": 1.0}
         self.scene.num_envs = 4
         self.observations.policy.enable_corruption = False

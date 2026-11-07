@@ -120,3 +120,29 @@ for _play in ("", "-Play"):
         },
         disable_env_checker=True,
     )
+
+# Table75 DoorFirst curriculum (2026-11-07): Upright rewards, DoorFirst ramped in once the insertion succeeds (scratch)
+for _play in ("", "-Play"):
+    gym.register(
+        id=f"Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirstCurriculum{_play}-v0",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.cabinet_book_insert_env_cfg:"
+            "DualFR3CabinetBookInsertTable75DoorFirstCurriculumEnvCfg" + ("_PLAY" if _play else ""),
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CabinetBookInsertTable75PPORunnerCfg",
+        },
+        disable_env_checker=True,
+    )
+
+# + tilt penalty (2026-11-07): book tilt above 15 deg penalized at all times (the curriculum run carried it at 45 deg)
+for _play in ("", "-Play"):
+    gym.register(
+        id=f"Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirstCurriculum-Tilt{_play}-v0",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.cabinet_book_insert_env_cfg:"
+            "DualFR3CabinetBookInsertTable75DoorFirstCurriculumTiltEnvCfg" + ("_PLAY" if _play else ""),
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CabinetBookInsertTable75PPORunnerCfg",
+        },
+        disable_env_checker=True,
+    )
