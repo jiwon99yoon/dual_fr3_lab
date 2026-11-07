@@ -80,3 +80,6 @@ result/
 # 완성품 로봇 USD는 예외적으로 추적 (git-lfs) — 위의 전역 *.usd 차단을 덮어씀
 !source/dual_fr3_lab/dual_fr3_lab/assets/*.usd
 !content/plate_ee/*.usd
+
+# 실로봇 export용 4090 체크포인트 (shared_checkpoint/README 참고) — 위의 전역 *.pt 차단을 덮어씀
+!shared_checkpoint/**/*.pt
