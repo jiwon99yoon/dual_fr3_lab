@@ -14,8 +14,8 @@ rule-based 확인: `scripts/tools/eval_dual_fr3_pick_place_rule_based.py`.
 | PC | run | task | 보는 것 |
 |---|---|---|---|
 | **5070** | ① 기준 | `Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-v0` | 11-09 수정 전부. **11-09 01:27 시작** (`2026-11-09_01-27-06_fix_5070`, 약 1.6 s/it) |
-| **4090** | ② 기울기 벌점 | `Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-Tilt-v0` | ① + 기울기 15° 초과분 −5 (캐비닛 책 -Tilt와 같음) |
-| **4090** | ③ critic 정보 | `Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-CriticPlus-v0` | ① + B의 critic 정보 (그리퍼 내부 상태 8D, DR 값 7D) |
+| **4090** | ② 기울기 벌점 | `Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-Tilt-v0` | ① + 기울기 15° 초과분 −5 (캐비닛 책 -Tilt와 같음). **11-09 01:28 시작** (`2026-11-09_01-28-37_tilt_4090`, ③과 동시에 2.6~2.9 s/it) |
+| **4090** | ③ critic 정보 | `Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-CriticPlus-v0` | ① + B의 critic 정보 (그리퍼 내부 상태 8D, DR 값 7D). **11-09 01:29 시작** (`2026-11-09_01-28-57_critic_plus_4090`) |
 
 새로 시작할 때 멈출 것:
 - 5070의 `pick_place_lift_5070` (들기 보상만, 960 iteration에 들기 1%)
@@ -31,11 +31,16 @@ python scripts/rsl_rl/train.py --task Isaac-PickPlace-Cube-DualFR3-UMI-GripperBu
 
 - 로그 폴더: `logs/rsl_rl/dual_fr3_pick_place_cube_gripper_busy/`, `..._gripper_busy_tilt/`, `..._gripper_busy_critic_plus/`
 - 4096 env 하나가 GPU를 약 5 GB 써요. 4090에서 둘을 같이 돌리면 각각 약 2.9 s/it이에요.
-- 4090의 측정 스크립트 `logs/probe/probe_grasp_height.py`는 `logs/`가 gitignore라 커밋이 안 돼요. `scripts/tools/`로 옮겨 커밋하면 양쪽이 같은 기준으로 재요.
+- 측정: `scripts/tools/eval_dual_fr3_pick_place_grasp.py` (4090, 11-09). 세 run 모두 이걸로 같은 기준으로 재요. 기본 128 env, 결정적, 종료 끔(`--keep_terminations`로 켬). 손가락-책상 접촉은 `mdp.finger_table_force`(패드 센서 Table 필터)로 재요. --task는 그 run 변형의 -Play task예요(관측 차원이 맞아야 해요).
+```bash
+python scripts/tools/eval_dual_fr3_pick_place_grasp.py --headless --task Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-Tilt-Play-v0 \
+  --checkpoint logs/rsl_rl/dual_fr3_pick_place_cube_gripper_busy_tilt/<run>/model_N.pt
+```
 
 **비교할 것** (같은 iteration끼리)
 - ① vs ②: 기울기 벌점의 효과. 옮기는 동안 기울기, 성공률, 배우는 속도
 - ① vs ③: critic 정보의 효과. 쥐는 순간·옮기는 동안 기울기, 손가락-책상 접촉, 배우는 속도
+- 손 놓기와 성공 사이: 이전 B는 1423 it에 손 놓기 84%, 성공 0%였어요(손 올리기에서 막힘). 새 코드의 놓은 뒤 유지 범위(5 cm·15°)는 성공 조건(2.5 cm·5°)보다 넓어서 이 차이가 더 커질 수 있어요. `reach_released`와 `reach_success`를 같이 봐요.
 - TensorBoard: `Curriculum/progress/reach_*`, `Episode_Reward/success`, `finger_table`, `tip_floor`, `cube_tilt`, `cube_tilt_excess`(②)
 - 평가: 종료를 끄고 결정적으로 128 env. 잡는 깊이, 쥐는 순간·들고 있을 때 기울기, 손가락-책상 접촉, 놓을 위치에서 열기 명령 비율
 
@@ -51,15 +56,13 @@ python scripts/rsl_rl/train.py --task Isaac-PickPlace-Cube-DualFR3-UMI-GripperBu
 |---|---|---|
 | 5070 첫 run `2026-11-09_00-03-44_pick_place_dr_5070` | 처음 코드 | 900 it에서 멈춤. 들기 0.2~0.7%에서 정체. model_700(64 env): 파지 64/64, **들기 0/64**, 쥔 채 14 s 가만히 있음. 영상 `videos/model_850_oblique4.mp4` |
 | 5070 `2026-11-09_00-32-42_pick_place_lift_5070` | + 쥔 채 들기 높이 shaping (d69f771) | 960 it에 들기 1~3%, 놓을 위치 0%. model_300(확률적 행동, 256 env): 4 cm 든 4개 모두 **정책이 열기 명령을 보내 떨어뜨림**. 들고 있는 동안 그리퍼 행동 평균 0.03(닫기·열기 사이에서 못 정함), 들고 있는 step의 57%가 열기 요청 |
-| 4090 A `-GripperBusy-v0` | 처음 코드 + actor 그리퍼 진행 중 비트 | **270 it에 들기 85%**, 500 it 놓을 위치 90%, 손 놓기 4% → 800 it 0.6%. 성공 0.1% 이하 |
-| 4090 B `-CriticPlus-v0` | 처음 코드 + critic 정보 | 620~650 it에 스스로 들기를 넘음. 800 it 들기 92%, 놓을 위치 37%, 손 놓기 0.3%, 성공 0 |
+| 4090 A `-GripperBusy-v0` | 처음 코드 + actor 그리퍼 진행 중 비트 | **270 it에 들기 85%**, 500 it 놓을 위치 90%, 손 놓기 4% → 800 it 0.6%. 성공 0.1% 이하. **1444 it에서 멈춤: 놓을 위치 91%, 손 놓기 1.2%, 성공 0.9%** |
+| 4090 B `-CriticPlus-v0` | 처음 코드 + critic 정보 | 620~650 it에 스스로 들기를 넘음. 800 it 들기 92%, 놓을 위치 37%, 손 놓기 0.3%, 성공 0. **1423 it에서 멈춤: 놓을 위치 86%, 손 놓기 84%, 성공 0%** — 손 놓기는 스스로 배웠지만 손 올리기(TCP가 큐브 윗면 + 3 cm)에서 막혔어요(깊게 잡아 약 10 cm를 올려야 함, 원인은 측정 전) |
 
 - 그리퍼 진행 중 비트는 들기를 약 2.4배 빨리 배우게 했어요(270 vs 620~650 it). 비트가 없으면 actor는 그리퍼 행동이 실제로 먹히는 순간(그리퍼가 쉴 때)과 무시되는 순간을 구분하지 못해서, 그리퍼 출력의 학습 신호가 흐려지는 걸로 봐요.
 - critic 정보(B)는 늦게 배웠지만 파지가 더 조심스러웠어요(아래 표).
 
 ### A·B model_800 평가 (4090, 128 env, 결정적, 종료 끔)
-
-4090 보고에서 표 일부가 깨져, 확실한 값만 옮겼어요.
 
 | | A GripperBusy | B CriticPlus |
 |---|---|---|
@@ -70,6 +73,9 @@ python scripts/rsl_rl/train.py --task Isaac-PickPlace-Cube-DualFR3-UMI-GripperBu
 | 쥐는 순간 기울기 | 8° 안팎 (model_700, 깊이에 따라 6~29°) | 3.1° |
 | 들고 있을 때 최대 기울기 | 28~33° | 8~12° |
 | 손가락이 책상에 닿은 env | 80/128 (최대 103 N) | 14/128 |
+| 도달한 단계 (종료 끔) | 놓을 위치 118/128, 손 놓기 0/128 | 놓을 위치 11/128, 손 놓기 0/128 |
+
+위 접촉 값은 패드 접촉력에서 큐브와의 접촉을 뺀 값이에요. A model_800을 `eval_dual_fr3_pick_place_grasp.py`(Table 필터, 현재 코드의 단계 판정)로 다시 재면: 쥘 때 손가락 끝 책상 위 2.8 cm, 잡는 깊이 7.5 cm, 쥐는 순간 기울기 중앙 8.6°(깊이에 따라 4~24°), 손가락-책상 접촉 86/128(최대 138 N), 놓을 위치 106/128, 손 놓기 0/128, 놓을 위치에서 열기 명령 0%예요.
 
 **A가 놓을 위치에서 손을 놓지 않는 이유 (코드 확인)**
 - placed 단계 shaping이 "손가락 벌린 정도"였어요. 쥔 손가락은 23.4 mm이고 25 mm를 넘으면 바로 패드가 떨어져 다음 단계로 넘어가요. 그래서 이 shaping은 사실상 늘 0이었고, 열기를 시작할 신호가 없었어요.
