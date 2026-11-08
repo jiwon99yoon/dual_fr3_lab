@@ -41,6 +41,10 @@ rule-based 확인 (scripts/tools/eval_dual_fr3_pick_place_rule_based.py, 256 env
 
 11-09 수정 (첫 학습들의 결과, docs/dual_fr3_pick_place_cube.md): 쥔 채 들기 높이 shaping, 파지점 큐브 중심, 손가락-책상
 접촉·손가락 끝 하한 벌점, PLACED에서 열기 요청 shaping, 한 번 놓았으면 RELEASED 유지 범위(5 cm, 15°)
+
+11-09 수정 2 (5070 fix_5070 model_800, 4090 B 1423 it): PLACED·RELEASED shaping에 그리퍼 행동값 자체(연속, 0/1 요청 대신.
+PLACED에서도 행동 -0.72라 열기가 step당 0.1%), PLACED에 큐브 정지(ManiSkill StackCube, 늘 0이던 손가락 벌림 대신. 열기 지연
+동안 팔이 움직여 큐브가 끌려감), RELEASED 손 올리기를 큐브 바닥 높이부터 (쥔 깊이만큼 기울기 0이었음)
 """
 
 import os

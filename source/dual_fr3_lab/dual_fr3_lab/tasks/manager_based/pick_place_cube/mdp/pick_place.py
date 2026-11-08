@@ -12,8 +12,8 @@
 
     0 REACH     오른 TCP -> 파지점 (위에서, 손가락 닫힘 방향을 큐브 면에 맞춤), 파지, 쥔 채 들어 올린 높이
     1 HELD      오른손 파지 & 한 번 들었음. 큐브 -> 목표 (높이 무관: 내려놓는 중에도 1)
-    2 PLACED    들었던 큐브가 목표 xy XY_TOL 이내, 기울기 UPRIGHT_DEG 이내로 책상에 놓임 & 손가락 접촉. 열기 요청, 손가락 벌리기
-    3 RELEASED  위 + 손가락 비접촉. 손 올리기. 한 번 PLACED였으면 놓은 뒤 목표 RELEASE_XY_TOL·RELEASE_TILT_DEG 안이면 유지
+    2 PLACED    들었던 큐브가 목표 xy XY_TOL 이내, 기울기 UPRIGHT_DEG 이내로 책상에 놓임 & 손가락 접촉. 그리퍼 열기 행동값, 큐브 정지
+    3 RELEASED  위 + 손가락 비접촉. 그리퍼 열기 행동값, 손 올리기. 한 번 PLACED였으면 놓은 뒤 목표 RELEASE_XY_TOL·RELEASE_TILT_DEG 안이면 유지
     4 SUCCESS   위(XY_TOL, UPRIGHT_DEG) + TCP가 큐브 윗면보다 HAND_CLEAR 위 (성공)
 
 성공 조건(사용자 11-07): 목표 xy 1 cm, 기울기 5°, 놓음, 손 올림. 11-08 xy 2.5 cm로 완화 (ManiSkill PickCube 2.5 cm,
@@ -137,7 +137,6 @@ class PickPlaceState:
         self.ema = {f"reach_{name}": 0.0 for name in STAGE_NAMES[1:]}
         robot = env.scene["robot"]
         self._link7 = robot.body_names.index("right_fr3_link7")
-        self._finger = robot.find_joints("right_fr3_finger_joint1")[0][0]
         self._off_p = torch.tensor(UMI_TCP_OFFSET_POS, device=dev).repeat(n, 1)
         self._off_q = torch.tensor(UMI_TCP_OFFSET_ROT, device=dev).repeat(n, 1)
         self._ex = torch.tensor([1.0, 0.0, 0.0], device=dev).repeat(n, 1)
@@ -229,11 +228,19 @@ class PickPlaceState:
         for s, cond in enumerate(conditions, start=1):
             stage = torch.where(cond, s, stage)
 
-        finger = robot.data.joint_pos.torch[:, self._finger]
-        half = 0.5 * CUBE_SIZE[0]
-        # PLACED: 쥔 손가락은 23.4 mm라 25 mm를 넘으면 바로 비접촉(RELEASED)이 된다. 손가락 벌림만으로는 이 단계 shaping이 늘 0이라
-        # 열기를 요청한 순간에 준다 (명령이 실행되기까지 0.45~0.9 s)
-        open_request = (~env.action_manager.get_term(GRIPPER_ACTION)._request_close).float()
+        # PLACED/RELEASED: 그리퍼 행동값 자체 (-1 -> 0, 열기 문턱 0 -> 0.5, +1 -> 1). 11-09 fix_5070 model_800은 PLACED에서도 옮길 때와
+        # 같은 -0.72(노이즈 std 0.22, step당 열기 0.1%)라, 열기 요청 0/1로는 문턱을 넘기 전에 신호가 없었다. 우연히 한 번 열어도
+        # 다음 요청이 닫기라 다시 쥐었다 (손 놓기 6%, 성공 0.2%). 쥔 손가락은 23.4 mm라 25 mm를 넘으면 바로 비접촉(RELEASED)이어서
+        # 이전의 손가락 벌림 항은 PLACED에서 늘 0이었다
+        open_action = (0.5 * (env.action_manager.get_term(GRIPPER_ACTION).raw_actions[:, 0] + 1.0)).clamp(0.0, 1.0)
+        # PLACED: 큐브 정지 (ManiSkill StackCube의 놓기 단계와 같은 1 - tanh(10 v + w)). 열기 명령이 실행되기까지 0.45~0.9 s 동안
+        # 팔이 움직이면 큐브가 끌려간다 (model_800 PLACED 첫 step에 강제로 열면 41/64가 0.45~1.0 s 뒤 목표 5~23 cm 밖에서 낙하 종료)
+        cube_still = 1.0 - torch.tanh(
+            10.0 * torch.norm(obj.data.root_lin_vel_w.torch, dim=-1) + torch.norm(obj.data.root_ang_vel_w.torch, dim=-1)
+        )
+        # 손 올리기: 손가락 끝이 큐브 바닥 높이에서 0, 윗면 + HAND_CLEAR에서 1. 이전(윗면 - 3 cm부터)은 쥔 깊이만큼 기울기가 0이었다
+        # (중심 파지 2 cm, 깊게 쥐면 4.5 cm. 4090 B 1423 it: 손 놓기 84%, 성공 0)
+        raise_frac = ((self.clear + CUBE_SIZE[2]) / (CUBE_SIZE[2] + HAND_CLEAR)).clamp(0.0, 1.0)
         # 쥔 채 들어 올린 높이 (0~LIFT_DELTA -> 0~1). 11-09 첫 run은 이 항 없이 쥐고 버티기에서 멈췄다 (들기 0/64)
         lift_frac = ((self.cube_b[:, 2] - rest_z) / LIFT_DELTA).clamp(0.0, 1.0) * self.grasp.float()
         shaping = torch.stack(
@@ -241,8 +248,8 @@ class PickPlaceState:
                 0.4 * (1.0 - torch.tanh(d_grasp / REACH_STD)) + 0.2 * self.orient + 0.2 * self.grasp.float()
                 + 0.2 * lift_frac,
                 0.5 * (1.0 - torch.tanh(d_goal / TRANSPORT_STD)) + 0.5 * (1.0 - torch.tanh(d_goal / PLACE_STD)),
-                0.5 * open_request + 0.5 * ((finger - half) / (FINGER_OPEN - half)).clamp(0.0, 1.0),  # 열기 요청, 손가락 벌리기
-                ((self.clear + HAND_CLEAR) / (2.0 * HAND_CLEAR)).clamp(0.0, 1.0),  # 손 올리기
+                0.5 * open_action + 0.5 * cube_still,  # 열기 행동, 큐브 정지
+                0.5 * open_action + 0.5 * raise_frac,  # 열린 채 유지 (닫으면 다시 쥔다), 손 올리기
                 torch.ones_like(d_grasp),
             ),
             dim=-1,

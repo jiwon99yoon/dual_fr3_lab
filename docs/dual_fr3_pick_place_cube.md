@@ -6,10 +6,33 @@ rule-based 확인: `scripts/tools/eval_dual_fr3_pick_place_rule_based.py`.
 책상 위에 세워 둔 큐브(5×5×10 cm)를 오른손으로 위에서 집어요. 무작위 목표 위치에 세워 놓고, 손을 뗀 뒤 위로 올리면 성공이에요.
 왼팔은 ready 자세로 서 있어요(action 없음). 제어 계약은 lift Sim2Real과 같아서 배포 노드 구조도 그대로 써요.
 
-## 지금 상태와 할 일 (2026-11-09 01:40)
+## 지금 상태와 할 일 (2026-11-09 02:05)
+
+**02:05 수정 2 (손 놓기 보상)**: 01:27~01:29에 시작한 세 run(아래 표)은 목표에 놓기까지는 배우지만 손을 놓지 못해요.
+놓는 단계 보상을 고쳤어요(아래 "11-09 수정 2"). **세 run 모두 pull 뒤 지금 run을 멈추고, 마지막 체크포인트에서 이어 학습해요.**
+관측과 행동은 그대로라 이어 학습이 돼요(들기·옮기기를 다시 배울 필요 없음).
+
+```bash
+# 5070
+python scripts/rsl_rl/train.py --task Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-v0 --headless --num_envs 4096 \
+  --resume --load_run 2026-11-09_01-27-06_fix_5070 --checkpoint model_N.pt --max_iterations 4000 --run_name release_5070
+# 4090 (터미널 두 개에서 동시에)
+python scripts/rsl_rl/train.py --task Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-Tilt-v0 --headless --num_envs 4096 \
+  --resume --load_run 2026-11-09_01-28-37_tilt_4090 --checkpoint model_N.pt --max_iterations 4000 --run_name release_tilt_4090
+python scripts/rsl_rl/train.py --task Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-CriticPlus-v0 --headless --num_envs 4096 \
+  --resume --load_run 2026-11-09_01-28-57_critic_plus_4090 --checkpoint model_N.pt --max_iterations 4000 --run_name release_critic_plus_4090
+```
+
+- `model_N.pt`는 그 run 폴더의 마지막 체크포인트예요. rsl_rl은 불러온 iteration부터 `--max_iterations`만큼 더 돌고, 새 로그 폴더를 만들어요.
+- 볼 것:
+  - `reach_released`, `reach_success`가 오르는지
+  - `Episode_Termination/cube_dropped`가 늘지 않는지 (열기 지연 동안 팔이 움직이면 큐브가 끌려가 낙하 종료)
+  - 결정적 행동에서 placed 단계의 그리퍼 행동값이 0 쪽으로 가는지 (model_800: −0.72)
+
+### 01:27~01:29에 시작한 세 run
 
 11-09 새벽에 첫 학습 4개(5070 2개, 4090 A·B)를 보고 task를 고쳤어요. 고친 내용은 아래 "11-09 수정"에 있어요.
-**지금 할 일: 수정 커밋을 pull하고, 세 run을 새로 시작해요.** 세 run 모두 actor는 A(그리퍼 진행 중 비트, 37D)예요.
+세 run 모두 actor는 A(그리퍼 진행 중 비트, 37D)예요.
 
 | PC | run | task | 보는 것 |
 |---|---|---|---|
@@ -47,6 +70,37 @@ python scripts/tools/eval_dual_fr3_pick_place_grasp.py --headless --task Isaac-P
 **실물 배포** (세 run 모두 같아요)
 - 노드 관측 끝에 그리퍼 진행 중 비트를 추가해요. 그리퍼 goal을 보낸 뒤 result를 받기 전까지 1이에요.
 - 노드의 `gripper_hysteresis`(0.1)를 0으로 둬요. sim은 행동 부호(0 기준)로 열고 닫아요.
+
+## 11-09 수정 2 (02:05, 손 놓기 보상)
+
+### 무엇을 봤나
+
+| 출처 | 결과 |
+|---|---|
+| 5070 fix_5070 학습 | 500 it 놓을 위치 37% → 700 it 87%. 손 놓기 4% (700 it) → 6% (880 it), 성공 0.2% |
+| model_700 (128 env, 결정적) | 처음 쥘 때 손가락 끝 책상 위 **5.2 cm** (중앙값, p10 3.3), 손가락-책상 접촉 **0/128** → 파지 높이 수정은 먹혔어요. `tip_floor` 벌점(로그 −1.5)의 93%는 placed에서 쥔 채 누르며 손이 큐브를 따라 미끄러져 내려간 것 |
+| model_800 그리퍼 행동 (128 env, 결정적) | placed에서 평균 **−0.72**로 held와 같아요. 노이즈 std 0.22 (300 it 0.42에서 계속 줄어요) → 한 step에 열기가 나올 확률 0.1%. 우연히 열어도 다음 요청이 닫기라 열림이 끝나면 다시 쥐어요 |
+| model_800, placed 첫 step부터 그리퍼를 강제로 열기 (64 env씩) | 정책 팔 그대로: 35개가 0.45~1.0 s 뒤 낙하·넘어짐 종료 (열기 지연 동안 팔이 큐브를 5~23 cm 끌고 감). **팔을 멈추면(행동 0): 37/37 손 놓기, 종료 0** |
+| 4090 B 1423 it | 손 놓기 84%, 성공 0 — 손 올리기 shaping이 큐브 윗면 −3 cm부터라, 쥔 깊이만큼(중심 파지 2 cm, 깊게 쥐면 4.5 cm) 올려도 보상 변화가 없었어요 |
+
+- 레퍼런스(ManiSkill StackCube)도 같은 단계 구조(0/2/4/6/8)예요. 차이는 그리퍼: 그쪽은 연속값이라 조금만 벌려도 보상이 늘지만, 우리는 이진(a < 0 닫기)에 0.45~0.9 s 지연이라 문턱을 넘기 전에는 신호가 없어요.
+- 목표에서 쥔 채 시작하는 커리큘럼은 안 넣었어요. 학습 step의 약 40%가 이미 placed 상태라, 부족한 건 그 상태에서 여는 탐색이에요.
+
+### 수정 내용 (`PickPlaceState.update`)
+
+| 단계 | 이전 | 지금 |
+|---|---|---|
+| placed | 열기 요청(0/1) 0.5 + 손가락 벌림 0.5 (쥔 손가락 23.4 mm → 25 mm를 넘으면 바로 released라 늘 0) | **그리퍼 행동값** 0.5 (a = −1 → 0, 0 → 0.5, +1 → 1) + **큐브 정지** 0.5 (`1 − tanh(10·v + ω)`, ManiSkill StackCube의 놓기 단계와 같음) |
+| released | 손 올리기 (TCP가 큐브 윗면 −3 cm → +3 cm) | 그리퍼 행동값 0.5 (열린 채 유지, 닫으면 다시 쥠) + 손 올리기 0.5 (**큐브 바닥 높이 → 윗면 +3 cm**) |
+
+- 목표 밖에서는 이 보상이 없고 −100 종료는 그대로라, 옮기는 동안 꽉 쥐는 건 바뀌지 않아요.
+- 확인 (model_800, 192 env를 셋으로 나눔, 결정적). 단계 보상(가중치 5를 곱하기 전):
+
+| 그룹 | placed | released | 종료 |
+|---|---|---|---|
+| 정책 그대로 | 4.11 (중앙값) | 도달 0 | |
+| placed부터 열기 + 정책 팔 | 4.50 | 6.74, 성공 3개 | 35/64 낙하·넘어짐 |
+| placed부터 열기 + 팔 멈춤 | 4.51 | 6.68, **37/37** | 0 |
 
 ## 11-09 수정 (첫 학습들의 결과)
 
@@ -120,7 +174,7 @@ python scripts/tools/eval_dual_fr3_pick_place_grasp.py --headless --task Isaac-P
 | 2 | 파지점을 큐브 중심으로 (손가락 끝 책상 위 7 → 5 cm, `GRASP_OFFSET` 0.02 → 0) | `mdp/pick_place.py` |
 | 3 | 손가락-책상 접촉 1 N 넘으면 −5 (`finger_table`). 패드 센서 filter에 Table을 추가했어요(filter[1]) | `mdp.finger_table_contact` |
 | 4 | 손가락 끝이 책상 위 3 cm보다 낮은 만큼 −10 (`tip_floor`, 책상 높이에서 1). 손이 책상 위(앞 모서리에서 3 cm 앞까지)일 때만이에요. ready TCP는 책상 앞(x 0.30)이에요 | `mdp.tip_below_floor` |
-| 5 | placed 단계 shaping을 열기 요청 0.5 + 손가락 벌림 0.5로. 열기를 요청한 순간 보상해요 | `PickPlaceState.update` |
+| 5 | placed 단계 shaping을 열기 요청 0.5 + 손가락 벌림 0.5로. 열기를 요청한 순간 보상해요 (→ 11-09 수정 2에서 그리퍼 행동값 + 큐브 정지로 바꿈) | `PickPlaceState.update` |
 | 6 | 한 번 placed였으면, 손을 놓은 뒤 큐브가 목표 5 cm·기울기 15° 안에 서 있는 동안 released를 유지해요. 성공 판정은 그대로 2.5 cm·5°예요 | `RELEASE_XY_TOL`, `RELEASE_TILT_DEG` |
 | ② | `-GripperBusy-Tilt`: 기울기 15° 초과분(rad) × −5, 언제나 | `mdp.cube_tilt_excess` |
 | ③ | `-GripperBusy-CriticPlus`: A의 actor + B의 critic | `_add_critic_plus` |
@@ -190,8 +244,8 @@ python scripts/tools/eval_dual_fr3_pick_place_grasp.py --headless --task Isaac-P
 |---|---|
 | reach | 파지점까지 거리 0.4 + 손 방향 0.2 + 양쪽 패드 파지 0.2 + 쥔 채 들어 올린 높이 0.2 (11-09) |
 | held | 큐브 → 목표 거리 (넓게 0.5 + 좁게 0.5) |
-| placed | 열기 요청 0.5 + 손가락 벌림 0.5 (11-09, 전에는 손가락 벌림만이라 늘 0) |
-| released | 손 올리기. 한 번 placed였으면 목표 5 cm·15° 안에서 유지 (11-09) |
+| placed | 그리퍼 행동값 0.5 + 큐브 정지 0.5 (11-09 수정 2. 그 전: 열기 요청 0/1 + 손가락 벌림) |
+| released | 그리퍼 행동값 0.5 + 손 올리기 0.5 (큐브 바닥 높이 → 윗면 +3 cm, 11-09 수정 2). 한 번 placed였으면 목표 5 cm·15° 안에서 유지 (11-09) |
 | success | 1 |
 
 - 그 밖의 보상:
