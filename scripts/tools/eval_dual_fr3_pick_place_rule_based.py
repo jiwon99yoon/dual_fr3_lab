@@ -6,7 +6,7 @@
 """Rule-based check of the cube pick-and-place task: is every sampled pick/place pair doable by the right arm?
 
 A scripted DLS-IK controller drives the RL env through its own action interface (arm Δq = 0.1·a clipped to ±0.1 rad,
-binary gripper), using the true cube pose:
+binary gripper), using the true cube pose (or, with --obs_pose, the pose the policy sees):
 
     PRE    TCP above the grasp point, top-down, closing direction along a cube face (yaw nearest the ready TCP)
     DESC   down to the grasp point (cube centre + 2 cm along the cube z axis)
@@ -21,6 +21,8 @@ At the end it prints the success count by the task's own stage (mdp.pick_place_s
 place positions, the reward sums and the joint margins.
 
     python scripts/tools/eval_dual_fr3_pick_place_rule_based.py --num_envs 256 --headless
+    # grasp height with the policy's cube observation (fingertip 5 cm above the table = grasp point at the cube centre)
+    python scripts/tools/eval_dual_fr3_pick_place_rule_based.py --num_envs 256 --headless --obs_pose --grasp_dz 0.0
     python scripts/tools/eval_dual_fr3_pick_place_rule_based.py --num_envs 4 --video logs/rule_based/pick_place/rule.mp4 \
         --headless --enable_cameras
 """
@@ -40,7 +42,11 @@ parser.add_argument("--pre_dz", type=float, default=0.10, help="PRE height above
 parser.add_argument("--lift_dz", type=float, default=0.12, help="LIFT/MOVE height of the grasp point above the table grasp height")
 parser.add_argument("--place_dz", type=float, default=0.0,
                     help="cube centre above its resting height when opening (256 envs: 0.005 -> 247, 0 -> 249, -0.003 -> 243)")
-parser.add_argument("--grasp_dz", type=float, default=None, help="grasp point above the cube centre (default: task GRASP_OFFSET)")
+parser.add_argument("--grasp_dz", type=float, default=None,
+                    help="grasp point above the cube centre (default: task GRASP_OFFSET); fingertip above the table = 0.05 + this")
+parser.add_argument("--obs_pose", action="store_true",
+                    help="pick with the policy's cube observation (episode offset +-5 mm / +-3 deg, noise, delay, dropout), "
+                         "averaged while reaching (PRE, DESC); placing still uses the true cube xy")
 parser.add_argument("--wait_s", type=float, default=0.6,
                     help="CLOSE/OPEN wait; with the delayed gripper also until the gripper settles (command done)")
 parser.add_argument("--place_tol", type=float, default=0.004, help="LOWER ends only with the cube xy this close to the goal")
@@ -119,6 +125,8 @@ def main():
     for name in ("cube_dropped", "cube_toppled", "cube_off_table"):
         setattr(cfg.terminations, name, None)
     cfg.rewards.drop = None
+    if args.obs_pose:
+        cfg.observations.policy.enable_corruption = True  # the Play cfg turns the noise off
     cfg.commands.goal_pose.resampling_time_range = (args.duration + 1.0, args.duration + 1.0)
     if args.finger_stiffness is not None:
         actuators = dict(cfg.scene.robot.actuators)
@@ -141,7 +149,7 @@ def main():
                 spawn=sim_utils.PinholeCameraCfg(focal_length=18.0, clipping_range=(0.01, 20.0)),
             ))
     env = gym.make(args.task, cfg=cfg).unwrapped
-    env.reset()
+    obs, _ = env.reset()
     dev, n, dt = env.device, env.num_envs, env.step_dt
     robot, cube = env.scene["robot"], env.scene["object"]
     base = T(robot.data.root_pos_w).clone()
@@ -176,11 +184,37 @@ def main():
     q_down = torch.tensor([1.0, 0.0, 0.0, 0.0], device=dev).repeat(n, 1)  # pi about x: TCP z points down
     ref_q = quat_mul(rot_z(psi), q_down)
 
+    # --obs_pose: running mean of the observed cube centre (base) and of the folded yaw (circular, period 90 deg)
+    om = env.observation_manager
+    obs_slice, i0 = {}, 0
+    for name, dim in zip(om.active_terms["policy"], om.group_obs_term_dim["policy"]):
+        obs_slice[name] = slice(i0, i0 + int(np.prod(dim)))
+        i0 += int(np.prod(dim))
+    est_sum = torch.zeros(n, 3, device=dev)
+    est_cs = torch.zeros(n, 2, device=dev)
+    est_k = torch.zeros(n, 1, device=dev)
+
+    def observe(obs_dict, active):
+        po = obs_dict["policy"]
+        pos, quat = po[:, obs_slice["cube_position"]], po[:, obs_slice["cube_orientation"]]
+        yaw4 = 8.0 * torch.atan2(quat[:, 2], quat[:, 3])  # 4 x yaw of an upright cube
+        a = active[:, None].float()
+        est_sum.add_(pos * a)
+        est_cs.add_(torch.stack([torch.cos(yaw4), torch.sin(yaw4)], -1) * a)
+        est_k.add_(a)
+
+    def estimate():
+        k_ = est_k.clamp(min=1.0)
+        return est_sum / k_ + base, 0.25 * torch.atan2(est_cs[:, 1], est_cs[:, 0])
+
     cube0 = T(cube.data.root_pos_w).clone()
     goal_b = state.goal_b.clone()
     goal_w = goal_b + base
     start_b = cube0 - base
-    grasp_w = cube0 + torch.tensor([0.0, 0.0, mdp.GRASP_OFFSET if args.grasp_dz is None else args.grasp_dz], device=dev)
+    grasp_dz = torch.tensor([0.0, 0.0, mdp.GRASP_OFFSET if args.grasp_dz is None else args.grasp_dz], device=dev)
+    grasp_w = cube0 + grasp_dz
+    if args.obs_pose:
+        observe(obs, torch.ones(n, dtype=torch.bool, device=dev))
     ref_p = tcp_p0.clone()
     phase = torch.full((n,), PRE, dtype=torch.long, device=dev)
     wait = torch.zeros(n, device=dev)
@@ -193,6 +227,13 @@ def main():
     t_success = torch.full((n,), float("nan"), device=dev)
     xy_at = torch.full((n, 2), float("nan"), device=dev)  # cube xy error when LOWER ends (gripper opens), when OPEN ends
     tilt_held_max = torch.zeros(n, device=dev)
+    # grasp: est error when CLOSE starts; tilt while closing; tilt, push, fingertip height when CLOSE ends; finger-table force
+    est_err = torch.full((n, 2), float("nan"), device=dev)  # xy (m), yaw (rad)
+    tilt_close_max = torch.zeros(n, device=dev)
+    at_grasp = torch.full((n, 4), float("nan"), device=dev)  # tilt (deg), push xy (m), fingertip above table (m), depth (m)
+    table_f_max = torch.zeros(n, device=dev)
+    tip_min = torch.full((n, len(PHASES)), float("inf"), device=dev)  # lowest fingertip above the table, per phase
+    floor_steps = torch.zeros(n, len(PHASES), device=dev)  # steps with the task's tip_floor penalty on, per phase
     pad_f = []  # (min, max) pad-cube force on held steps
     link_names = [nm for nm in env.scene.sensors if nm.endswith("_contact") and "finger" not in nm]
     link_f = torch.zeros(n, len(link_names), device=dev)
@@ -227,6 +268,13 @@ def main():
 
     steps = int(args.duration / dt)
     for step in range(steps):
+        if args.obs_pose:
+            est_on = phase <= DESC
+            cube_est, phi_est = estimate()
+            grasp_w = torch.where(est_on[:, None], cube_est + grasp_dz, grasp_w)
+            k_est = torch.round(wrap(psi0 - phi_est) / (0.5 * math.pi))
+            psi = torch.where(est_on, phi_est + k_est * 0.5 * math.pi, psi)
+            ref_q = quat_mul(rot_z(psi), q_down)
         p, q, r = tcp()
         cube_w = T(cube.data.root_pos_w)
         up = torch.tensor([0.0, 0.0, 1.0], device=dev)
@@ -256,6 +304,13 @@ def main():
         for k, ph in enumerate((CLOSE, OPEN)):
             gripper_s[:, k] = torch.where(adv & (phase == ph), wait, gripper_s[:, k])
         ending_close = adv & (phase == CLOSE)
+        starting_close = adv & (phase == DESC)
+        if starting_close.any():
+            cube_q_now = T(cube.data.root_quat_w)
+            yaw_true = 2.0 * torch.atan2(cube_q_now[:, 2], cube_q_now[:, 3])
+            e_yaw = wrap(4.0 * (psi - yaw_true)) / 4.0  # closing direction vs the true cube face (period 90 deg)
+            est_err = torch.where(starting_close[:, None], torch.stack(
+                [torch.norm(grasp_w[:, :2] - cube_w[:, :2], dim=-1), e_yaw.abs()], -1), est_err)
         grasp_off = torch.where(ending_close[:, None], p - cube_w, grasp_off)
         # OPEN: hold the hand where it is (the reference may still lead the TCP by up to 1 cm and drag the cube)
         ref_p = torch.where((adv & (phase == LOWER))[:, None], p, ref_p)
@@ -283,9 +338,20 @@ def main():
         margin_min = torch.minimum(margin_min, torch.minimum(qj - lo, hi - qj).amin(-1))
         closed = (phase >= CLOSE) & (phase < OPEN)
         actions = torch.cat([dq / scale, torch.where(closed, -1.0, 1.0)[:, None]], -1)
-        env.step(actions)
+        obs = env.step(actions)[0]
+        if args.obs_pose:
+            observe(obs, phase <= DESC)
 
         s = mdp.pick_place_state(env)
+        tilt_deg = torch.rad2deg(s.tilt)
+        tilt_close_max = torch.where(phase == CLOSE, torch.maximum(tilt_close_max, tilt_deg), tilt_close_max)
+        tip_h = s.tcp_b[:, 2] - (mdp.TABLE_TOP_Z_B + table_dz)
+        depth = s.cube_b[:, 2] + 0.5 * mdp.CUBE_SIZE[2] - s.tcp_b[:, 2]
+        at_grasp = torch.where(ending_close[:, None], torch.stack(
+            [tilt_deg, torch.norm(s.cube_b[:, :2] - start_b[:, :2], dim=-1), tip_h, depth], -1), at_grasp)
+        table_f_max = torch.maximum(table_f_max, mdp.finger_table_force(env))
+        tip_min[torch.arange(n, device=dev), phase] = torch.minimum(tip_min[torch.arange(n, device=dev), phase], tip_h)
+        floor_steps[torch.arange(n, device=dev), phase] += (mdp.tip_below_floor(env) > 0).float()
         t_success = torch.where((s.stage == mdp.STAGE_SUCCESS) & torch.isnan(t_success), (step + 1) * dt, t_success)
         tilt_held_max = torch.maximum(tilt_held_max, torch.rad2deg(s.tilt) * (s.lifted & s.grasp).float())
         held = s.lifted & s.grasp
@@ -347,6 +413,25 @@ def main():
         print(f"[rule] while lifted and grasped (median): pad-cube force {np.median(f[:, 0]):.1f} / {np.median(f[:, 1]):.1f} N, "
               f"along the closing axis {np.median(f[:, 2]):.1f} / {np.median(f[:, 3]):.1f} N (left / right pad) | finger q "
               f"{1000 * np.median(f[:, 4]):.1f} / {1000 * np.median(f[:, 5]):.1f} mm")
+    def pct(x, scale=1.0):
+        x = x[~torch.isnan(x)].cpu().numpy() * scale
+        return f"median {np.median(x):.1f}, p90 {np.percentile(x, 90):.1f}, max {x.max():.1f}" if len(x) else "-"
+
+    gdz = mdp.GRASP_OFFSET if args.grasp_dz is None else args.grasp_dz
+    print(f"[rule] grasp ({'policy cube obs' if args.obs_pose else 'true cube pose'}, grasp point {100 * gdz:+.1f} cm above the "
+          f"cube centre = fingertip {100 * (0.5 * mdp.CUBE_SIZE[2] + gdz):.1f} cm above the table):")
+    print(f"[rule]   pose error when closing starts: xy {pct(est_err[:, 0], 1000)} mm | closing direction vs cube face "
+          f"{pct(est_err[:, 1], 180 / math.pi)} deg")
+    print(f"[rule]   fingertip above the table at grasp {pct(at_grasp[:, 2], 100)} cm (min "
+          f"{100 * np.nanmin(at_grasp[:, 2].cpu().numpy()):.1f}) | grasp depth from the cube top {pct(at_grasp[:, 3], 100)} cm")
+    print(f"[rule]   cube tilt while closing (max) {pct(tilt_close_max)} deg | at grasp {pct(at_grasp[:, 0])} deg | "
+          f"pushed while reaching+closing {pct(at_grasp[:, 1], 1000)} mm | tilt while held (max) {pct(tilt_held_max)} deg")
+    print(f"[rule]   finger-table contact > 1 N: {int((table_f_max > 1.0).sum())}/{n} envs, max {table_f_max.max():.0f} N | lowest "
+          f"fingertip above the table per phase (cm, min over envs): " + ", ".join(
+              f"{PHASES[j]} {100 * tip_min[:, j].min():.1f}" for j in range(len(PHASES)) if torch.isfinite(tip_min[:, j]).any()))
+    print(f"[rule]   steps under the fingertip floor ({100 * mdp.TIP_FLOOR:.0f} cm, over the table) per phase, mean over envs "
+          f"(envs with any): " + ", ".join(f"{PHASES[j]} {floor_steps[:, j].mean():.1f} ({int((floor_steps[:, j] > 0).sum())})"
+                                            for j in range(len(PHASES)) if floor_steps[:, j].any()))
     print(f"[rule] all envs: xy err median {xy_err.median():.2f} cm, max {xy_err.max():.2f} cm | final tilt max {tilt.max():.1f} deg | "
           f"tilt while held max {tilt_held_max.max():.0f} deg | max TCP err {100 * err_max.max():.1f} cm | min joint margin "
           f"{margin_min.min():.3f} rad | saturated steps mean {sat_steps.mean():.0f}")

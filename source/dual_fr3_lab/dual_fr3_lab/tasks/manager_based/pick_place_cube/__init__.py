@@ -50,6 +50,48 @@ gym.register(
     disable_env_checker=True,
 )
 
+# A + 기울기 벌점 (11-09): A(파지 수정 포함)와 동시에 돌려 기울기 벌점 효과만 본다
+gym.register(
+    id="Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-Tilt-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.pick_place_env_cfg:DualFR3PickPlaceCubeGripperBusyTiltEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PickPlaceCubeGripperBusyTiltPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-Tilt-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.pick_place_env_cfg:DualFR3PickPlaceCubeGripperBusyTiltEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PickPlaceCubeGripperBusyTiltPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+# A + B (11-09): actor는 A, critic은 B. 4090 B가 파지·운반 기울기가 A보다 작았다
+gym.register(
+    id="Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-CriticPlus-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.pick_place_env_cfg:DualFR3PickPlaceCubeGripperBusyCriticPlusEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PickPlaceCubeGripperBusyCriticPlusPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-CriticPlus-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.pick_place_env_cfg:DualFR3PickPlaceCubeGripperBusyCriticPlusEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PickPlaceCubeGripperBusyCriticPlusPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
 gym.register(
     id="Isaac-PickPlace-Cube-DualFR3-UMI-CriticPlus-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",

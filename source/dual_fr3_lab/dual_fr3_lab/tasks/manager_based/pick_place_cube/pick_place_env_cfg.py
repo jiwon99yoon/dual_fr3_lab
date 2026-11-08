@@ -34,7 +34,13 @@ rule-based 확인 (scripts/tools/eval_dual_fr3_pick_place_rule_based.py, 256 env
 - 11-08 DR 추가 후 (2.5 cm): 254/256. 책상 dz -0.98~+0.99 cm, 조이는 힘 25.1~35.0 N, 손가락 45~55 mm/s, 시작 관절 ±0.05 rad
   적용 확인. 실패 2개는 스크립트 한계: 4 mm 안까지 내리다 시간 초과 1개, yaw -44° 큐브의 파지 자세가 관절 한계 근처(0.27 rad)라
   스크립트 IK의 한계 회피 null-space가 새어 TCP가 3 cm 못 미친 채 닫은 1개
+- 11-09 파지 높이 (정책과 같은 큐브 관측: 오프셋+잡음+지연을 다가가는 동안 평균, 오차 중앙값 4.2 mm): 손가락 끝 책상 위
+  7 cm 251, 5 cm 255, 4 cm 254, 2.3 cm 232. 닫을 때 기울기 p90 2.8 / 1.0 / 0.9 / 0.3°, 손가락-책상 접촉 0 / 7 / 36 / 95 env
+  -> 파지점을 큐브 중심(5 cm)으로. 천천히 다가가 멈춘 뒤 닫으면 어느 높이든 쥔 순간 기울기 2° 이하
 4096 env 학습 3 iteration: 5070 GPU 최대 4.9 GB, 1.5~1.7 s/iteration (DR 추가 후 1.6~2.0 s, critic 23D).
+
+11-09 수정 (첫 학습들의 결과, docs/dual_fr3_pick_place_cube.md): 쥔 채 들기 높이 shaping, 파지점 큐브 중심, 손가락-책상
+접촉·손가락 끝 하한 벌점, PLACED에서 열기 요청 shaping, 한 번 놓았으면 RELEASED 유지 범위(5 cm, 15°)
 """
 
 import os
@@ -172,12 +178,12 @@ class PickPlaceSceneCfg(InteractiveSceneCfg):
         collide=False,
     )
 
-    # 파지 판정: 오른손 패드-큐브 접촉력. filter[0] = Object
+    # 오른손 손가락 접촉력. filter[0] = Object (파지 판정), filter[1] = Table (손가락-책상 접촉 벌점, 11-09)
     right_leftfinger_contact = ContactSensorCfg(
-        prim_path=arm_link_path("right", "leftfinger"), filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"]
+        prim_path=arm_link_path("right", "leftfinger"), filter_prim_paths_expr=["{ENV_REGEX_NS}/Object", "{ENV_REGEX_NS}/Table"]
     )
     right_rightfinger_contact = ContactSensorCfg(
-        prim_path=arm_link_path("right", "rightfinger"), filter_prim_paths_expr=["{ENV_REGEX_NS}/Object"]
+        prim_path=arm_link_path("right", "rightfinger"), filter_prim_paths_expr=["{ENV_REGEX_NS}/Object", "{ENV_REGEX_NS}/Table"]
     )
 
     plane = AssetBaseCfg(prim_path="/World/GroundPlane", spawn=GroundPlaneCfg())
@@ -333,6 +339,10 @@ class RewardsCfg:
     # handover v1은 -1에서 운반 중 기울기 29~44°가 남았다 -> 더 세게 (45° 기울이면 스텝당 -1.6)
     cube_tilt = RewTerm(func=mdp.cube_tilt_while_held, weight=-2.0)
     joint_limit_margin = RewTerm(func=fr3_joint_limit_margin, weight=-1.0, params={"asset_cfg": _both_arm_joints()})
+    # 11-09: A model_700이 의도보다 4~5 cm 깊게 쥐며 손가락으로 책상을 찍었다 (128개 중 103개, 최대 136 N). 실물은 충돌 반사로
+    # 멈춘다. 처음부터 켠다: 파지점(손가락 끝 책상 위 GRASP_OFFSET + 5 cm)은 하한보다 높아 다가가기는 벌점이 없다
+    finger_table = RewTerm(func=mdp.finger_table_contact, weight=-5.0)
+    tip_floor = RewTerm(func=mdp.tip_below_floor, weight=-10.0)
     # 아래 셋은 놓기를 배운 뒤 커리큘럼으로 강화한다 (handover와 같은 최종값)
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
     joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-1e-4, params={"asset_cfg": _right_arm_joints()})
@@ -464,6 +474,62 @@ class DualFR3PickPlaceCubeGripperBusyEnvCfg_PLAY(DualFR3PickPlaceCubeGripperBusy
 
 
 @configclass
+class DualFR3PickPlaceCubeGripperBusyTiltEnvCfg(DualFR3PickPlaceCubeGripperBusyEnvCfg):
+    """A + 기울기 벌점: 기울기 중 15°를 넘는 만큼 weight -5, 언제나 (캐비닛 책 -Tilt와 같음).
+
+    11-09 A model_700은 들고 옮기는 동안 최대 기울기가 잡는 깊이와 관계없이 32~35°였다 (cube_tilt -2로는 부족).
+    A(파지 수정만)와 동시에 돌려 기울기 벌점의 효과만 따로 본다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.rewards.cube_tilt_excess = RewTerm(
+            func=mdp.cube_tilt_excess, params={"threshold_deg": mdp.TILT_EXCESS_DEG}, weight=-5.0
+        )
+
+
+@configclass
+class DualFR3PickPlaceCubeGripperBusyTiltEnvCfg_PLAY(DualFR3PickPlaceCubeGripperBusyTiltEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_play(self)
+
+
+def _add_critic_plus(cfg) -> None:
+    """critic에 그리퍼 내부 상태 8D (단계 one-hot, 타이머, 명령 비트)와 DR 값 7D (큐브 pose 관측 오프셋, 손가락 강성·속도 배율,
+    비전 지연)를 더한다 (critic 23 -> 38D). actor는 그대로다."""
+    cfg.observations.critic.gripper_state = ObsTerm(func=mdp.gripper_privileged)
+    cfg.observations.critic.dr_values = ObsTerm(
+        func=mdp.dr_privileged,
+        params={
+            "finger_cfg": SceneEntityCfg("robot", joint_names=["right_fr3_finger_joint1"]),
+            "nominal_stiffness": FINGER_STIFFNESS,
+            "nominal_speed": GRIPPER_FINGER_SPEED,
+        },
+    )
+
+
+@configclass
+class DualFR3PickPlaceCubeGripperBusyCriticPlusEnvCfg(DualFR3PickPlaceCubeGripperBusyEnvCfg):
+    """A + B: actor에 그리퍼 진행 중 비트 (37D), critic에 그리퍼 내부 상태와 DR 값 (38D). actor는 A와 같아 배포도 A와 같다.
+
+    11-09 4090 model_800: B는 A보다 쥐는 순간 기울기 3° (A 8~29°), 옮기는 동안 8~12° (A 28~33°), 손가락-책상 접촉 env
+    14/128 (A 80/128)로 파지가 더 조심스러웠다. 다만 들기를 A보다 약 370 iteration 늦게(620~650) 배웠다.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        _add_critic_plus(self)
+
+
+@configclass
+class DualFR3PickPlaceCubeGripperBusyCriticPlusEnvCfg_PLAY(DualFR3PickPlaceCubeGripperBusyCriticPlusEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_play(self)
+
+
+@configclass
 class DualFR3PickPlaceCubeCriticPlusEnvCfg(DualFR3PickPlaceCubeEnvCfg):
     """실험 B: critic에만 그리퍼 내부 상태 8D (단계 one-hot, 타이머, 명령 비트)와 DR 값 7D (큐브 pose 관측 오프셋,
     손가락 강성·속도 배율, 비전 지연) 추가 (critic 23 -> 38D). actor는 36D 그대로라 배포는 기준 run과 같다.
@@ -471,15 +537,7 @@ class DualFR3PickPlaceCubeCriticPlusEnvCfg(DualFR3PickPlaceCubeEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        self.observations.critic.gripper_state = ObsTerm(func=mdp.gripper_privileged)
-        self.observations.critic.dr_values = ObsTerm(
-            func=mdp.dr_privileged,
-            params={
-                "finger_cfg": SceneEntityCfg("robot", joint_names=["right_fr3_finger_joint1"]),
-                "nominal_stiffness": FINGER_STIFFNESS,
-                "nominal_speed": GRIPPER_FINGER_SPEED,
-            },
-        )
+        _add_critic_plus(self)
 
 
 @configclass

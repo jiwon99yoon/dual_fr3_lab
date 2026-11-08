@@ -12,9 +12,9 @@
 
     0 REACH     오른 TCP -> 파지점 (위에서, 손가락 닫힘 방향을 큐브 면에 맞춤), 파지, 쥔 채 들어 올린 높이
     1 HELD      오른손 파지 & 한 번 들었음. 큐브 -> 목표 (높이 무관: 내려놓는 중에도 1)
-    2 PLACED    들었던 큐브가 목표 xy XY_TOL 이내, 기울기 UPRIGHT_DEG 이내로 책상에 놓임 & 손가락 접촉
-    3 RELEASED  위 + 손가락 비접촉. 손 올리기
-    4 SUCCESS   위 + TCP가 큐브 윗면보다 HAND_CLEAR 위 (성공)
+    2 PLACED    들었던 큐브가 목표 xy XY_TOL 이내, 기울기 UPRIGHT_DEG 이내로 책상에 놓임 & 손가락 접촉. 열기 요청, 손가락 벌리기
+    3 RELEASED  위 + 손가락 비접촉. 손 올리기. 한 번 PLACED였으면 놓은 뒤 목표 RELEASE_XY_TOL·RELEASE_TILT_DEG 안이면 유지
+    4 SUCCESS   위(XY_TOL, UPRIGHT_DEG) + TCP가 큐브 윗면보다 HAND_CLEAR 위 (성공)
 
 성공 조건(사용자 11-07): 목표 xy 1 cm, 기울기 5°, 놓음, 손 올림. 11-08 xy 2.5 cm로 완화 (ManiSkill PickCube 2.5 cm,
 실물 쌓기 RGB-Stacking 3 cm와 같은 수준. 1 cm로 실물에서 놓은 레퍼런스는 못 찾음).
@@ -70,7 +70,10 @@ CUBE_OBS_BIAS_POS = 0.005  # m, 축마다 균일
 CUBE_OBS_BIAS_YAW = math.radians(3.0)
 
 # ---------- 판정 ----------
-GRASP_OFFSET = 0.02  # 파지점 = 큐브 중심 + 큐브 z축 x 2 cm (윗부분을 위에서 집음)
+# 파지점 = 큐브 중심 + 큐브 z축 x GRASP_OFFSET. 11-09에 2 cm(손가락 끝이 책상 위 7 cm)에서 0(큐브 중심, 책상 위 5 cm)으로 내렸다.
+# rule-based(정책과 같은 큐브 관측, 256 env): 7 cm 251, 5 cm 255, 4 cm 254, 2.3 cm 232 성공. 닫을 때 기울기 p90 2.8° -> 1.0°,
+# 손가락-책상 접촉 env 0 / 7 / 36 / 95. A model_700은 보상과 달리 손가락 끝 2.3 cm에서 쥐었다
+GRASP_OFFSET = 0.0
 GRASP_FORCE = 0.5  # N, 양 패드 모두 이 이상이면 파지 (cube lift와 같음)
 LIFT_DELTA = 0.04  # 들림: 중심이 세워 놓인 높이 + 4 cm 위
 REST_TOL = 0.01  # 중심이 세워 놓인 높이 + 1 cm 아래면 책상에 놓인 것 (누운 큐브도 포함)
@@ -78,7 +81,18 @@ XY_TOL = 0.025  # 성공: 목표 xy 2.5 cm 이내
 UPRIGHT_DEG = 5.0  # 성공: 기울기 5° 이내
 TOPPLE_DEG = 45.0  # 쥐지 않은 큐브가 이보다 기울면 종료
 HAND_CLEAR = 0.03  # 성공: TCP(손가락 끝 중앙)가 큐브 윗면보다 3 cm 위
+# 손가락 끝(TCP) 높이 하한: 책상 위 이보다 낮으면 벌점 (책상 높이 DR ±1 cm, 큐브 관측 오프셋 ±5 mm에 여유).
+# 11-09 A model_700은 의도(책상 위 7 cm)보다 깊게, 손가락 끝이 책상 위 중앙값 2.3 cm(최소 0.7 cm)에서 쥐었다
+TIP_FLOOR = 0.03
+# 하한은 손이 책상 위에 있을 때만 (앞 모서리 x 0.40에서 손가락 폭만큼 앞까지). ready TCP는 x 0.30, 책상 높이 + 6.6 cm(중앙값)라
+# 책상 높이 DR로 256개 중 5개가 3 cm 아래로 잡혔다
+TIP_FLOOR_EDGE_MARGIN = 0.03
+TILT_EXCESS_DEG = 15.0  # -Tilt 변형: 기울기 중 이 각을 넘는 만큼 벌점 (캐비닛 책 -Tilt와 같은 15°)
 DROP_GOAL_RADIUS = 0.05  # 들었던 큐브를 목표 5 cm 밖에서 놓으면 낙하로 종료
+# 놓은 뒤 유지 범위 (11-09): 한 번 PLACED였으면 손을 놓은 뒤 이 안에 서 있는 동안 RELEASED를 유지한다. 4090 A는 놓을 위치에서
+# 쥔 채 버텼다 (PLACED 초당 20, 놓다가 2.5 cm·5°를 벗어나면 단계 0으로 초당 약 3). 성공은 그대로 XY_TOL, UPRIGHT_DEG
+RELEASE_XY_TOL = DROP_GOAL_RADIUS
+RELEASE_TILT_DEG = 15.0
 FINGER_OPEN = 0.04
 REACH_STD = 0.1
 TRANSPORT_STD = 0.3
@@ -91,6 +105,7 @@ STAGE_BASE = (0.0, 2.0, 4.0, 6.0, 8.0)
 
 PAD_SENSORS = ("right_leftfinger_contact", "right_rightfinger_contact")
 GOAL_COMMAND = "goal_pose"
+GRIPPER_ACTION = "gripper_action"
 
 
 def _quat_z(angle: float, device) -> torch.Tensor:
@@ -118,6 +133,7 @@ class PickPlaceState:
         self.stage = torch.zeros(n, dtype=torch.long, device=dev)
         self.max_stage = torch.zeros_like(self.stage)
         self.ever_lifted = torch.zeros(n, dtype=torch.bool, device=dev)
+        self.ever_placed = torch.zeros_like(self.ever_lifted)
         self.ema = {f"reach_{name}": 0.0 for name in STAGE_NAMES[1:]}
         robot = env.scene["robot"]
         self._link7 = robot.body_names.index("right_fr3_link7")
@@ -137,6 +153,7 @@ class PickPlaceState:
         self.stage[env_ids] = 0
         self.max_stage[env_ids] = 0
         self.ever_lifted[env_ids] = False
+        self.ever_placed[env_ids] = False
         self._step = -1
 
     def _pad_forces(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -197,11 +214,15 @@ class PickPlaceState:
         at_goal = self.ever_lifted & self.resting & upright & (self.d_goal_xy < XY_TOL)
         self.clear = self.tcp_b[:, 2] - (self.cube_b[:, 2] + 0.5 * CUBE_SIZE[2])
         self.at_goal = at_goal
+        self.ever_placed |= at_goal & self.touch & fresh
+        near_goal = (
+            self.ever_placed & self.resting & (self.d_goal_xy < RELEASE_XY_TOL) & (self.tilt < math.radians(RELEASE_TILT_DEG))
+        )
 
         conditions = (
             held,
             at_goal & self.touch,
-            at_goal & ~self.touch,
+            (at_goal | near_goal) & ~self.touch,
             at_goal & ~self.touch & (self.clear > HAND_CLEAR),
         )
         stage = torch.zeros_like(self.stage)
@@ -210,6 +231,9 @@ class PickPlaceState:
 
         finger = robot.data.joint_pos.torch[:, self._finger]
         half = 0.5 * CUBE_SIZE[0]
+        # PLACED: 쥔 손가락은 23.4 mm라 25 mm를 넘으면 바로 비접촉(RELEASED)이 된다. 손가락 벌림만으로는 이 단계 shaping이 늘 0이라
+        # 열기를 요청한 순간에 준다 (명령이 실행되기까지 0.45~0.9 s)
+        open_request = (~env.action_manager.get_term(GRIPPER_ACTION)._request_close).float()
         # 쥔 채 들어 올린 높이 (0~LIFT_DELTA -> 0~1). 11-09 첫 run은 이 항 없이 쥐고 버티기에서 멈췄다 (들기 0/64)
         lift_frac = ((self.cube_b[:, 2] - rest_z) / LIFT_DELTA).clamp(0.0, 1.0) * self.grasp.float()
         shaping = torch.stack(
@@ -217,7 +241,7 @@ class PickPlaceState:
                 0.4 * (1.0 - torch.tanh(d_grasp / REACH_STD)) + 0.2 * self.orient + 0.2 * self.grasp.float()
                 + 0.2 * lift_frac,
                 0.5 * (1.0 - torch.tanh(d_goal / TRANSPORT_STD)) + 0.5 * (1.0 - torch.tanh(d_goal / PLACE_STD)),
-                ((finger - half) / (FINGER_OPEN - half)).clamp(0.0, 1.0),  # 손가락 벌리기
+                0.5 * open_request + 0.5 * ((finger - half) / (FINGER_OPEN - half)).clamp(0.0, 1.0),  # 열기 요청, 손가락 벌리기
                 ((self.clear + HAND_CLEAR) / (2.0 * HAND_CLEAR)).clamp(0.0, 1.0),  # 손 올리기
                 torch.ones_like(d_grasp),
             ),
@@ -264,6 +288,30 @@ def cube_tilt_while_held(env: ManagerBasedRLEnv) -> torch.Tensor:
     """들린 큐브를 쥐고 있을 때 큐브 z축 기울기 (rad). 세워 놓아야 하므로 운반 중에도 세운다."""
     s = pick_place_state(env)
     return s.tilt * (s.lifted & s.grasp).float()
+
+
+def cube_tilt_excess(env: ManagerBasedRLEnv, threshold_deg: float = TILT_EXCESS_DEG) -> torch.Tensor:
+    """큐브 기울기 중 threshold_deg를 넘는 만큼 (rad), 언제나 (캐비닛 책 -Tilt의 book_tilt_excess와 같은 형태)."""
+    return (pick_place_state(env).tilt - math.radians(threshold_deg)).clamp(min=0.0)
+
+
+def finger_table_force(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """오른손 두 손가락 중 큰 쪽의 손가락-책상 접촉력 (N). 패드 센서 filter[1] = Table. (num_envs,)"""
+    forces = [torch.norm(env.scene.sensors[name].data.force_matrix_w.torch[:, :, 1, :], dim=-1).amax(-1) for name in PAD_SENSORS]
+    return torch.maximum(*forces)
+
+
+def finger_table_contact(env: ManagerBasedRLEnv, threshold: float = 1.0) -> torch.Tensor:
+    """손가락이 책상에 닿음 1 / 아님 0. 11-09 A model_700은 쥐는 순간 128개 중 103개가 최대 136 N으로 책상을 찍었다."""
+    return (finger_table_force(env) > threshold).float()
+
+
+def tip_below_floor(env: ManagerBasedRLEnv, floor: float = TIP_FLOOR) -> torch.Tensor:
+    """손가락 끝(TCP)이 책상 위 floor보다 낮은 만큼 (0 -> 책상 높이에서 1), 손이 책상 위에 있을 때. 책상 높이는 env별 실제 값."""
+    s = pick_place_state(env)
+    height = s.tcp_b[:, 2] - (TABLE_TOP_Z_B + table_dz(env))
+    over_table = s.tcp_b[:, 0] > TABLE_X_B[0] - TIP_FLOOR_EDGE_MARGIN
+    return ((floor - height) / floor).clamp(0.0, 1.0) * over_table.float()
 
 
 # ---------- terminations ----------
