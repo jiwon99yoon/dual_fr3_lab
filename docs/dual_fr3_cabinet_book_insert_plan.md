@@ -140,6 +140,7 @@ plate·cube lift 때처럼 rule-based로 작업이 물리적으로 되는지, �
 - 2026-11-07: 실로봇에서 7498이 문을 다 열기 전에 책을 넣으려 함(sim과 같음) → DoorFirst task(v2 속도·보상 + 문 열릴 때까지 책 대기). 7-13.
 - 2026-11-07: DoorFirst 45 cm는 2499에서 이어서 학습(4000: 121/121, 문 106°에서 책 진입). 이후 학습은 75 cm: Table75-DoorFirst 등록, rule-based 121/121, 작업 공간 그림. 7-13.
 - 2026-11-07: (4090) Table75-DoorFirstCurriculum: Upright 보상 + DoorFirst를 성공률에 따라 서서히 거는 커리큘럼, 처음부터 한 번에 121/121(문 99°에서 책 진입). 도중 기울기 → -Tilt. 7-14.
+- 2026-11-09: 4090 커리큘럼 model_2000(shared_checkpoint) 실로봇 성공. 7-14.
 
 ## 7. RL 환경 설계 (2026-11-05, 사용자 결정 반영 — 남은 논의는 7-8)
 
@@ -473,6 +474,7 @@ python scripts/rsl_rl/train.py --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table
 - model_2000 121행(door-entry eval, Play): 성공 121/121, 책 앞면 진입 때 문 중앙 99°(최소 95°), 대기선을 문 80° 전에 넘는 행 0, 문 최대 112°, 진입 기울기 중앙 14°(10~23°), 끝 1°, 깊이 11.8~12.4 cm.
 - 문제: 문이 열리는 동안 책을 문 옆에서 옮기며 손목을 돌려 **도중 기울기 31~35°**(model_2000 영상), model_3700은 46~47°로 더 커졌다. 기울기에 걸린 항은 tilt 게이트(lane/depth)와 book_upright(0.5)뿐이라 입구에서만 세우면 된다. 실물에서는 그리퍼 안에서 책이 미끄러질 수 있다(sim은 손-책 고정 joint).
 - model_2000은 `shared_checkpoint/dual_fr3_cabinet_book_insert_75cm/2026-11-07_18-33-50_door_first_curriculum_75cm/`(model + params/env.yaml, README)로 공유한다(`.gitignore`에 `!shared_checkpoint/**/*.pt`, `.pt`는 LFS).
+- **실로봇: model_2000 성공**(사용자 보고, 2026-11-09 기록). 처음부터 학습한 커리큘럼 run의 checkpoint가 실물에서 성공했다(위 shared_checkpoint 파일). 시도 횟수·문 각도 등 실물 수치는 아직 기록 전.
 
 **결과 2: `-Tilt` (`2026-11-07_21-40-37_door_first_curriculum_tilt_75cm`, 진행 중)**
 - `Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirstCurriculum-Tilt{,-Play}-v0`: 위 + `book_tilt` = `book_tilt_excess`(15° 초과분, rad) × −5, 처음부터 항상. Slow의 −2로는 45° 운반 손해가 에피소드당 약 −0.5라 시간 이득보다 작아서 −5.
