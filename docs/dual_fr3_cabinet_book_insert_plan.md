@@ -139,6 +139,7 @@ plate·cube lift 때처럼 rule-based로 작업이 물리적으로 되는지, �
 - 2026-11-06: 실물 책상 최소 70 cm → 75 cm 배치(책상 +0.30, 수납장 x −0.10) Table75 task 추가. solver 121/121, rule-based 121/121(`--ki_cap 0.04`). 7-12.
 - 2026-11-07: 실로봇에서 7498이 문을 다 열기 전에 책을 넣으려 함(sim과 같음) → DoorFirst task(v2 속도·보상 + 문 열릴 때까지 책 대기). 7-13.
 - 2026-11-07: DoorFirst 45 cm는 2499에서 이어서 학습(4000: 121/121, 문 106°에서 책 진입). 이후 학습은 75 cm: Table75-DoorFirst 등록, rule-based 121/121, 작업 공간 그림. 7-13.
+- 2026-11-07: (4090) Table75-DoorFirstCurriculum: Upright 보상 + DoorFirst를 성공률에 따라 서서히 거는 커리큘럼, 처음부터 한 번에 121/121(문 99°에서 책 진입). 도중 기울기 → -Tilt. 7-14.
 
 ## 7. RL 환경 설계 (2026-11-05, 사용자 결정 반영 — 남은 논의는 7-8)
 
@@ -441,3 +442,50 @@ python scripts/rsl_rl/train.py --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table
   --run_name door_first_75cm --resume --load_run <opendoor_75cm run> --checkpoint model_2499.pt
 ```
 
+
+### 7-14. DoorFirst 커리큘럼: 처음부터 한 번에 (4090, 2026-11-07)
+
+**왜**: DoorFirst를 처음부터 학습하면 책을 아예 안 움직인다(45 cm, 4090 `2026-11-07_02-01-43_door_first_scratch`, 5000 it).
+- 문 열기는 200 it에 배운다(1.75 s에 85°, 최대 117°). 이후 reward 34.8에서 멈춘다.
+- model_1100 121행: 성공 0, 책 최종 깊이 −78 cm, 대기선 위반 0(책을 안 움직여서).
+- 7-13의 예상(기울여서 넣는 v1식 국소해)과 다르다. 책이 시작 위치를 떠나자마자 book_wait −20을 받는데, 책 보상은 문 80~90° 게이트 뒤에야 나오고 book_approach도 멀리서는 거의 0이라 "책은 둔다"에 갇힌다.
+- 반대로 Upright(7-11)는 처음부터 121/121이지만 문 37°에서 책이 들어간다(7498과 같다; 대기선 위반 121/121, 진입 때 기울기 28°).
+- 5070의 OpenDoor → DoorFirst 이어 학습은 이 둘을 손으로 이은 2단계 커리큘럼이다. 여기서는 한 run 안에서 자동으로 단계를 바꾼다(재현·서술이 쉽고, scratch 실패가 ablation 기준이 된다).
+
+**구성**: `Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirstCurriculum{,-Play}-v0` = `apply_table75` + `apply_upright` + `apply_door_first` + 커리큘럼 `mdp.door_first_ramp`(`mdp/curriculums.py`).
+- `apply_upright(cfg)`: Upright 보상(7-11)을 함수로 뺐다. 기존 Upright task는 그대로다.
+- `door_first_ramp`: 리셋 직전(끝난 에피소드의 마지막 상태)에 insert_success로 성공 EMA(약 2000 에피소드)를 낸다. EMA ≥ 0.7인 동안 진행도 p를 1000 it(24000 env step)에 걸쳐 0 → 1로 올리고, 아래면 멈춘다(엄격해져서 성공이 떨어지면 회복까지 대기).
+
+  | p | book_wait 가중치 | 책 보상 게이트(approach/lane/depth) | 성공 조건 문 각도 |
+  |---|---|---|---|
+  | 0 | 0 | 60~80° (Upright와 같음) | 0° |
+  | 1 | −20 | 80~90° (DoorFirst) | 85° |
+
+- 문 기준은 90°면 충분하다(사용자 결정 11-07, 45 cm 이어 학습의 최소 101°까지는 요구하지 않음).
+- Play task는 p = 1(최종 DoorFirst 조건)로 시작한다. eval·영상은 Play로 한다.
+- `gpu_total_aggregate_pairs_capacity` 512K(Upright 4096 env에서 64K 초과 경고가 났다).
+- 로그: `Curriculum/door_first/{progress, success_ema, wait_weight, gate_lo_deg}`.
+
+**4090 속도**(30 it 측정): 4096 env 2.90 s/it(약 34k step/s, 6.5 GB), 8192 env 4.64 s/it(약 42k step/s, +25%, 9.4 GB). 시간은 거의 다 수집(sim)이라 env를 늘려도 효율 이득이 작다 → 4096 env.
+
+**결과 1: `2026-11-07_18-33-50_door_first_curriculum_75cm`** (4096 env, seed 42, 3871 it에서 중단)
+- 300 it에 성공 EMA 0.997, 진행도 상승 시작. 2000 it 전에 p = 1.
+- model_2000 121행(door-entry eval, Play): 성공 121/121, 책 앞면 진입 때 문 중앙 99°(최소 95°), 대기선을 문 80° 전에 넘는 행 0, 문 최대 112°, 진입 기울기 중앙 14°(10~23°), 끝 1°, 깊이 11.8~12.4 cm.
+- 문제: 문이 열리는 동안 책을 문 옆에서 옮기며 손목을 돌려 **도중 기울기 31~35°**(model_2000 영상), model_3700은 46~47°로 더 커졌다. 기울기에 걸린 항은 tilt 게이트(lane/depth)와 book_upright(0.5)뿐이라 입구에서만 세우면 된다. 실물에서는 그리퍼 안에서 책이 미끄러질 수 있다(sim은 손-책 고정 joint).
+- model_2000은 `shared_checkpoint/dual_fr3_cabinet_book_insert_75cm/2026-11-07_18-33-50_door_first_curriculum_75cm/`(model + params/env.yaml, README)로 공유한다(`.gitignore`에 `!shared_checkpoint/**/*.pt`, `.pt`는 LFS).
+
+**결과 2: `-Tilt` (`2026-11-07_21-40-37_door_first_curriculum_tilt_75cm`, 진행 중)**
+- `Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirstCurriculum-Tilt{,-Play}-v0`: 위 + `book_tilt` = `book_tilt_excess`(15° 초과분, rad) × −5, 처음부터 항상. Slow의 −2로는 45° 운반 손해가 에피소드당 약 −0.5라 시간 이득보다 작아서 −5.
+- model_2800 121행: 성공 121/121, 진입 때 문 중앙 98°(최소 94°), 대기선 위반 0, 진입 기울기 중앙 8°(1~16°), 끝 1°. 영상 3개 도중 최대 기울기 10~11°(결과 1의 31~47°에서 줄었다).
+- **새 문제: 책을 너무 깊이 넣는다.** 최종 깊이 16.3~17.8 cm(목표 12 cm). 영상 3개 모두 오른손 link7이 수납장에 48~68 N 닿는다(3~10 s, 넣은 뒤 누르고 있다). 7-13의 rule-based 확인대로 15 cm 넘으면 link7이 닿는다.
+  - 원인: Upright 보상은 v1 성공 조건(최소 깊이만, `max_depth` 없음)과 book_depth(넘쳐도 1 유지, `overshoot` 없음)를 쓰고, 접촉 벌점이 −0.01(link4~7)로 작다(60 N이면 약 −0.55/s). 기울기를 막자 깊이 쪽으로 여유를 찾은 것으로 보인다.
+  - 다음 후보: 성공에 `max_depth` 0.14(Slow와 같음), book_depth에 `overshoot`, 접촉 가중치 상향(v2 −0.03 이상).
+```
+# 커리큘럼 (결과 1)
+python scripts/rsl_rl/train.py --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirstCurriculum-v0 --headless --num_envs 4096 --max_iterations 5000 --run_name door_first_curriculum_75cm
+# + 기울기 벌점 (결과 2)
+python scripts/rsl_rl/train.py --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirstCurriculum-Tilt-v0 --headless --num_envs 4096 --max_iterations 5000 --run_name door_first_curriculum_tilt_75cm
+# 평가 (Play = 최종 DoorFirst 조건)
+python scripts/tools/eval_dual_fr3_cabinet_book_door_entry.py --headless --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirstCurriculum-Tilt-Play-v0 --checkpoint <run>/model_N.pt
+python scripts/rsl_rl/record_views.py --headless --task Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirstCurriculum-Tilt-Play-v0 --checkpoint <run>/model_N.pt --episodes 3
+```
