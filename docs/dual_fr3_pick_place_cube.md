@@ -10,12 +10,21 @@ rule-based 확인: `scripts/tools/eval_dual_fr3_pick_place_rule_based.py`.
 
 | PC | 학습 | 상태 |
 |---|---|---|
-| **5070** | 기준 run `Isaac-PickPlace-Cube-DualFR3-UMI-v0` | **11-09 00:03 시작.** 4096 env, 5000 iteration, 1.7~1.9 s/it(약 2.5시간). 로그 `logs/rsl_rl/dual_fr3_pick_place_cube/2026-11-09_00-03-44_pick_place_dr_5070` |
-| **4090** | **실험 A (`-GripperBusy-v0`)와 B (`-CriticPlus-v0`)** | **할 일: 둘 다 학습.** 아래 명령 참고 |
+| **5070** | 기준 run `Isaac-PickPlace-Cube-DualFR3-UMI-v0` (들기 보상 추가) | **11-09 00:32 다시 시작.** 로그 `logs/rsl_rl/dual_fr3_pick_place_cube/2026-11-09_00-32-42_pick_place_lift_5070`. 4096 env, 5000 iteration, 1.7~1.9 s/it(약 2.5시간) |
+| **4090** | **실험 A (`-GripperBusy-v0`)와 B (`-CriticPlus-v0`)** | **할 일: 들기 보상 커밋을 pull한 뒤 둘 다 다시 학습.** 들기 보상 전에 시작한 run은 멈추고 지워도 돼요. 아래 명령 참고 |
+
+### 첫 run (들기 보상 없음, 11-09 00:03~00:30, 멈춤)
+
+`2026-11-09_00-03-44_pick_place_dr_5070`, 900 iteration에서 멈췄어요.
+- 들기(held) 도달률이 250 iteration부터 0.2~0.7%에서 정체됐어요. progress 보상도 3.4에서 그대로였고, 넘어짐 종료는 7%에서 13%로 늘었어요.
+- model_700 결정적 평가(64 env, 종료 끔): 다가가기 64/64(파지점까지 0.7 cm), 양쪽 패드 파지 64/64, **들기 0/64**. 쥔 채 14 s 동안 가만히 있었어요. 쥐는 순간 큐브가 15~30° 기울어요.
+- 영상: `videos/model_850_oblique4.mp4` (위 run 폴더)
+- 원인 추정: 4 cm를 들어야 다음 단계 보상이 시작돼서, 쥐고만 있어도 받는 보상과 들다 넘어뜨리면 받는 −100 사이에서 "쥐고 버티기"가 국소 최적이 됐어요. 지연 그리퍼 없는 handover는 같은 형태의 보상으로 300 iteration에 들기 99%였어요.
+- 수정: 파지 단계 shaping을 다가가기 0.4 + 방향 0.2 + 파지 0.2 + **쥔 채 들어 올린 높이 0.2**(0~4 cm → 0~1)로 바꿨어요(이전 0.5 + 0.25 + 0.25). 1 cm만 들어도 보상이 늘어요.
 
 ### 4090에서 실행
 
-pick_place_cube는 아직 커밋 전이에요. 5070에서 커밋·push한 뒤 4090에서 pull해요.
+5070에서 들기 보상 수정을 커밋·push한 뒤 4090에서 pull해요.
 
 ```bash
 cd ~/dual_fr3_lab && git pull
@@ -90,6 +99,7 @@ python scripts/rsl_rl/train.py --task Isaac-PickPlace-Cube-DualFR3-UMI-CriticPlu
 - actor 36D: 오른팔 관절 위치 7, 손가락 폭 1(갱신 지연), 관절 속도 7, 큐브 위치 3·자세 4(ArUco, 지연·끊김·오프셋), 큐브 − TCP 3, 목표 위치 3, 이전 action 8
 - critic +23D: 실제 큐브 위치·자세·속도, TCP, 단계 one-hot 5, 파지·접촉·들었음·비전 끊김, 책상 높이 오프셋
 - 단계: reach → held → placed → released → success. 보상은 단계 기본값 + 단계 안 shaping에 가중치 5를 곱해요
+- reach 단계 shaping: 파지점까지 거리 0.4 + 손 방향 0.2 + 양쪽 패드 파지 0.2 + 쥔 채 들어 올린 높이 0.2 (11-09 추가)
 - 그 밖의 보상: 넘어짐·떨어뜨림·책상 밖 −100(종료), 들고 있을 때 기울기 −2, 관절 한계 여유 −1. action rate·관절 속도·팔 접촉 벌점은 placed 도달률이 0.3을 넘으면 커리큘럼으로 강화해요
 
 ## rule-based 결과 (256 env, 실제 큐브 pose, 0.25 m/s)

@@ -10,7 +10,7 @@
 
     progress = STAGE_BASE[s] + shaping_s,   shaping_s in [0, 1]
 
-    0 REACH     오른 TCP -> 파지점 (위에서, 손가락 닫힘 방향을 큐브 면에 맞춤)
+    0 REACH     오른 TCP -> 파지점 (위에서, 손가락 닫힘 방향을 큐브 면에 맞춤), 파지, 쥔 채 들어 올린 높이
     1 HELD      오른손 파지 & 한 번 들었음. 큐브 -> 목표 (높이 무관: 내려놓는 중에도 1)
     2 PLACED    들었던 큐브가 목표 xy XY_TOL 이내, 기울기 UPRIGHT_DEG 이내로 책상에 놓임 & 손가락 접촉
     3 RELEASED  위 + 손가락 비접촉. 손 올리기
@@ -210,9 +210,12 @@ class PickPlaceState:
 
         finger = robot.data.joint_pos.torch[:, self._finger]
         half = 0.5 * CUBE_SIZE[0]
+        # 쥔 채 들어 올린 높이 (0~LIFT_DELTA -> 0~1). 11-09 첫 run은 이 항 없이 쥐고 버티기에서 멈췄다 (들기 0/64)
+        lift_frac = ((self.cube_b[:, 2] - rest_z) / LIFT_DELTA).clamp(0.0, 1.0) * self.grasp.float()
         shaping = torch.stack(
             (
-                0.5 * (1.0 - torch.tanh(d_grasp / REACH_STD)) + 0.25 * self.orient + 0.25 * self.grasp.float(),
+                0.4 * (1.0 - torch.tanh(d_grasp / REACH_STD)) + 0.2 * self.orient + 0.2 * self.grasp.float()
+                + 0.2 * lift_frac,
                 0.5 * (1.0 - torch.tanh(d_goal / TRANSPORT_STD)) + 0.5 * (1.0 - torch.tanh(d_goal / PLACE_STD)),
                 ((finger - half) / (FINGER_OPEN - half)).clamp(0.0, 1.0),  # 손가락 벌리기
                 ((self.clear + HAND_CLEAR) / (2.0 * HAND_CLEAR)).clamp(0.0, 1.0),  # 손 올리기
