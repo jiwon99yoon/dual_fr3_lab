@@ -808,3 +808,43 @@ class DualFR3CabinetBookInsertTable75DoorFirstCurriculumTiltEnvCfg_PLAY(
         self.curriculum.door_first.params = {**DOOR_FIRST_CURRICULUM_PARAMS, "initial_progress": 1.0}
         self.scene.num_envs = 4
         self.observations.policy.enable_corruption = False
+
+
+# ---------- Table75 DoorFirst Hold (2026-11-07): the left arm holds still once the door is open ----------
+# Real 2998: after the door opened the left arm kept moving, pushed the door to its ~120 deg stop and tripped the
+# collision reflex before the book went in. Cause (sim, 121 rows): the trained left action keeps a steady offset once
+# the door is open that only the weld stops; without the cabinet the same policy drifts 0.16 rad/s (trained: 0.006).
+# Hold: L1 penalty on the left action, full from the success door angle (85 deg; action 0 = hold the measured joints),
+# and the episode ends when the handle force passes what the finger grip holds (trained 2998 peaks 31-40 N while
+# opening, rule-based 15 N). Resume from DoorFirst 2998.
+HOLD_DOOR_DEG = (75.0, DOOR_FIRST_MIN_DOOR_DEG)
+HOLD_LEFT_WEIGHT = -1.0  # 2998 left offset: L1 0.33 -> -0.33 per second held (insert_success pays 5 per second)
+HOLD_HANDLE_FORCE_LIMIT = 60.0  # N
+HOLD_GRIP_LOST_WEIGHT = -50.0
+
+
+def apply_hold(cfg: DualFR3CabinetBookInsertEnvCfg):
+    """Hold terms (in place) on a DoorFirst cfg."""
+    rew = cfg.rewards
+    rew.left_hold = RewTerm(
+        func=mdp.left_action_after_door_open, params={"gate_deg": HOLD_DOOR_DEG}, weight=HOLD_LEFT_WEIGHT
+    )
+    cfg.terminations.grip_lost = DoneTerm(func=mdp.handle_force_above, params={"limit": HOLD_HANDLE_FORCE_LIMIT})
+    rew.grip_lost = RewTerm(
+        func=mdp.is_terminated_term, params={"term_keys": ["grip_lost"]}, weight=HOLD_GRIP_LOST_WEIGHT
+    )
+
+
+@configclass
+class DualFR3CabinetBookInsertTable75DoorFirstHoldEnvCfg(DualFR3CabinetBookInsertTable75DoorFirstEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        apply_hold(self)
+
+
+@configclass
+class DualFR3CabinetBookInsertTable75DoorFirstHoldEnvCfg_PLAY(DualFR3CabinetBookInsertTable75DoorFirstHoldEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.num_envs = 4
+        self.observations.policy.enable_corruption = False

@@ -161,3 +161,30 @@ def handle_force_excess(
 ) -> torch.Tensor:
     """Handle force above ``threshold`` (N): pulling or twisting the handle harder than the real UMI grip holds."""
     return (handle_force_norm(env, sensor_cfg, body_name) - threshold).clamp(min=0.0)
+
+
+# ---------- Hold (2026-11-07): the left arm keeps its action at 0 once the door is open ----------
+# Training welds the left hand to the handle, so a left arm pressing against the weld stays put whatever its action.
+# Trained DoorFirst 2998 kept a steady left offset after the door opened (j4 +0.10, j5 -0.07, j6 +0.11; the same
+# with the door spring off, so it holds no load) at 0.001 rad/s. The action is a measured-relative joint offset, so
+# on the robot (finger grip, no weld) the same offset moves the arm every step: without the cabinet the left arm
+# drifted 0.16 rad/s and the FK door angle wandered 73-126 deg (scripts/tools/eval_dual_fr3_cabinet_book_friction_grasp.py).
+# The right arm is left alone: holding the book's weight takes a steady offset (the rule-based run's integral term).
+LEFT_ARM_ACTIONS = slice(0, 7)  # arm_action joint order: DUAL_ARM_JOINT_NAMES (left 1-7, right 1-7)
+
+
+def left_action_after_door_open(env, gate_deg: tuple[float, float] = (75.0, 85.0)) -> torch.Tensor:
+    """L1 of the left-arm action (clipped to the applied +-1), ramped in while the door opens through ``gate_deg``."""
+    act = env.action_manager.action[:, LEFT_ARM_ACTIONS].clamp(-1.0, 1.0)
+    return _door_gate(env, gate_deg) * act.abs().sum(-1)
+
+
+def handle_force_above(
+    env,
+    limit: float = 60.0,
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("cabinet_wrench"),
+    body_name: str = "handle",
+) -> torch.Tensor:
+    """Termination: handle force above ``limit`` (N) = the real finger grip would have slipped (the weld holds any force).
+    Skipped on the first step of an episode (reset transient)."""
+    return (handle_force_norm(env, sensor_cfg, body_name) > limit) & (env.episode_length_buf > 1)

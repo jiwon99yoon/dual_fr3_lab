@@ -146,3 +146,17 @@ for _play in ("", "-Play"):
         },
         disable_env_checker=True,
     )
+
+# + Hold (2026-11-07): left action penalized once the door is open, episode ends above 60 N on the handle
+# (real 2998 kept moving the left arm after opening: the training weld hid a steady action offset)
+for _play in ("", "-Play"):
+    gym.register(
+        id=f"Isaac-Cabinet-BookInsert-DualFR3-UMI-Table75-DoorFirst-Hold{_play}-v0",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.cabinet_book_insert_env_cfg:"
+            "DualFR3CabinetBookInsertTable75DoorFirstHoldEnvCfg" + ("_PLAY" if _play else ""),
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:CabinetBookInsertTable75PPORunnerCfg",
+        },
+        disable_env_checker=True,
+    )
