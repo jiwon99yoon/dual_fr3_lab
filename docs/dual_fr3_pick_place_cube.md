@@ -13,7 +13,7 @@ rule-based 확인: `scripts/tools/eval_dual_fr3_pick_place_rule_based.py`.
 
 | PC | run | task | 보는 것 |
 |---|---|---|---|
-| **5070** | ① 기준 | `Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-v0` | 11-09 수정 전부 |
+| **5070** | ① 기준 | `Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-v0` | 11-09 수정 전부. **11-09 01:27 시작** (`2026-11-09_01-27-06_fix_5070`, 약 1.6 s/it) |
 | **4090** | ② 기울기 벌점 | `Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-Tilt-v0` | ① + 기울기 15° 초과분 −5 (캐비닛 책 -Tilt와 같음) |
 | **4090** | ③ critic 정보 | `Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-CriticPlus-v0` | ① + B의 critic 정보 (그리퍼 내부 상태 8D, DR 값 7D) |
 
