@@ -203,7 +203,10 @@ class CommandsCfg:
     goal_pose = mdp.PickPlaceGoalCommandCfg(
         asset_name="robot",
         body_name="right_fr3_link7",
-        resampling_time_range=(EPISODE_LENGTH_S, EPISODE_LENGTH_S),
+        # 에피소드보다 길게: 목표는 reset 때만 뽑는다. (14, 14)이면 자동 reset 뒤 같은 step에 command가 한 번 더 줄어서, 두 번째
+        # 에피소드부터 시간 초과 한 step 전에 목표가 바뀌었다 -> 놓고 손 뗀 큐브가 마지막 step에 "목표 밖 낙하"(-100), 단계 0
+        # (11-09 fix_5070 학습 로그 cube_dropped 0.87·time_out 0.8 동시, 새로 시작한 평가는 0.09. lift_plate regrasp와 같은 처리)
+        resampling_time_range=(EPISODE_LENGTH_S + 1.0, EPISODE_LENGTH_S + 1.0),
         debug_vis=True,
         min_distance=mdp.GOAL_MIN_DIST,
         ranges=mdp.PickPlaceGoalCommandCfg.Ranges(
