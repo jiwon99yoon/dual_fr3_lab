@@ -71,6 +71,27 @@ gym.register(
     disable_env_checker=True,
 )
 
+# A + 책상 10 cm 당김 (11-09): 앞 모서리 x 0.30, 큐브 시작·목표 x 0.35~0.65. model_4000에서 이어 학습
+gym.register(
+    id="Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-Near-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.pick_place_env_cfg:DualFR3PickPlaceCubeGripperBusyNearEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PickPlaceCubeGripperBusyNearPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-Near-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.pick_place_env_cfg:DualFR3PickPlaceCubeGripperBusyNearEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PickPlaceCubeGripperBusyNearPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
 # A + B (11-09): actor는 A, critic은 B. 4090 B가 파지·운반 기울기가 A보다 작았다
 gym.register(
     id="Isaac-PickPlace-Cube-DualFR3-UMI-GripperBusy-CriticPlus-v0",

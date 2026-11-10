@@ -56,6 +56,15 @@ CUBE_REST_Z_B = TABLE_TOP_Z_B + 0.5 * CUBE_SIZE[2]  # 세워 놓였을 때 중�
 # 팔꿈치가 거의 펴진 채 3 cm 못 미침
 CUBE_X_B = (0.45, 0.65)
 CUBE_Y_B = (-0.45, 0.05)
+# -Near 변형 (11-09): 실물 책상을 로봇 쪽으로 10 cm 당긴 배치. 앞 변이 책상 앞 모서리에서 5 cm 뒤인 것은 같다.
+# rule-based(512 env, 이 영역·책상): 506/512 (기준 영역 254/256). 앞 모서리 0.20·영역 x 0.25~는 470/512로, x 0.35 앞은
+# ready 손(TCP x 0.31, 책상 높이 + 6.8 cm) 아래라 큐브를 넘어뜨렸다. y > 0.05는 왼팔 ready 자세가 막는다
+NEAR_TABLE_X_B = (0.30, 0.90)  # 600 mm 책상을 그대로 당김
+NEAR_CUBE_X_B = (0.35, 0.65)
+# 큐브 시작은 ready TCP(손가락 끝 중앙, xy)에서 이만큼 밖. 시작 관절 ±0.05 rad로 손이 앞으로 나오면 x 0.35 근처 큐브와 겹쳐
+# 밀린다 (1024 env 중 3개, TCP에서 5.5~8 cm, 최대 18 cm 밀림). 목표는 제한하지 않는다 (손이 큐브를 들고 간다)
+READY_TCP_XY_B = (0.307, -0.215)
+NEAR_START_KEEP_OUT = 0.10
 RIGHT_LINK0_XY_B = (0.0, -0.215)
 REACH_RADIUS = 0.62
 CUBE_YAW = math.radians(45.0)
@@ -313,11 +322,11 @@ def finger_table_contact(env: ManagerBasedRLEnv, threshold: float = 1.0) -> torc
     return (finger_table_force(env) > threshold).float()
 
 
-def tip_below_floor(env: ManagerBasedRLEnv, floor: float = TIP_FLOOR) -> torch.Tensor:
+def tip_below_floor(env: ManagerBasedRLEnv, floor: float = TIP_FLOOR, table_front_x: float = TABLE_X_B[0]) -> torch.Tensor:
     """손가락 끝(TCP)이 책상 위 floor보다 낮은 만큼 (0 -> 책상 높이에서 1), 손이 책상 위에 있을 때. 책상 높이는 env별 실제 값."""
     s = pick_place_state(env)
     height = s.tcp_b[:, 2] - (TABLE_TOP_Z_B + table_dz(env))
-    over_table = s.tcp_b[:, 0] > TABLE_X_B[0] - TIP_FLOOR_EDGE_MARGIN
+    over_table = s.tcp_b[:, 0] > table_front_x - TIP_FLOOR_EDGE_MARGIN
     return ((floor - height) / floor).clamp(0.0, 1.0) * over_table.float()
 
 
@@ -489,20 +498,27 @@ class PickPlaceGoalCommandCfg(UniformPoseCommandCfg):
 # ---------- events ----------
 
 
-def sample_reachable_xy(k: int, x_range, y_range, device, reach_radius: float | None = REACH_RADIUS) -> torch.Tensor:
-    """(x, y) 범위에서 균일하게 뽑되 오른팔 link0 축에서 reach_radius 밖이면 다시 뽑는다 (base). (k, 2)"""
+def sample_reachable_xy(k: int, x_range, y_range, device, reach_radius: float | None = REACH_RADIUS,
+                        keep_out_radius: float | None = None) -> torch.Tensor:
+    """(x, y) 범위에서 균일하게 뽑되 오른팔 link0 축에서 reach_radius 밖이거나 ready TCP에서 keep_out_radius 안이면 다시
+    뽑는다 (base). (k, 2)"""
     xy = torch.empty(k, 2, device=device)
     todo = torch.ones(k, dtype=torch.bool, device=device)
     center = torch.tensor(RIGHT_LINK0_XY_B, device=device)
+    ready = torch.tensor(READY_TCP_XY_B, device=device)
     for _ in range(50):
         m = int(todo.sum())
         if m == 0:
             break
         xy[todo, 0] = torch.empty(m, device=device).uniform_(*x_range)
         xy[todo, 1] = torch.empty(m, device=device).uniform_(*y_range)
-        if reach_radius is None:
+        if reach_radius is None and keep_out_radius is None:
             break
-        todo = torch.norm(xy - center, dim=-1) > reach_radius
+        todo = torch.zeros(k, dtype=torch.bool, device=device)
+        if reach_radius is not None:
+            todo |= torch.norm(xy - center, dim=-1) > reach_radius
+        if keep_out_radius is not None:
+            todo |= torch.norm(xy - ready, dim=-1) < keep_out_radius
     return xy
 
 
@@ -527,11 +543,13 @@ def reset_table_height(env: ManagerBasedRLEnv, env_ids: torch.Tensor, dz_range=T
 
 
 def reset_cube_upright(env: ManagerBasedRLEnv, env_ids: torch.Tensor, x_range, y_range, yaw_range,
-                       reach_radius: float | None = REACH_RADIUS, asset_cfg: SceneEntityCfg = SceneEntityCfg("object")):
-    """큐브를 책상 위 (x, y) 범위 & 오른팔 반경 안에 세워 놓는다 (base frame, yaw 균일). 속도 0."""
+                       reach_radius: float | None = REACH_RADIUS, keep_out_radius: float | None = None,
+                       asset_cfg: SceneEntityCfg = SceneEntityCfg("object")):
+    """큐브를 책상 위 (x, y) 범위 & 오른팔 반경 안 (& ready TCP에서 keep_out_radius 밖)에 세워 놓는다
+    (base frame, yaw 균일). 속도 0."""
     obj, robot = env.scene[asset_cfg.name], env.scene["robot"]
     k = len(env_ids)
-    xy = sample_reachable_xy(k, x_range, y_range, env.device, reach_radius)
+    xy = sample_reachable_xy(k, x_range, y_range, env.device, reach_radius, keep_out_radius)
     pos_b = torch.cat((xy, (CUBE_REST_Z_B + 0.001 + table_dz(env)[env_ids])[:, None]), dim=-1)
     pos_w = combine_frame_transforms(robot.data.root_pos_w.torch[env_ids], robot.data.root_quat_w.torch[env_ids], pos_b)[0]
     yaw = torch.empty(k, device=env.device).uniform_(*yaw_range)

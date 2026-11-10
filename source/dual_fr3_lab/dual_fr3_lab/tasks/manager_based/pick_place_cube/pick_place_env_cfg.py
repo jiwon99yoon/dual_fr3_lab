@@ -552,3 +552,48 @@ class DualFR3PickPlaceCubeCriticPlusEnvCfg_PLAY(DualFR3PickPlaceCubeCriticPlusEn
     def __post_init__(self):
         super().__post_init__()
         _apply_play(self)
+
+
+def _apply_near_table(cfg) -> None:
+    """책상을 로봇 쪽으로 당긴 배치: 상판·다리·영역 표시, 큐브 시작과 목표 x 범위 (시작은 ready 손 앞 10 cm 밖),
+    손가락 끝 하한의 책상 앞 모서리."""
+    table_x, cube_x = mdp.NEAR_TABLE_X_B, mdp.NEAR_CUBE_X_B
+    cx = 0.5 * (table_x[0] + table_x[1])
+    scene = cfg.scene
+    scene.table = scene.table.replace(
+        spawn=scene.table.spawn.replace(size=(table_x[1] - table_x[0], *scene.table.spawn.size[1:])),
+        init_state=scene.table.init_state.replace(pos=(cx, *scene.table.init_state.pos[1:])),
+    )
+    for name in ("table_leg_l", "table_leg_r"):
+        leg = getattr(scene, name)
+        setattr(scene, name, leg.replace(init_state=leg.init_state.replace(pos=(cx, *leg.init_state.pos[1:]))))
+    if getattr(scene, "cube_zone", None) is not None:
+        zone = scene.cube_zone
+        scene.cube_zone = zone.replace(
+            spawn=zone.spawn.replace(size=(cube_x[1] - cube_x[0], *zone.spawn.size[1:])),
+            init_state=zone.init_state.replace(pos=(0.5 * sum(cube_x), *zone.init_state.pos[1:])),
+        )
+    cfg.events.reset_cube.params["x_range"] = cube_x
+    cfg.events.reset_cube.params["keep_out_radius"] = mdp.NEAR_START_KEEP_OUT
+    cfg.commands.goal_pose.ranges.pos_x = cube_x
+    cfg.rewards.tip_floor.params["table_front_x"] = table_x[0]
+
+
+@configclass
+class DualFR3PickPlaceCubeGripperBusyNearEnvCfg(DualFR3PickPlaceCubeGripperBusyEnvCfg):
+    """A + 책상을 10 cm 당긴 배치 (11-09): 앞 모서리 x 0.40 -> 0.30, 큐브 시작·목표 x 0.45~0.65 -> 0.35~0.65 (y와 오른팔
+    반경 0.62 m는 같음). 목표 영역 약 1.65배, 시작은 ready 손 앞 10 cm를 빼서 약 1.55배.
+    actor는 A와 같아 model_4000(release_goalfix_5070)에서 이어 학습한다. model_4000을 그대로 쓰면 71.5 % (기준 배치 92 %),
+    시작·목표 모두 x 0.35~0.45면 48 %.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_near_table(self)
+
+
+@configclass
+class DualFR3PickPlaceCubeGripperBusyNearEnvCfg_PLAY(DualFR3PickPlaceCubeGripperBusyNearEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_play(self)

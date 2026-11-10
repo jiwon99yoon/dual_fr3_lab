@@ -24,6 +24,11 @@ class PickPlaceCubeGripperBusyPPORunnerCfg(PickPlaceCubePPORunnerCfg):
 
 
 @configclass
+class PickPlaceCubeGripperBusyNearPPORunnerCfg(PickPlaceCubePPORunnerCfg):
+    experiment_name = "dual_fr3_pick_place_cube_gripper_busy_near"
+
+
+@configclass
 class PickPlaceCubeGripperBusyTiltPPORunnerCfg(PickPlaceCubePPORunnerCfg):
     experiment_name = "dual_fr3_pick_place_cube_gripper_busy_tilt"
 
