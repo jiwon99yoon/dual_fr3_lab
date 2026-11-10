@@ -922,6 +922,7 @@ FlatOnly는 아래 표의 앞 두 항만, FlatSqueeze는 FlatOnly에 `min_squeez
 ### 실로봇 비교와 낮은 마찰 (`-FaceGrip-SqueezeLift-LowMuFlat`, 2026-11-05)
 
 실로봇: SqueezeLift 6697이 FaceGrip-BoxDrop-Scratch 2999보다 강건했다. 2999는 판을 평행하게 대지만 판-박스가 미끄러지는 모습을 보였다.
+(2026-11-10 정정: 6697 실물 결과는 판정 기록이 없고, 남은 trace·bag에서는 6697도 판이 미끄러지며 박스가 돌았다. 결과 기록이 남은 실물 시험은 11-07 GoalXY 5499 10회 중 8회다.)
 sim(같은 평가)에서는 2999가 덜 미끄러진다(들린 동안 판-박스 slip median 0.028 vs 0.070 m/s).
 
 | sim | 6697 | 2999 |

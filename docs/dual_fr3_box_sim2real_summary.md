@@ -6,7 +6,7 @@
 > 상속: `DualFR3PlateBoxLiftEnvCfg` → V1 → V2 → P39 → P44 → P47 → Sim2Real100Hz → Offset03 → Offset03-Level →
 > Offset03-PlateOnly → Light → Light-Margin → Light-Box410 → T6 → J1Mirror → Wide-J1Mirror → FaceGrip-BoxDrop.
 > 실험별 경과는 [`dual_fr3_lift_sim2real.md`](dual_fr3_lift_sim2real.md), 공통 원칙은 [`sim2real_gap.md`](sim2real_gap.md).
-> MoveIt pregrasp 시작 계열(실로봇 80%인 SqueezeLift 6697 등)의 현황·실로봇 후보는 [`dual_fr3_box_lift_summary.md`](dual_fr3_box_lift_summary.md).
+> MoveIt pregrasp 시작 계열(실로봇 10회 중 8회인 GoalXY 5499 등)의 현황·실로봇 후보는 [`dual_fr3_box_lift_summary.md`](dual_fr3_box_lift_summary.md).
 
 실물에서 통하는 이유는 세 가지로 묶인다.
 
