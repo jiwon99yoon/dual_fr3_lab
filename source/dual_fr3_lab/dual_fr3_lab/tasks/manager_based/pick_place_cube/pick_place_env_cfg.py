@@ -607,15 +607,20 @@ from dual_fr3_lab.tasks.manager_based.lift_plate.joint_pos_env_cfg import set_en
 CUBE_CURRICULUM_FLAGS = {
     "critic_plus": True,  # critic에 그리퍼 내부 상태 8D + DR 값 7D (4090 B: 파지·운반 기울기 작음)
     "tilt": True,  # 기울기 15° 초과 벌점 -5, 들기(reach_held EMA 0.5)를 배운 뒤
-    "carry_strict": True,  # 놓기(reach_placed EMA 0.3)를 배운 뒤 들었던 큐브를 끌면 HELD가 아님 (목표 5 cm 안은 예외)
+    "carry_strict": False,  # 놓기(reach_placed EMA 0.3)를 배운 뒤 들었던 큐브를 끌면 HELD가 아님 (목표 5 cm 안은 예외).
+    #   11-12 run 1(5070)에서 켜진 뒤 40 iter 만에 placed 0.31 -> 0으로 무너져 기본 off, 아래 drag_penalty로 대체
+    "drag_penalty": True,  # 같은 조건(들었던 큐브를 쥔 채 책상 높이로 끌기, 목표 5 cm 밖)을 단계 박탈 대신 벌점 CUBE_DRAG_WEIGHT, placed EMA 0.3 뒤
     "finger_force": True,  # 손가락-책상 접촉력 비례 벌점 (20 N에 -2/s, 100 N에 -10/s). 닿음 0/1 벌점 -5는 그대로
     "gripper_settle": True,  # 그리퍼 멈춤 -> result 대기 0.8~1.2 s (sim 기본 0.3~0.4)
-    "near_ramp": True,  # 책상은 처음부터 -Near(앞 모서리 0.30), 큐브 시작·목표 x 0.45~0.65 -> 0.35~0.65 ramp (놓기를 배운 뒤 200 iter)
+    "near_ramp": True,  # 책상은 처음부터 -Near(앞 모서리 0.30), 큐브 시작·목표 x 0.45~0.65 -> 0.35~0.65 ramp (손 떼기 reach_released EMA 0.3 뒤 200 iter;
+    #   run 1에서는 placed 0.3이라 끌기 금지·action 벌점과 같은 iter에 겹쳤다)
 }
 GRIPPER_SETTLE_REAL_S = (0.8, 1.2)
 CUBE_TILT_WEIGHT = -5.0
 CUBE_TILT_KEY, CUBE_TILT_THRESHOLD = "reach_held", 0.5
 FINGER_FORCE_WEIGHT = -2.0
+CUBE_DRAG_WEIGHT = -5.0  # 끌기 1초당. HELD 단계 보상(기본 2 + shaping) x 5 = 10~15/s의 절반쯤이라 끌기보다 들고 가는 쪽이 낫다
+CUBE_NEAR_KEY, CUBE_NEAR_THRESHOLD = "reach_released", 0.3
 CUBE_NEAR_RAMP_STEPS = 4800  # 200 iter
 
 
@@ -634,6 +639,12 @@ def _apply_cube_curriculum(cfg, flags: dict) -> None:
         cfg.curriculum.carry_strict = CurrTerm(
             func=mdp.set_env_attr_on_placed, params={"attr": "_pp_carry_strict", "threshold": LEARNED_THRESHOLD}
         )
+    if flags["drag_penalty"]:
+        cfg.rewards.cube_drag = RewTerm(func=mdp.cube_drag, weight=-1e-4)
+        cfg.curriculum.cube_drag = CurrTerm(
+            func=mdp.modify_reward_weight_on_placed,
+            params={"term_name": "cube_drag", "weight": CUBE_DRAG_WEIGHT, "threshold": LEARNED_THRESHOLD},
+        )
     if flags["finger_force"]:
         cfg.rewards.finger_table_force = RewTerm(func=mdp.finger_table_force_norm, weight=FINGER_FORCE_WEIGHT)
     if flags["gripper_settle"]:
@@ -648,7 +659,8 @@ def _apply_cube_curriculum(cfg, flags: dict) -> None:
                 "start": mdp.CUBE_X_B,
                 "end": mdp.NEAR_CUBE_X_B,
                 "ramp_steps": CUBE_NEAR_RAMP_STEPS,
-                "threshold": LEARNED_THRESHOLD,
+                "threshold": CUBE_NEAR_THRESHOLD,
+                "key": CUBE_NEAR_KEY,
             },
         )
 
@@ -661,6 +673,9 @@ def _apply_cube_curriculum_final(cfg, flags: dict) -> None:
     if flags["carry_strict"]:
         cfg.events.curriculum_final = EventTerm(func=set_env_attrs, mode="startup", params={"attrs": {"_pp_carry_strict": 1.0}})
         cfg.curriculum.carry_strict = None
+    if flags["drag_penalty"]:
+        cfg.rewards.cube_drag.weight = CUBE_DRAG_WEIGHT
+        cfg.curriculum.cube_drag = None
     if flags["near_ramp"]:
         cfg.events.reset_cube.params["x_range"] = mdp.NEAR_CUBE_X_B
         cfg.commands.goal_pose.ranges.pos_x = mdp.NEAR_CUBE_X_B

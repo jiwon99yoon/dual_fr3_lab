@@ -4977,13 +4977,18 @@ BOX_CURRICULUM_FLAGS = {
     "obs_history": False,  # actor 관측에 최근 OBS_HISTORY_STEPS step 쌓기 (항별 오래된 것 -> 최신, 56 x N D). 배포 노드도 같은 쌓기가 필요해 기본 off, -History ablation용
 }
 OBS_HISTORY_STEPS = 4  # 0.2 s. 관측 안 되는 마찰·질량·지연을 반응으로 추정하게 (critic은 그대로)
-CURR_SUCCESS_TRIGGER = 3.0  # 보상 shaping ramp 발동 (5499 계보와 같음)
-CURR_GOALXY_TRIGGER = 3.0
-CURR_FRICTION_TRIGGER = 4.0  # 마찰은 goal xy보다 뒤
-CURR_HOVER_TRIGGER = 5.0  # 호버 혼합은 마지막
-CURR_GOALXY_RAMP_STEPS = 4800  # 200 iter
-CURR_FRICTION_RAMP_STEPS = 9600  # 400 iter
-CURR_HOVER_RAMP_STEPS = 9600
+# 단계 스케줄 (11-12, 4090 run 1 실패 뒤). 기준은 success_rate = success 합 / (weight x dt x 에피소드 step) = 0~1 (에피소드 길이 무관).
+# 계보 수렴치: FlatSqueeze 3998 ~0.62, LowMuSoftLift 4500 ~0.50, GoalXY 5499 ~0.46. 4090 run 1은 EMA 합 3/4/5(성공률 ~0.04)가
+# 30 iter 안에 다 넘어가 shaping·goal xy·마찰·호버가 동시에 켜졌고(400 it 성공률 0.28이 최고), 성공이 0으로 떨어져도 ramp가 끝까지 가
+# 800 it부터 들기 0으로 굳었다. 스케줄러: 단계는 순서대로, 이전 단계가 1.0이고 성공률이 그 단계 기준 이상인 동안에만 진행(아니면 멈춤,
+# 비감소). 한 단계가 끝난 뒤 다음 단계는 성공률이 기준을 다시 넘어야 움직이므로 단계 사이에 재안정 구간이 생긴다.
+BOX_STAGES = (  # (이름, 성공률 기준, ramp env-step)
+    ("shaping_a", 0.10, 4800),  # 판 평행(worst)·면 중앙·최소 조임 (FlatSqueeze 항), 200 iter
+    ("shaping_b", 0.20, 4800),  # 들기 가속·판 미끄럼·박스 yaw drift·파지 높이 (SoftLift 항 + 후보), 200 iter
+    ("goalxy", 0.30, 9600),  # goal xy 수직 -> 독립, 400 iter
+    ("friction", 0.30, 19200),  # 마찰 넓은 범위 -> SOFTLIFT, 800 iter
+    ("hover", 0.30, 19200),  # 표 시작 -> 호버 시작, 800 iter
+)
 CURR_YAWTRACK_TRIGGER = 1.5  # Scratch 2999와 같은 발동, ramp는 2000 iter (Scratch 3000 iter run은 72000)
 CURR_YAWTRACK_RAMP_STEPS = 48000
 CURR_JOINT_STATE_DELAY_S = (0.0, 0.01)
@@ -5022,6 +5027,104 @@ def _success_ema(env, env_ids, success_term: str, key: str) -> float:
     return ema
 
 
+def _box_schedule(env, env_ids, success_term: str = "success", stages: tuple = BOX_STAGES) -> dict:
+    """한 policy step에 한 번: 성공률 EMA를 갱신하고 BOX_STAGES의 progress(0~1)를 순서대로 올린다. 모든 단계 term이 같은 상태를 본다.
+
+    성공률 = 끝난 에피소드의 success 합 평균 / (success weight x step_dt x max_episode_length). 단계 k는 k-1이 1.0일 때만, 성공률 >=
+    기준인 step에서만 (지난 step 수 / ramp_steps)만큼 진행한다(멈춤은 있고 되돌림은 없다).
+    """
+    st = env.__dict__.get("_box_schedule")
+    if st is None:
+        st = {"rate": 0.0, "step": None, "progress": {name: 0.0 for name, _, _ in stages}}
+        env._box_schedule = st
+    cur = env.common_step_counter
+    if st["step"] == cur:
+        return st
+    if env_ids is not None and len(env_ids) > 0:
+        w = env.reward_manager.get_term_cfg(success_term).weight
+        cap = max(abs(w) * env.step_dt * env.max_episode_length, 1e-6)
+        level = env.reward_manager._episode_sums[success_term][env_ids].mean().item() / cap
+        alpha = min(0.5, 3.0 * len(env_ids) / env.num_envs)
+        st["rate"] += alpha * (level - st["rate"])
+    delta = 0 if st["step"] is None else cur - st["step"]
+    st["step"] = cur
+    prev_done = True
+    for name, trigger, ramp_steps in stages:
+        p = st["progress"][name]
+        if prev_done and p < 1.0 and st["rate"] >= trigger:
+            p = min(1.0, p + delta / max(ramp_steps, 1))
+            st["progress"][name] = p
+        prev_done = p >= 1.0
+    return st
+
+
+def stage_monitor(env, env_ids, success_term: str = "success") -> dict:
+    """Curriculum/schedule/*: 성공률 EMA, 진행 중인 단계 번호, 단계별 progress. 가장 먼저 두어 매 step 스케줄을 갱신한다."""
+    st = _box_schedule(env, env_ids, success_term)
+    out = {"success_rate": st["rate"], **st["progress"]}
+    out["stage_index"] = float(sum(1 for v in st["progress"].values() if v >= 1.0))
+    return out
+
+
+def stage_reward_weight(env, env_ids, term_name: str, weight: float, stage: str):
+    """term_name의 weight를 cfg 시작값(-1e-4)에서 weight로 단계 stage의 progress에 비례해 둔다. 반환값은 현재 weight."""
+    p = _box_schedule(env, env_ids)["progress"][stage]
+    term_cfg = env.reward_manager.get_term_cfg(term_name)
+    w0 = env.__dict__.setdefault("_stage_w0", {}).setdefault(term_name, term_cfg.weight)
+    w = w0 + (weight - w0) * p
+    if term_cfg.weight != w:
+        term_cfg.weight = w
+        env.reward_manager.set_term_cfg(term_name, term_cfg)
+    return w
+
+
+def stage_env_scale(env, env_ids, attr: str, stage: str):
+    """env.<attr> = 단계 stage의 progress (goal xy 혼합, 호버 혼합)."""
+    p = _box_schedule(env, env_ids)["progress"][stage]
+    setattr(env, attr, p)
+    return p
+
+
+def _apply_friction_range(env, term_name: str, start: dict, end: dict, frac: float, env_ids):
+    """재질 DR 이벤트 term_name의 범위를 start -> end의 frac 지점으로 두고 bucket을 다시 뽑아 env_ids(None이면 전체)에 재배정한다.
+
+    재질 이벤트는 startup에 한 번만 돌고 PhysX 구현은 범위에서 뽑은 bucket을 __init__에 저장하므로 직접 다시 뽑는다.
+    critic의 마찰 관측 캐시(_box_dr_cache)는 지운다.
+    """
+    cfg = env.event_manager.get_term_cfg(term_name)
+    for key in ("static_friction_range", "dynamic_friction_range"):
+        a, b = start[key], end[key]
+        cfg.params[key] = (a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac)
+    env.event_manager.set_term_cfg(term_name, cfg)
+    term = cfg.func  # ManagerTermBase 인스턴스 (manager가 클래스를 인스턴스로 바꿔 둔다)
+    impl = getattr(term, "_impl", None)
+    if impl is not None and hasattr(impl, "material_buckets"):
+        ranges = torch.tensor(
+            [cfg.params["static_friction_range"], cfg.params["dynamic_friction_range"], cfg.params["restitution_range"]],
+            device="cpu",
+        )
+        buckets = ranges[:, 0] + (ranges[:, 1] - ranges[:, 0]) * torch.rand(impl.material_buckets.shape[0], 3)
+        if cfg.params.get("make_consistent", False):
+            buckets[:, 1] = torch.minimum(buckets[:, 0], buckets[:, 1])
+        impl.material_buckets = buckets
+    ids = None if env_ids is None else env_ids.to(torch.int32)  # PhysX 구현은 int32 env_ids를 warp로 넘긴다
+    term(env, ids, **cfg.params)
+    env.__dict__.pop("_box_dr_cache", None)
+
+
+def stage_friction(env, env_ids, term_name: str, start: dict, end: dict, stage: str):
+    """단계 stage의 progress만큼 재질 범위를 옮긴다. progress가 바뀐 step에만 지금 리셋되는 env를 재배정하고, 1.0이 되면 전체에 한 번 더."""
+    p = _box_schedule(env, env_ids)["progress"][stage]
+    st = env.__dict__.setdefault("_stage_friction", {}).setdefault(term_name, {"frac": -1.0, "done": False})
+    if st["done"]:
+        return 1.0
+    if p != st["frac"]:
+        _apply_friction_range(env, term_name, start, end, p, None if p >= 1.0 else env_ids)
+        st["frac"] = p
+        st["done"] = p >= 1.0
+    return p
+
+
 def ramp_friction_on_success(
     env,
     env_ids,
@@ -5029,10 +5132,10 @@ def ramp_friction_on_success(
     start: dict,
     end: dict,
     success_term: str = "success",
-    trigger: float = CURR_FRICTION_TRIGGER,
-    ramp_steps: int = CURR_FRICTION_RAMP_STEPS,
+    trigger: float = 4.0,
+    ramp_steps: int = 9600,
 ):
-    """success EMA가 trigger에 닿은 뒤 ramp_steps에 걸쳐 재질 DR 이벤트 term_name의 static/dynamic 범위를 start에서 end로 옮긴다.
+    """(스케줄러 이전 방식, 4090 run 1) success EMA가 trigger에 닿은 뒤 ramp_steps에 걸쳐 재질 DR 이벤트 term_name의 static/dynamic 범위를 start에서 end로 옮긴다.
 
     재질 이벤트는 startup에 한 번만 돌고 PhysX 구현은 범위에서 뽑은 bucket을 __init__에 저장하므로, 범위를 바꿀 때마다 bucket을 다시
     뽑고 지금 리셋되는 env의 재질을 다시 배정한다(모든 env는 한 에피소드 안에 리셋된다). ramp가 끝나면 전체 env에 한 번 더 배정하고
@@ -5334,9 +5437,19 @@ def reset_from_pregrasp_or_hover(
 
 def _apply_box_curriculum(cfg, flags: dict) -> None:
     """GoalXY(5499 최종 상태) cfg를 처음부터 배우는 커리큘럼으로 바꾸고 flags의 후보 항목을 넣는다."""
-    # 5499 계보가 이어 학습용으로 즉시 켰던 shaping을 -1e-4에서 success 뒤 ramp로 되돌린다 (curriculum 항은 이미 있다)
-    for name in ("plate_face_tilt", "plate_face_offcenter", "min_squeeze"):
+    # 단계 스케줄러(BOX_STAGES). schedule을 먼저 두어 매 step 성공률·progress를 갱신하고 TB에 남긴다
+    cfg.curriculum.schedule = CurrTerm(func=stage_monitor)
+    # 5499 계보가 이어 학습용으로 즉시 켰던 shaping을 -1e-4에서 단계 progress 비례로 되돌린다 (계보의 독립 success ramp는 버린다)
+    for name, weight, stage in (
+        ("plate_face_tilt", FLATSQUEEZE_TILT_WEIGHT, "shaping_a"),
+        ("plate_face_offcenter", FLATSQUEEZE_OFFCENTER_WEIGHT, "shaping_a"),
+        ("min_squeeze", MINSQUEEZE_WEIGHT, "shaping_a"),
+        ("box_lift_accel", SOFTLIFT_ACCEL_WEIGHT, "shaping_b"),
+        ("plate_box_slip", SLIP_WEIGHT, "shaping_b"),
+        ("box_yaw_drift", BOX_YAW_DRIFT_WEIGHT, "shaping_b"),
+    ):
         getattr(cfg.rewards, name).weight = -1e-4
+        setattr(cfg.curriculum, name, CurrTerm(func=stage_reward_weight, params={"term_name": name, "weight": weight, "stage": stage}))
     cfg.curriculum.yawtrack.params.update(trigger=CURR_YAWTRACK_TRIGGER, ramp_steps=CURR_YAWTRACK_RAMP_STEPS)
 
     if flags["friction_ramp"]:
@@ -5356,16 +5469,13 @@ def _apply_box_curriculum(cfg, flags: dict) -> None:
             setattr(
                 cfg.curriculum,
                 name.replace("randomize_", "friction_"),
-                CurrTerm(func=ramp_friction_on_success, params={"term_name": name, "start": start, "end": end}),
+                CurrTerm(func=stage_friction, params={"term_name": name, "start": start, "end": end, "stage": "friction"}),
             )
     if not flags["size_dr"]:
         cfg.events.randomize_box_size.params["scale_range"] = {"x": (1.0, 1.0), "y": (1.0, 1.0), "z": (1.0, 1.0)}
     if flags["goalxy_ramp"]:
         cfg.commands.object_pose.class_type = MixedGoalXYPoseCommand
-        cfg.curriculum.goalxy = CurrTerm(
-            func=ramp_env_scale_on_success,
-            params={"attr": "_goalxy_scale", "trigger": CURR_GOALXY_TRIGGER, "ramp_steps": CURR_GOALXY_RAMP_STEPS},
-        )
+        cfg.curriculum.goalxy = CurrTerm(func=stage_env_scale, params={"attr": "_goalxy_scale", "stage": "goalxy"})
     if flags["joint_delay"]:
         arm = cfg.actions.arm_action
         cfg.actions.arm_action = DelayedReachRelativeJointPositionActionCfg(
@@ -5386,8 +5496,7 @@ def _apply_box_curriculum(cfg, flags: dict) -> None:
     if flags["grasp_height"]:
         cfg.rewards.plate_face_z_excess = RewTerm(func=plate_face_z_excess, weight=-1e-4)
         cfg.curriculum.plate_face_z_excess = CurrTerm(
-            func=ramp_reward_weight_on_success,
-            params={"term_name": "plate_face_z_excess", "weight": GRASP_HEIGHT_WEIGHT, "ramp_steps": FLATSQUEEZE_RAMP_STEPS},
+            func=stage_reward_weight, params={"term_name": "plate_face_z_excess", "weight": GRASP_HEIGHT_WEIGHT, "stage": "shaping_b"}
         )
     if flags["j1_mirror"]:
         cfg.rewards.j1_mirror = RewTerm(
@@ -5411,10 +5520,7 @@ def _apply_box_curriculum(cfg, flags: dict) -> None:
             box_yaw=HOVER_BOX_YAW,
         )
         cfg.rewards.plate_on_box_top = RewTerm(func=plate_on_box_top, weight=HOVER_TOP_CONTACT_WEIGHT)
-        cfg.curriculum.hover_mix = CurrTerm(
-            func=ramp_env_scale_on_success,
-            params={"attr": "_hover_mix", "trigger": CURR_HOVER_TRIGGER, "ramp_steps": CURR_HOVER_RAMP_STEPS},
-        )
+        cfg.curriculum.hover_mix = CurrTerm(func=stage_env_scale, params={"attr": "_hover_mix", "stage": "hover"})
     if flags["critic_dr"]:
         cfg.observations.critic.dr_privileged = ObsTerm(func=box_dr_privileged)
     if flags["obs_history"]:
@@ -5449,8 +5555,11 @@ def _apply_box_curriculum_final(cfg, flags: dict, hover_mix: float) -> None:
         ("box_yaw_drift", BOX_YAW_DRIFT_WEIGHT),
     ):
         getattr(cfg.rewards, name).weight = weight
+        setattr(cfg.curriculum, name, None)
     if flags["grasp_height"]:
         cfg.rewards.plate_face_z_excess.weight = GRASP_HEIGHT_WEIGHT
+        cfg.curriculum.plate_face_z_excess = None
+    cfg.curriculum.schedule = None
 
 
 @configclass
@@ -5459,8 +5568,8 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curr
 ):
     """5499(GoalXY)의 보상·관측·행동을 처음부터 한 run으로 배우는 커리큘럼 + 후보 항목 전부 (BOX_CURRICULUM_FLAGS). from-scratch.
 
-    - 보상 ramp: FaceGrip·FlatSqueeze·SoftLift 항은 -1e-4에서 success EMA 3 뒤 각자의 ramp(계보와 같음). yawtrack은 Scratch처럼 EMA 1.5.
-    - 환경 ramp: goal xy(EMA 3, 200 iter) -> 마찰(EMA 4, 400 iter, reset마다 재배정) -> 호버 시작 혼합(EMA 5, 400 iter).
+    - 단계 스케줄러(BOX_STAGES, 성공률 기준·멈춤·순서): shaping_a(0.10) -> shaping_b(0.20) -> goal xy(0.30) -> 마찰(0.30) -> 호버(0.30).
+      yawtrack은 Scratch처럼 EMA 1.5, 외란·q'는 EMA 1->3 (계보 그대로). 4090 run 1(독립 EMA ramp 3/4/5)은 동시 발동으로 무너졌다.
     - actor 관측은 5499와 같은 항·차원(policy 그룹)이라 배포 노드를 그대로 쓴다. critic은 DR 값 14D가 더해져 5499 checkpoint는 못 읽는다.
     - 호버가 켜지면 에피소드 6 s. 평가는 *_PLAY(커리큘럼 최종 상태, 표 50 % + 호버 50 %), *_PLAY_TABLE, *_PLAY_HOVER.
     ablation은 _flags를 덮어쓴 하위 클래스로 만든다 (예: 아래 NoHover).

@@ -328,6 +328,16 @@ def finger_table_contact(env: ManagerBasedRLEnv, threshold: float = 1.0) -> torc
     return (finger_table_force(env) > threshold).float()
 
 
+def cube_drag(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """들었던 큐브를 쥔 채 들고 있지 않은데(책상 높이 + 4 cm 아래) 목표 xy CARRY_RELAX_RADIUS 밖 = 끌고 가는 중 1 (-Curriculum drag_penalty).
+
+    11-12 run 1: 단계를 빼앗는 carry_strict는 placed EMA 0.3에서 켜진 뒤 40 iter 만에 placed 0.31 -> 0 (끌어서 놓던 정책이 stage 0으로
+    떨어져 공중에 든 채 멈춤). 벌점은 HELD 단계와 운반 shaping을 남겨 둔 채 끌기만 비싸게 한다.
+    """
+    s = pick_place_state(env)
+    return (s.ever_lifted & s.grasp & ~s.lifted & (s.d_goal_xy > CARRY_RELAX_RADIUS)).float()
+
+
 def finger_table_force_norm(env: ManagerBasedRLEnv, ref_n: float = 20.0, cap: float = 5.0) -> torch.Tensor:
     """손가락-책상 접촉력 / ref_n (cap까지). finger_table_contact(닿음 0/1)와 달리 깊게 찍을수록 커진다 (-Curriculum)."""
     return (finger_table_force(env) / ref_n).clamp(max=cap)

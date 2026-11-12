@@ -16,19 +16,24 @@ ablation 절차를 따른다. 5070과 4090이 같은 코드로 서로 다른 abl
 
 | 구분 | 항목 | 켜지는 시점 | 플래그 |
 |---|---|---|---|
-| 5499 보상 | plate_face_tilt(worst) −20, offcenter −20, min_squeeze 16 N −0.5, box_lift_accel −20, plate_box_slip −10, box_yaw_drift −10 | −1e-4에서 success EMA ≥ 3 뒤 100~200 iter ramp (계보와 같음) | 항상 |
+| 5499 보상 ①a | plate_face_tilt(worst) −20, offcenter −20, min_squeeze 16 N −0.5 | 단계 shaping_a: 성공률 ≥ 0.10, 200 iter | 항상 |
+| 5499 보상 ①b | box_lift_accel −20, plate_box_slip −10, box_yaw_drift −10 (+ 파지 높이 −10) | 단계 shaping_b: ①a 끝 + 성공률 ≥ 0.20, 200 iter | 항상 |
 | 5499 보상 | yawtrack(success의 yaw 계수) | EMA ≥ 1.5 뒤 2000 iter ramp (Scratch 2999는 3000 iter) | 항상 |
-| 환경 ramp | goal xy: 박스 위(수직) → 독립 샘플 x 0.40~0.50, y ±0.10 (`MixedGoalXYPoseCommand`, `env._goalxy_scale`) | EMA ≥ 3 뒤 200 iter | `goalxy_ramp` |
-| 환경 ramp | 마찰: 박스 0.4~1.2 / 판 0.5 → SOFTLIFT(박스 0.1~0.8, 판 0.3~0.5). reset마다 재배정 | EMA ≥ 4 뒤 400 iter | `friction_ramp` |
-| 환경 ramp | 호버 시작 혼합 0 → 1 (`env._hover_mix`), 에피소드 6 s, 판이 박스 윗면 누르면 −5/s | EMA ≥ 5 뒤 400 iter | `hover` |
+| 환경 ramp ② | goal xy: 박스 위(수직) → 독립 샘플 x 0.40~0.50, y ±0.10 (`MixedGoalXYPoseCommand`, `env._goalxy_scale`) | 단계 goalxy: ①b 끝 + 성공률 ≥ 0.30, 400 iter | `goalxy_ramp` |
+| 환경 ramp ③ | 마찰: 박스 0.4~1.2 / 판 0.5 → SOFTLIFT(박스 0.1~0.8, 판 0.3~0.5). reset마다 재배정 | 단계 friction: ② 끝 + 성공률 ≥ 0.30, 800 iter | `friction_ramp` |
+| 환경 ramp ④ | 호버 시작 혼합 0 → 1 (`env._hover_mix`), 에피소드 6 s, 판이 박스 윗면 누르면 −5/s | 단계 hover: ③ 끝 + 성공률 ≥ 0.30, 800 iter | `hover` |
 | DR | 박스 크기 ±1 cm (USD scale이라 커리큘럼 불가) | 처음부터 | `size_dr` |
 | DR | 관절 상태 0~10 ms, 명령 0~1 step 지연 (DR task의 절반) | 처음부터 | `joint_delay` |
 | DR | 박스 pose 관측 에피소드 고정 오프셋 ±1 cm, yaw ±3° (BoxDrop 지연·끊김·잡음에 추가) | 처음부터 | `camera_bias` |
-| 벌점 | 파지 높이: 판 중심−면 중심 높이 차 3 cm 초과분 −10/(m·s) | EMA ≥ 3 뒤 100 iter | `grasp_height` |
+| 벌점 | 파지 높이: 판 중심−면 중심 높이 차 3 cm 초과분 −10/(m·s) | 단계 shaping_b | `grasp_height` |
 | 벌점 | j1 거울: (q_L + q_R)의 에피소드 시작 대비 변화 0.05 rad 초과분 −1/(rad·s) | 처음부터 | `j1_mirror` |
 | critic | DR 값 14D: 박스·양 판 정지 마찰, 질량, 크기(y, z), 양팔 강성·감쇠 배율, 관절·명령·비전 지연, 비전 끊김 | − | `critic_dr` |
 | actor | 관측 history 4 step(0.2 s, 56 × 4 = 224D). **기본 off**, `-History-v0`/`-History-Play-v0` ablation | − | `obs_history` |
 
+- **단계 스케줄러(`BOX_STAGES`, 11-12 4090 run 1 뒤)**: 기준은 `success_rate` = success 합 / (weight × dt × 에피소드 step) = 0~1로
+  에피소드 길이와 무관하다(계보 수렴치 0.46~0.62, 4090 run 1 최고 0.28). 단계는 순서대로, 이전 단계가 1.0이고 성공률이 그 단계 기준 이상인
+  step에서만 진행한다(아니면 **멈춤**, 되돌림 없음). 한 단계가 끝나면 다음 단계는 성공률이 기준을 **다시** 넘어야 움직이므로 단계 사이에
+  재안정 구간이 생긴다. yawtrack(EMA 1.5)·외란·q′(EMA 1→3)는 계보 그대로 독립 EMA다.
 - **호버 자세**: 명목 박스(0.45, 0)의 접근 끝 자세에서 판 TCP를 0.25 m 올리고 판마다 7.5 cm 바깥(간격 +15 cm)으로 옮긴 IK 해,
   좌우 거울 대칭. 박스 위치와 무관한 고정 관절값(`HOVER_Q_LEFT/RIGHT`, `scripts/tools/solve_plate_hover_pose.py`).
   박스는 x 0.40~0.50, y ±0.10, yaw ±0.1 rad에서 뽑는다. 0.25 m는 논의 범위(0.2~0.3)의 기본값이고 `--dz`로 바꿔 다시 풀면 된다.
@@ -49,10 +54,11 @@ ablation 절차를 따른다. 5070과 4090이 같은 코드로 서로 다른 abl
 |---|---|---|
 | CriticPlus critic(그리퍼 내부 상태 8D + DR 값 7D) | − | `critic_plus` |
 | 기울기 15° 초과 벌점 −5 | reach_held EMA ≥ 0.5 (들기를 배운 뒤) | `tilt` |
-| 끌기 금지: 들었던 큐브를 쥔 채 들고 있지 않으면 HELD 아님 (목표 xy 5 cm 안은 예외, `env._pp_carry_strict`) | reach_placed EMA ≥ 0.3 | `carry_strict` |
+| 끌기 벌점 −5/s: 들었던 큐브를 쥔 채 책상 높이로 목표 5 cm 밖에서 끌기 (`cube_drag`) | reach_placed EMA ≥ 0.3 | `drag_penalty` |
+| (보류) 끌기 금지: 같은 조건이면 HELD 단계 박탈 (`env._pp_carry_strict`). run 1에서 placed 붕괴, 기본 off | reach_placed EMA ≥ 0.3 | `carry_strict` |
 | 손가락−책상 접촉력 비례 벌점 (20 N → −2/s, 100 N → −10/s; 닿음 0/1 −5는 유지) | 처음부터 | `finger_force` |
 | 그리퍼 멈춤 → result 대기 0.8~1.2 s (sim 기본 0.3~0.4) | 처음부터 | `gripper_settle` |
-| 책상 −Near(앞 모서리 x 0.30) 고정, 큐브 시작·목표 x 0.45~0.65 → 0.35~0.65 ramp | reach_placed EMA ≥ 0.3 뒤 200 iter | `near_ramp` |
+| 책상 −Near(앞 모서리 x 0.30) 고정, 큐브 시작·목표 x 0.45~0.65 → 0.35~0.65 ramp | reach_released EMA ≥ 0.3 뒤 200 iter (run 1은 placed 0.3) | `near_ramp` |
 
 평가 cfg `-Curriculum-Play-v0`은 최종 상태(기울기 벌점 최종, 끌기 금지 켬, x 0.35~0.65)다.
 
@@ -62,13 +68,14 @@ ablation 절차를 따른다. 5070과 4090이 같은 코드로 서로 다른 abl
 
 | 항목 | 박스 | 큐브 |
 |---|---|---|
-| 커리큘럼 진행 | `Curriculum/goalxy`, `friction_box_friction`, `friction_plate_friction`, `hover_mix`(0 → 1), `plate_face_tilt` 등 weight ramp, `yawtrack` | `Curriculum/progress/reach_*`(단계 도달률 EMA), `cube_tilt_excess`(−1e-4 → −5), `carry_strict`(0 → 1), `near_x`(0.45 → 0.35) |
+| 커리큘럼 진행 | `Curriculum/schedule/success_rate`, `schedule/stage_index`(끝난 단계 수 0~5), `schedule/shaping_a … hover`(0 → 1); 항별 `Curriculum/plate_face_tilt` 등 weight, `goalxy`, `hover_mix`, `yawtrack` | `Curriculum/progress/reach_*`(단계 도달률 EMA), `cube_tilt_excess`(−1e-4 → −5), `carry_strict`(0 → 1), `near_x`(0.45 → 0.35) |
 | 성공 | `Episode_Reward/success`(sustained, 20/s) | `Episode_Reward/success`, `reach_success` |
 | 후보 항목의 비용 | `Episode_Reward/plate_face_z_excess`, `j1_mirror`, `plate_on_box_top` | `Episode_Reward/cube_tilt_excess`, `finger_table_force` |
 | 종료 | `Episode_Termination/object_out_of_bounds` | `cube_dropped`, `cube_toppled`, `cube_off_table` |
 
-- 커리큘럼이 **발동하지 않으면**(EMA가 trigger에 못 미침) 뒤 항목은 영영 안 켜진다. 2000 iter까지 `hover_mix`가 0이면 trigger(5)를 낮추거나
-  단계 ramp를 뒤로 미룬다. 반대로 ramp 중 success가 반 토막 나고 안 돌아오면 그 항목이 ablation 1순위다.
+- 단계가 **멈춰 있으면**(`schedule/success_rate`가 그 단계 기준 아래) 뒤 단계는 안 켜진다. 2000 iter에 `stage_index`가 2(shaping만)면 0.30이
+  높은 것이니 0.20으로 낮춘다. 어떤 단계 ramp 중 성공률이 떨어져 멈춘 채 회복이 없으면 그 단계가 ablation 1순위다. 호버(④)는 6000 iter 안에
+  못 올 수 있으니 TB를 보고 `--resume`으로 연장한다(11-12 결정).
 - 박스의 `hover_mix`가 오르는 동안 `Episode_Reward/plate_on_box_top`과 `object_out_of_bounds`가 같이 오르면 내려오는 동작을 못 배운 것이다
   (에피소드 6 s 안에 못 잡는지는 `Episode_Length`로 본다).
 
@@ -124,4 +131,18 @@ ablation 절차를 따른다. 5070과 4090이 같은 코드로 서로 다른 abl
 
 ## 7. 결과 기록
 
-(학습 뒤 채운다: run, iter, §4 수치, 뺀 항목과 이유)
+### 박스 run 1 (4090, 2026-11-12 14:00, `curriculum_all_4090`, ec8c1b6, 4096 env, 3531 iter에서 중단) — 스케줄러 도입
+- 290~330 it 사이에 success EMA 합이 3/4/5를 모두 넘어 shaping(−20/−10, 100~200 iter)·goal xy·마찰·호버가 동시에 켜짐. 400 it 성공 5.5/s
+  (6 s 합 33, 성공률 0.28)가 최고였고, 600 it 2.7로 떨어졌는데도 ramp는 step 수만 세며 끝까지 감(700 it 마찰 0.99, 호버 0.94).
+- 800 it부터 조이기·들기 0, reaching ~7만 받는 "다가가기만" 국소해. std 0.39 → 0.11. 3531 it까지 회복 없음(체크포인트 model_3500).
+- 원인: (1) 발동 기준이 성공률 ~0.04의 한 점이라 순서가 없었음, (2) 멈춤·되돌림 없음, (3) 벌점과 환경 난이도가 겹침.
+- 조치(run 2): §1 단계 스케줄러(성공률 기준 0.10/0.20/0.30, 순서, 멈춤, shaping a/b 분리, ramp 2배). 4090이 pull 뒤 `-Curriculum-v0` 재시작,
+  `-History-v0`는 그 뒤.
+
+### 큐브 run 1 (5070, 2026-11-12 14:00, `curriculum_all_5070`, 2048 env, 1380 iter에서 중단) — carry_strict 보류
+- iter ~500 reach_held 0.9 (들기 습득, 기울기 벌점 −5 켜짐), 560~680 reach_placed 0.10 → 0.31.
+- iter 680 placed EMA 0.3을 넘자 carry_strict·Near x ramp·action/joint_vel/arm_contact 벌점(−0.1/−1)이 같은 iter에 켜짐 →
+  40 iter 뒤 placed 0.003, 이후 700 iter 동안 0.000 (held 0.92 유지, 운반 중 기울기 −0.07 → −0.18/s).
+- 해석: 그때까지의 placing이 "책상 위로 끌어서" 놓는 동작이라, 단계를 박탈하는 carry_strict가 켜지자 그 동작 전체가 stage 0이 되고
+  정책은 공중에 든 채 버티는 국소해로 갔다. action 벌점 latch는 4000 계보와 같으므로 원인에서 제외.
+- 조치(run 2): carry_strict → 끌기 벌점 `cube_drag` −5/s(placed 0.3 뒤)로 대체, Near ramp는 reach_released 0.3 뒤로 미룸.
