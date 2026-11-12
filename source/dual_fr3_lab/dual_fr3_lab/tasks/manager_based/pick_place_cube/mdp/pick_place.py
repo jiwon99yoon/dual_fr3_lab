@@ -98,6 +98,8 @@ TIP_FLOOR = 0.03
 TIP_FLOOR_EDGE_MARGIN = 0.03
 TILT_EXCESS_DEG = 15.0  # -Tilt 변형: 기울기 중 이 각을 넘는 만큼 벌점 (캐비닛 책 -Tilt와 같은 15°)
 DROP_GOAL_RADIUS = 0.05  # 들었던 큐브를 목표 5 cm 밖에서 놓으면 낙하로 종료
+# -Curriculum(carry_strict, 11-10): 들었던 큐브를 쥔 채 목표 xy 이 안이면 내려놓는 중이라 들고 있지 않아도 HELD로 친다
+CARRY_RELAX_RADIUS = 0.05
 # 놓은 뒤 유지 범위 (11-09): 한 번 PLACED였으면 손을 놓은 뒤 이 안에 서 있는 동안 RELEASED를 유지한다. 4090 A는 놓을 위치에서
 # 쥔 채 버텼다 (PLACED 초당 20, 놓다가 2.5 cm·5°를 벗어나면 단계 0으로 초당 약 3). 성공은 그대로 XY_TOL, UPRIGHT_DEG
 RELEASE_XY_TOL = DROP_GOAL_RADIUS
@@ -218,7 +220,11 @@ class PickPlaceState:
         # reset 직후(물리 step 전)에는 접촉 센서가 이전 에피소드 값이라 기억을 갱신하지 않는다
         fresh = env.episode_length_buf > 0
         self.ever_lifted |= lifted & self.grasp & fresh
-        held = self.grasp & self.ever_lifted
+        # -Curriculum(carry_strict): env._pp_carry_strict가 켜지면 들었던 큐브를 쥔 채 다시 내려 끌면(목표 밖) HELD가 아니다.
+        # 11-09 실물 model_4000은 큐브를 끌어서 옮겼다 (책상 위 끌기도 held라 운반 shaping을 그대로 받았다)
+        strict = getattr(env, "_pp_carry_strict", 0.0) > 0.0
+        carry_ok = torch.full_like(lifted, not strict) | lifted | (self.d_goal_xy < CARRY_RELAX_RADIUS)
+        held = self.grasp & self.ever_lifted & carry_ok
         at_goal = self.ever_lifted & self.resting & upright & (self.d_goal_xy < XY_TOL)
         self.clear = self.tcp_b[:, 2] - (self.cube_b[:, 2] + 0.5 * CUBE_SIZE[2])
         self.at_goal = at_goal
@@ -320,6 +326,11 @@ def finger_table_force(env: ManagerBasedRLEnv) -> torch.Tensor:
 def finger_table_contact(env: ManagerBasedRLEnv, threshold: float = 1.0) -> torch.Tensor:
     """손가락이 책상에 닿음 1 / 아님 0. 11-09 A model_700은 쥐는 순간 128개 중 103개가 최대 136 N으로 책상을 찍었다."""
     return (finger_table_force(env) > threshold).float()
+
+
+def finger_table_force_norm(env: ManagerBasedRLEnv, ref_n: float = 20.0, cap: float = 5.0) -> torch.Tensor:
+    """손가락-책상 접촉력 / ref_n (cap까지). finger_table_contact(닿음 0/1)와 달리 깊게 찍을수록 커진다 (-Curriculum)."""
+    return (finger_table_force(env) / ref_n).clamp(max=cap)
 
 
 def tip_below_floor(env: ManagerBasedRLEnv, floor: float = TIP_FLOOR, table_front_x: float = TABLE_X_B[0]) -> torch.Tensor:
@@ -582,3 +593,32 @@ def modify_reward_weight_on_placed(env: ManagerBasedRLEnv, env_ids, term_name: s
         term_cfg.weight = weight
         env.reward_manager.set_term_cfg(term_name, term_cfg)
     return term_cfg.weight
+
+
+def set_env_attr_on_placed(env: ManagerBasedRLEnv, env_ids, attr: str, value: float = 1.0, threshold: float = 0.3,
+                           key: str = "reach_placed"):
+    """EMA[key]가 threshold를 넘으면 env.<attr> = value (latch). 반환값은 현재 값 (-Curriculum carry_strict)."""
+    cur = getattr(env, attr, 0.0)
+    if cur != value and pick_place_state(env).ema[key] > threshold:
+        setattr(env, attr, value)
+        cur = value
+    return cur
+
+
+def ramp_cube_x_range_on_placed(env: ManagerBasedRLEnv, env_ids, start: tuple, end: tuple, ramp_steps: int,
+                                threshold: float = 0.3, key: str = "reach_placed"):
+    """EMA[key]가 threshold를 넘은 뒤 ramp_steps env-step에 걸쳐 큐브 시작(reset_cube)과 목표(goal_pose) x 범위를 start에서 end로
+    옮긴다 (-Curriculum near_ramp). 반환값은 현재 하한."""
+    st = env.__dict__.setdefault("_cube_x_ramp", {"start": None})
+    cur = env.common_step_counter
+    if st["start"] is None:
+        if pick_place_state(env).ema[key] <= threshold:
+            return start[0]
+        st["start"] = cur
+    frac = min(1.0, (cur - st["start"]) / max(ramp_steps, 1))
+    rng = (start[0] + (end[0] - start[0]) * frac, start[1] + (end[1] - start[1]) * frac)
+    cfg = env.event_manager.get_term_cfg("reset_cube")
+    cfg.params["x_range"] = rng
+    env.event_manager.set_term_cfg("reset_cube", cfg)
+    env.command_manager.get_term(GOAL_COMMAND).cfg.ranges.pos_x = rng
+    return rng[0]

@@ -17,6 +17,7 @@ rule-based 검증: scripts/tutorials/05_controllers/run_dual_fr3_plate_lift.py
 """
 
 import copy
+import math
 import os
 import numpy as np
 import torch
@@ -4956,3 +4957,599 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Box410_Wide_J1Mirror_FaceGri
         self.scene.num_envs = 50
         self.scene.env_spacing = 3.0
         self.observations.policy.enable_corruption = False
+
+
+# ---------- Pregrasp-Wide-RollAlign-Curriculum: 5499 보상을 처음부터 한 정책으로 + 후보 항목 전부 (2026-11-10) ----------
+# 5499는 Scratch 2999 -> FlatSqueeze 3998 -> LowMuSoftLift 4500 -> GoalXY 5499로 네 번 이어 학습했다. 단계마다 더한 항은
+# 이미 success 기반 ramp라 한 run에 모두 넣을 수 있고, 즉시 켜졌던 마찰·goal xy만 커리큘럼으로 바꾼다. 여기에 11-10 논의한
+# 후보(critic DR 값, 작은 관절 지연, 카메라 고정 오프셋, 파지 높이, j1 거울, 호버 시작)를 전부 넣는다. 평가·ablation 절차는
+# docs/dual_fr3_curriculum_eval.md. 항목은 BOX_CURRICULUM_FLAGS로 켜고 끄며, 끄고 싶은 것만 바꾼 하위 클래스로 ablation run을 만든다.
+BOX_CURRICULUM_FLAGS = {
+    "critic_dr": True,  # critic 관측에 DR 값 14D(마찰·질량·크기·게인·지연·끊김)
+    "friction_ramp": True,  # 마찰 DR을 Scratch 범위(박스 0.4~1.2, 판 0.5)에서 SOFTLIFT 낮은 범위로 ramp. 끄면 처음부터 SOFTLIFT
+    "size_dr": True,  # 박스 크기 ±BOX_SIZE_DR_M. prestartup(USD scale)이라 커리큘럼이 안 되고 처음부터 켠다
+    "goalxy_ramp": True,  # goal xy를 박스 위(수직 들기)에서 독립 샘플(x 0.40~0.50, y ±0.10)로 ramp. 끄면 처음부터 독립
+    "joint_delay": True,  # 관절 상태 0~10 ms, 명령 0~1 물리 step 지연 (DR task의 절반)
+    "camera_bias": True,  # 박스 pose 관측에 에피소드마다 고정되는 오프셋 ±1 cm, yaw ±3°
+    "grasp_height": True,  # 판 중심이 면 중심에서 GRASP_HEIGHT_DEADBAND 넘게 벗어난 높이 벌점 (성공 뒤 ramp)
+    "j1_mirror": True,  # j1 거울 대칭 drift 벌점 (시작 자세 기준, 처음부터)
+    "hover": True,  # 에피소드 시작을 표(접근 끝) -> 호버 자세로 혼합 0 -> 1, 에피소드 6 s, 판이 박스 윗면에 닿으면 벌점
+    "obs_history": False,  # actor 관측에 최근 OBS_HISTORY_STEPS step 쌓기 (항별 오래된 것 -> 최신, 56 x N D). 배포 노드도 같은 쌓기가 필요해 기본 off, -History ablation용
+}
+OBS_HISTORY_STEPS = 4  # 0.2 s. 관측 안 되는 마찰·질량·지연을 반응으로 추정하게 (critic은 그대로)
+CURR_SUCCESS_TRIGGER = 3.0  # 보상 shaping ramp 발동 (5499 계보와 같음)
+CURR_GOALXY_TRIGGER = 3.0
+CURR_FRICTION_TRIGGER = 4.0  # 마찰은 goal xy보다 뒤
+CURR_HOVER_TRIGGER = 5.0  # 호버 혼합은 마지막
+CURR_GOALXY_RAMP_STEPS = 4800  # 200 iter
+CURR_FRICTION_RAMP_STEPS = 9600  # 400 iter
+CURR_HOVER_RAMP_STEPS = 9600
+CURR_YAWTRACK_TRIGGER = 1.5  # Scratch 2999와 같은 발동, ramp는 2000 iter (Scratch 3000 iter run은 72000)
+CURR_YAWTRACK_RAMP_STEPS = 48000
+CURR_JOINT_STATE_DELAY_S = (0.0, 0.01)
+CURR_COMMAND_DELAY_STEPS = (0, 1)
+BOX_OBS_BIAS_POS = 0.01  # m, 축마다 균일 (큐브 0.005)
+BOX_OBS_BIAS_YAW = math.radians(3.0)
+GRASP_HEIGHT_DEADBAND = 0.03  # m. 표 시작은 판 중심이 면 중심 위 5.3 cm라 2.3 cm 초과 x 2
+GRASP_HEIGHT_WEIGHT = -10.0  # 초과(m, 두 판 합)당 초당. 표 시작 그대로면 -0.46/s
+J1_MIRROR_DRIFT_DEADBAND = 0.05  # rad. 표 시작은 |j1_L + j1_R|가 박스 y에 비례(3.1 y, p90 0.29)라 절대값이 아니라 변화량에 건다
+J1_MIRROR_DRIFT_WEIGHT = -1.0
+# 호버 자세: 명목 박스(0.45, 0) 표 줄(201)의 판 TCP를 z +HOVER_DZ, 판마다 바깥 +HOVER_GAP(간격 +15 cm) 옮긴 IK 해를 좌우 거울
+# 대칭(j1·j3·j5 부호 반전, j7은 pi/2 - j7_L)으로 정리한 것. scripts/tools/solve_plate_hover_pose.py. TCP (0.45, ±0.32, 0.443 world),
+# 판 법선 ∓y, 모서리 정렬은 표와 같음, 관절 여유 최소 0.88 rad(j2). 박스 위 0.25 m는 11-10 논의 범위(0.2~0.3)의 기본값
+HOVER_DZ = 0.25
+HOVER_GAP = 0.075
+HOVER_Q_LEFT = (0.1170, 0.9006, -0.1363, -1.9593, -1.0052, 1.5076, 0.4869)
+HOVER_Q_RIGHT = (-0.1170, 0.9006, 0.1363, -1.9593, 1.0052, 1.5076, 1.0839)
+HOVER_BOX_X_RANGE = (0.40, 0.50)  # 표와 같은 박스 중심 범위
+HOVER_BOX_Y_RANGE = (-0.10, 0.10)
+HOVER_BOX_YAW = 0.1  # rad
+HOVER_JOINT_NOISE = PREGRASP_JOINT_NOISE
+HOVER_EPISODE_S = 6.0  # 표 시작 4 s + 내려오기 2 s
+HOVER_TOP_CONTACT_WEIGHT = -5.0  # 판이 박스 윗면(위 2 cm 안)에 닿은 판 수당 초당
+HOVER_TOP_MARGIN = 0.02
+
+
+def _success_ema(env, env_ids, success_term: str, key: str) -> float:
+    """끝난 에피소드의 success 항 합의 EMA (ramp_*_on_success 공용)."""
+    if not hasattr(env, "_lift_curriculum_ema"):
+        env._lift_curriculum_ema = {}
+    level = env.reward_manager._episode_sums[success_term][env_ids].mean().item()
+    alpha = min(0.5, 3.0 * len(env_ids) / env.num_envs)
+    ema = env._lift_curriculum_ema.get(key, 0.0)
+    ema = ema + alpha * (level - ema)
+    env._lift_curriculum_ema[key] = ema
+    return ema
+
+
+def ramp_friction_on_success(
+    env,
+    env_ids,
+    term_name: str,
+    start: dict,
+    end: dict,
+    success_term: str = "success",
+    trigger: float = CURR_FRICTION_TRIGGER,
+    ramp_steps: int = CURR_FRICTION_RAMP_STEPS,
+):
+    """success EMA가 trigger에 닿은 뒤 ramp_steps에 걸쳐 재질 DR 이벤트 term_name의 static/dynamic 범위를 start에서 end로 옮긴다.
+
+    재질 이벤트는 startup에 한 번만 돌고 PhysX 구현은 범위에서 뽑은 bucket을 __init__에 저장하므로, 범위를 바꿀 때마다 bucket을 다시
+    뽑고 지금 리셋되는 env의 재질을 다시 배정한다(모든 env는 한 에피소드 안에 리셋된다). ramp가 끝나면 전체 env에 한 번 더 배정하고
+    끝낸다. 반환값(0~1)은 Curriculum/<이름>에 기록된다. critic의 마찰 관측 캐시(_box_dr_cache)는 지운다.
+    """
+    st = env.__dict__.setdefault("_friction_ramp", {}).setdefault(term_name, {"start": None, "done": False})
+    if st["done"]:
+        return 1.0
+    cur = env.common_step_counter
+    if st["start"] is None:
+        if _success_ema(env, env_ids, success_term, f"_friction_{term_name}_succ") < trigger:
+            return 0.0
+        st["start"] = cur
+    frac = min(1.0, (cur - st["start"]) / max(ramp_steps, 1))
+    cfg = env.event_manager.get_term_cfg(term_name)
+    for key in ("static_friction_range", "dynamic_friction_range"):
+        a, b = start[key], end[key]
+        cfg.params[key] = (a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac)
+    env.event_manager.set_term_cfg(term_name, cfg)
+    term = cfg.func  # ManagerTermBase 인스턴스 (manager가 클래스를 인스턴스로 바꿔 둔다)
+    impl = getattr(term, "_impl", None)
+    if impl is not None and hasattr(impl, "material_buckets"):
+        ranges = torch.tensor(
+            [cfg.params["static_friction_range"], cfg.params["dynamic_friction_range"], cfg.params["restitution_range"]],
+            device="cpu",
+        )
+        buckets = ranges[:, 0] + (ranges[:, 1] - ranges[:, 0]) * torch.rand(impl.material_buckets.shape[0], 3)
+        if cfg.params.get("make_consistent", False):
+            buckets[:, 1] = torch.minimum(buckets[:, 0], buckets[:, 1])
+        impl.material_buckets = buckets
+    ids = None if frac >= 1.0 else env_ids.to(torch.int32)  # PhysX 구현은 int32 env_ids를 warp로 넘긴다
+    term(env, ids, **cfg.params)
+    env.__dict__.pop("_box_dr_cache", None)
+    st["done"] = frac >= 1.0
+    return frac
+
+
+class MixedGoalXYPoseCommand(UniformPoseCommand):
+    """goal x/y = 박스 + s x (균일 샘플 - 박스), s = env._goalxy_scale (0이면 VerticalLiftPoseCommand, 1이면 UniformPoseCommand)."""
+
+    def _resample_command(self, env_ids):
+        super()._resample_command(env_ids)
+        obj = self._env.scene["object"]
+        obj_pos_b, _ = subtract_frame_transforms(
+            self.robot.data.root_pos_w.torch[env_ids],
+            self.robot.data.root_quat_w.torch[env_ids],
+            obj.data.root_pos_w.torch[env_ids],
+        )
+        s = getattr(self._env, "_goalxy_scale", 0.0)
+        self.pose_command_b[env_ids, :2] = obj_pos_b[:, :2] + s * (self.pose_command_b[env_ids, :2] - obj_pos_b[:, :2])
+
+
+def set_env_attrs(env, env_ids, attrs: dict):
+    """startup: 커리큘럼이 올리는 env 속성을 바로 정한다 (평가 cfg에서 최종 상태로 두는 용도)."""
+    for k, v in attrs.items():
+        setattr(env, k, v)
+
+
+def _box_obs_bias(env) -> dict:
+    """에피소드마다 고정되는 박스 pose 관측 오프셋: pos (n, 3), base z축 yaw quat (n, 4). 에피소드 첫 관측에서 다시 뽑는다."""
+    n, dev = env.num_envs, env.device
+    st = env.__dict__.get("_box_obs_bias")
+    if st is None:
+        st = {
+            "pos": torch.zeros(n, 3, device=dev),
+            "quat": torch.tensor([0.0, 0.0, 0.0, 1.0], device=dev).repeat(n, 1),
+            "step": -1,
+        }
+        env._box_obs_bias = st
+    if st["step"] != env.common_step_counter:
+        st["step"] = env.common_step_counter
+        fresh = env.episode_length_buf == 0
+        k = int(fresh.sum())
+        if k:
+            st["pos"][fresh] = torch.empty(k, 3, device=dev).uniform_(-BOX_OBS_BIAS_POS, BOX_OBS_BIAS_POS)
+            yaw = torch.empty(k, device=dev).uniform_(-BOX_OBS_BIAS_YAW, BOX_OBS_BIAS_YAW)
+            st["quat"][fresh] = quat_from_angle_axis(yaw, torch.tensor([0.0, 0.0, 1.0], device=dev).repeat(k, 1))
+    return st
+
+
+def object_position_dropout_biased(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """object_position_dropout + 에피소드 고정 오프셋(BOX_OBS_BIAS_POS). (num_envs, 3)"""
+    pos = mdp.object_position_in_robot_root_frame(env, robot_cfg, object_cfg) + _box_obs_bias(env)["pos"]
+    return _box_obs_with_dropout(env, "object_position", pos)
+
+
+def object_orientation_dropout_biased(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """object_orientation_dropout + 에피소드 고정 yaw 오프셋(BOX_OBS_BIAS_YAW, base z축). (num_envs, 4), xyzw, w>=0"""
+    quat = quat_mul(_box_obs_bias(env)["quat"], object_orientation_in_robot_root_frame(env, robot_cfg, object_cfg))
+    sign = torch.where(quat[:, 3:4] >= 0.0, 1.0, -1.0)
+    return _box_obs_with_dropout(env, "object_orientation", quat * sign)
+
+
+def _static_friction_of(env, asset, body_name: str | None = None) -> torch.Tensor:
+    """asset(root_view)의 env별 정지 마찰 (num_envs,) 또는 body_name의 shape 평균. 실패하면 0."""
+    try:
+        mats = wp.to_torch(asset.root_view.get_material_properties()).to(env.device)  # (n, shapes, 3)
+        if body_name is None:
+            return mats[:, :, 0].mean(dim=-1)
+        counts = env.__dict__.setdefault("_shape_counts", {}).get(id(asset))
+        if counts is None:
+            counts = [asset._physics_sim_view.create_rigid_body_view(p).max_shapes for p in asset.root_view.link_paths[0]]
+            env._shape_counts[id(asset)] = counts
+        b = asset.body_names.index(body_name)
+        s0 = sum(counts[:b])
+        return mats[:, s0 : s0 + counts[b], 0].mean(dim=-1)
+    except Exception:  # noqa: BLE001 - 백엔드가 다르면 critic 입력만 0이 된다
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+def box_dr_privileged(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=DUAL_ARM_JOINT_NAMES, preserve_order=True),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    action_name: str = "arm_action",
+) -> torch.Tensor:
+    """critic 전용 DR 값 (num_envs, 14), 대략 [-1, 1]: 박스 정지 마찰, 왼·오른판 정지 마찰, 박스 질량 배율-1, 크기 배율-1 (y, z),
+    왼·오른팔 강성 배율-1, 왼·오른팔 감쇠 배율-1, 관절 상태 지연, 명령 지연, 비전 지연, 비전 끊김.
+
+    마찰·질량·크기는 startup DR이라 한 번 읽어 캐시한다(관측 manager가 차원을 재는 첫 호출은 startup 전이라 common_step_counter가
+    0인 동안은 매번 다시 읽는다). ramp_friction_on_success가 재질을 바꾸면 캐시를 지운다.
+    """
+    robot, obj = env.scene[robot_cfg.name], env.scene[object_cfg.name]
+    cache = env.__dict__.get("_box_dr_cache")
+    if cache is None or not cache["final"]:
+        hy, hz = _box_halves(env, object_cfg)
+        size = env.cfg.scene.object.spawn.size
+        cache = {
+            "final": env.common_step_counter > 0,
+            "mu_box": _static_friction_of(env, obj),
+            "mu_plate": torch.stack([_static_friction_of(env, robot, f"{s}_fr3_link7") for s in ("left", "right")], -1),
+            "mass": obj.data.body_mass.torch[:, 0].to(env.device) / BOX410_MASS - 1.0,
+            "size": torch.stack([hy / (size[1] / 2) - 1.0, hz / (size[2] / 2) - 1.0], -1),
+        }
+        env._box_dr_cache = cache
+    # Sim2Real cfg는 explicit PD라 sim 쪽 data.joint_stiffness는 0이고 게인(DR 포함)은 actuator 모델에 있다
+    ids = robot_cfg.joint_ids
+    k_all = torch.zeros(env.num_envs, robot.num_joints, device=env.device)
+    d_all = torch.zeros_like(k_all)
+    for act in robot.actuators.values():
+        k_all[:, act.joint_indices] = act.stiffness
+        d_all[:, act.joint_indices] = act.damping
+    k = k_all[:, ids] / 80.0 - 1.0
+    d = d_all[:, ids] / 4.0 - 1.0
+    gains = torch.stack([k[:, :7].mean(-1), k[:, 7:].mean(-1), d[:, :7].mean(-1), d[:, 7:].mean(-1)], -1) / 0.15
+    term = env.action_manager.get_term(action_name)
+    n, dev = env.num_envs, env.device
+    obs_delay = getattr(term, "obs_delay", None)
+    obs_delay = obs_delay / max(CURR_JOINT_STATE_DELAY_S[1], 1e-6) if obs_delay is not None else torch.zeros(n, device=dev)
+    cmd_delay = getattr(term, "cmd_delay", None)
+    cmd_delay = cmd_delay.float() / max(CURR_COMMAND_DELAY_STEPS[1], 1) if cmd_delay is not None else torch.zeros(n, device=dev)
+    vis = _box_obs_dropout_mask(env)
+    return torch.cat(
+        [
+            cache["mu_box"].unsqueeze(-1),
+            cache["mu_plate"],
+            (cache["mass"] / 0.2).unsqueeze(-1),
+            cache["size"] / max(BOX_SIZE_DR_M / min(env.cfg.scene.object.spawn.size), 1e-6),
+            gains,
+            obs_delay.unsqueeze(-1),
+            cmd_delay.unsqueeze(-1),
+            (vis["delay"].float() / BOX_OBS_DELAY_STEPS).unsqueeze(-1),
+            vis["drop"].float().unsqueeze(-1),
+        ],
+        dim=-1,
+    )
+
+
+def plate_face_z_excess(
+    env,
+    deadband: float = GRASP_HEIGHT_DEADBAND,
+    finger1_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    finger2_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    threshold: float = 1.0,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """양 판이 닿은 동안 판 TCP와 담당 면 중심의 높이 차 중 deadband를 넘는 만큼의 합 (m). plate_face_z_offset의 deadband 판."""
+    ee_frame = env.scene[ee_frame_cfg.name]
+    li, ri, _, face_l, face_r, _, _ = _face_dists(env, object_cfg, ee_frame_cfg)
+    p = ee_frame.data.target_pos_w.torch
+    ex_l = ((p[:, li, 2] - face_l[:, 2]).abs() - deadband).clamp(min=0.0)
+    ex_r = ((p[:, ri, 2] - face_r[:, 2]).abs() - deadband).clamp(min=0.0)
+    return (ex_l + ex_r) * mdp.object_grasped(env, finger1_sensor_cfg, finger2_sensor_cfg, threshold)
+
+
+def joint_mirror_drift(env, asset_cfg: SceneEntityCfg, deadband: float = J1_MIRROR_DRIFT_DEADBAND) -> torch.Tensor:
+    """거울 대칭 오차 (q_L + q_R)의 에피소드 시작 대비 변화량 중 deadband를 넘는 만큼 (rad). asset_cfg = (left_jN, right_jN).
+
+    joint_mirror_error(절대값)는 표 시작의 비대칭(박스 y에 비례)을 그대로 벌하므로, 시작값을 기준으로 삼아 잡는 동안의 비틀림만 본다.
+    기준은 에피소드 첫 보상 step(한 step 뒤)의 값이다.
+    """
+    q = env.scene[asset_cfg.name].data.joint_pos.torch[:, asset_cfg.joint_ids]
+    s = q[:, 0] + q[:, 1]
+    refs = env.__dict__.setdefault("_mirror_drift_ref", {})
+    key = tuple(asset_cfg.joint_ids)
+    ref = refs.get(key)
+    if ref is None:
+        ref = s.clone()
+        refs[key] = ref
+    fresh = env.episode_length_buf <= 1
+    ref[fresh] = s[fresh]
+    return ((s - ref).abs() - deadband).clamp(min=0.0)
+
+
+def plate_on_box_top(
+    env,
+    margin: float = HOVER_TOP_MARGIN,
+    threshold: float = 1.0,
+    left_sensor_cfg: SceneEntityCfg = SceneEntityCfg("left_plate_object_contact"),
+    right_sensor_cfg: SceneEntityCfg = SceneEntityCfg("right_plate_object_contact"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """박스에 닿은 판 중 TCP가 박스 윗면 - margin보다 높은 판의 수 (0~2): 호버에서 내려오며 윗면을 누르는 것."""
+    obj = env.scene[object_cfg.name]
+    top = obj.data.root_pos_w.torch[:, 2] + _box_halves(env, object_cfg)[1]
+    ee_frame = env.scene[ee_frame_cfg.name]
+    li, ri = _ee_lr_indices(ee_frame)
+    out = torch.zeros(env.num_envs, device=env.device)
+    for cfg, idx in ((left_sensor_cfg, li), (right_sensor_cfg, ri)):
+        f = torch.norm(env.scene.sensors[cfg.name].data.force_matrix_w.torch, dim=-1).amax(dim=(-1, -2))
+        above = ee_frame.data.target_pos_w.torch[:, idx, 2] > top - margin
+        out += ((torch.nan_to_num(f, nan=0.0) > threshold) & above).float()
+    return out
+
+
+def reset_from_pregrasp_or_hover(
+    env,
+    env_ids,
+    table_path: str,
+    box_pos_noise: float,
+    box_yaw_noise: float,
+    joint_noise: float,
+    q_left: tuple,
+    q_right: tuple,
+    box_x_range: tuple,
+    box_y_range: tuple,
+    box_yaw: float,
+    mix: float | None = None,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+):
+    """reset: 표(reset_from_pregrasp_table)로 놓은 뒤, env마다 확률 mix(없으면 env._hover_mix, 커리큘럼 0 -> 1)로 호버 시작으로 바꾼다.
+
+    호버: 양팔 관절 = q_left/q_right(+-joint_noise, 박스 위치와 무관한 고정 자세), 박스는 바닥 안착 높이에서 x·y·yaw 균일.
+    env._hover_start(bool, num_envs)에 이번 에피소드의 시작 종류를 남긴다(평가 도구용).
+    """
+    reset_from_pregrasp_table(env, env_ids, table_path, box_pos_noise, box_yaw_noise, joint_noise, robot_cfg, object_cfg)
+    robot, obj = env.scene[robot_cfg.name], env.scene[object_cfg.name]
+    if env_ids is None or isinstance(env_ids, slice):
+        env_ids = torch.arange(env.num_envs, device=env.device)
+    flag = env.__dict__.get("_hover_start")
+    if flag is None:
+        flag = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        env._hover_start = flag
+    p = getattr(env, "_hover_mix", 0.0) if mix is None else mix
+    pick = torch.rand(len(env_ids), device=env.device) < p
+    flag[env_ids] = pick
+    ids = env_ids[pick]
+    n = len(ids)
+    if n == 0:
+        return
+    q_hover = env.__dict__.get("_hover_q")
+    if q_hover is None:
+        q_hover = robot.data.default_joint_pos.torch[0].clone()
+        for side, q in (("left", q_left), ("right", q_right)):
+            for i, v in enumerate(q, start=1):
+                q_hover[robot.joint_names.index(f"{side}_fr3_joint{i}")] = v
+        env._hover_q = q_hover
+    limits = robot.data.joint_pos_limits.torch[ids]
+    q = q_hover.unsqueeze(0) + (2 * torch.rand(n, q_hover.shape[0], device=env.device) - 1) * joint_noise
+    q = torch.minimum(torch.maximum(q, limits[..., 0]), limits[..., 1])
+    robot.write_joint_position_to_sim_index(position=q, env_ids=ids)
+    robot.write_joint_velocity_to_sim_index(velocity=torch.zeros_like(q), env_ids=ids)
+    robot.set_joint_position_target_index(target=q, env_ids=ids)
+    robot.set_joint_velocity_target_index(target=torch.zeros_like(q), env_ids=ids)
+
+    pos = torch.zeros(n, 3, device=env.device)
+    pos[:, 0] = torch.empty(n, device=env.device).uniform_(*box_x_range)
+    pos[:, 1] = torch.empty(n, device=env.device).uniform_(*box_y_range)
+    pos[:, 2] = _box_halves(env, object_cfg)[1][ids]  # 바닥 안착 (크기 DR 반영)
+    pos += env.scene.env_origins[ids]
+    yaw = (2 * torch.rand(n, device=env.device) - 1) * box_yaw
+    z = torch.zeros(n, 3, device=env.device)
+    z[:, 2] = 1.0
+    quat = quat_from_angle_axis(yaw, z)
+    obj.write_root_pose_to_sim_index(root_pose=torch.cat([pos, quat], -1), env_ids=ids)
+    obj.write_root_velocity_to_sim_index(root_velocity=torch.zeros(n, 6, device=env.device), env_ids=ids)
+
+
+def _apply_box_curriculum(cfg, flags: dict) -> None:
+    """GoalXY(5499 최종 상태) cfg를 처음부터 배우는 커리큘럼으로 바꾸고 flags의 후보 항목을 넣는다."""
+    # 5499 계보가 이어 학습용으로 즉시 켰던 shaping을 -1e-4에서 success 뒤 ramp로 되돌린다 (curriculum 항은 이미 있다)
+    for name in ("plate_face_tilt", "plate_face_offcenter", "min_squeeze"):
+        getattr(cfg.rewards, name).weight = -1e-4
+    cfg.curriculum.yawtrack.params.update(trigger=CURR_YAWTRACK_TRIGGER, ramp_steps=CURR_YAWTRACK_RAMP_STEPS)
+
+    if flags["friction_ramp"]:
+        box_start = {"static_friction_range": (0.4, 1.2), "dynamic_friction_range": (0.3, 1.0)}
+        box_end = {"static_friction_range": SOFTLIFT_BOX_FRICTION_STATIC, "dynamic_friction_range": SOFTLIFT_BOX_FRICTION_DYNAMIC}
+        plate_start = {"static_friction_range": (0.5, 0.5), "dynamic_friction_range": (0.45, 0.45)}
+        plate_end = {
+            "static_friction_range": SOFTLIFT_PLATE_FRICTION_STATIC,
+            "dynamic_friction_range": SOFTLIFT_PLATE_FRICTION_DYNAMIC,
+        }
+        cfg.events.randomize_box_friction.params.update(box_start)
+        cfg.events.randomize_plate_friction.params.update(plate_start)
+        for name, start, end in (
+            ("randomize_box_friction", box_start, box_end),
+            ("randomize_plate_friction", plate_start, plate_end),
+        ):
+            setattr(
+                cfg.curriculum,
+                name.replace("randomize_", "friction_"),
+                CurrTerm(func=ramp_friction_on_success, params={"term_name": name, "start": start, "end": end}),
+            )
+    if not flags["size_dr"]:
+        cfg.events.randomize_box_size.params["scale_range"] = {"x": (1.0, 1.0), "y": (1.0, 1.0), "z": (1.0, 1.0)}
+    if flags["goalxy_ramp"]:
+        cfg.commands.object_pose.class_type = MixedGoalXYPoseCommand
+        cfg.curriculum.goalxy = CurrTerm(
+            func=ramp_env_scale_on_success,
+            params={"attr": "_goalxy_scale", "trigger": CURR_GOALXY_TRIGGER, "ramp_steps": CURR_GOALXY_RAMP_STEPS},
+        )
+    if flags["joint_delay"]:
+        arm = cfg.actions.arm_action
+        cfg.actions.arm_action = DelayedReachRelativeJointPositionActionCfg(
+            asset_name=arm.asset_name,
+            joint_names=arm.joint_names,
+            preserve_order=arm.preserve_order,
+            scale=arm.scale,
+            clip=arm.clip,
+            reference_mode="policy_step",
+            target_limits=arm.target_limits,
+            obs_delay_range_s=CURR_JOINT_STATE_DELAY_S,
+            cmd_delay_steps_range=CURR_COMMAND_DELAY_STEPS,
+        )
+        cfg.observations.policy.joint_pos.func = joint_pos_rel_delayed
+    if flags["camera_bias"]:
+        cfg.observations.policy.object_position.func = object_position_dropout_biased
+        cfg.observations.policy.object_orientation.func = object_orientation_dropout_biased
+    if flags["grasp_height"]:
+        cfg.rewards.plate_face_z_excess = RewTerm(func=plate_face_z_excess, weight=-1e-4)
+        cfg.curriculum.plate_face_z_excess = CurrTerm(
+            func=ramp_reward_weight_on_success,
+            params={"term_name": "plate_face_z_excess", "weight": GRASP_HEIGHT_WEIGHT, "ramp_steps": FLATSQUEEZE_RAMP_STEPS},
+        )
+    if flags["j1_mirror"]:
+        cfg.rewards.j1_mirror = RewTerm(
+            func=joint_mirror_drift,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=["left_fr3_joint1", "right_fr3_joint1"], preserve_order=True),
+                "deadband": J1_MIRROR_DRIFT_DEADBAND,
+            },
+            weight=J1_MIRROR_DRIFT_WEIGHT,
+        )
+    if flags["hover"]:
+        cfg.episode_length_s = HOVER_EPISODE_S
+        # goal은 reset에만 뽑는다 (기본 (5, 5)는 6 s 에피소드 도중에 바뀐다)
+        cfg.commands.object_pose.resampling_time_range = (HOVER_EPISODE_S + 1.0, HOVER_EPISODE_S + 1.0)
+        cfg.events.reset_from_pregrasp.func = reset_from_pregrasp_or_hover
+        cfg.events.reset_from_pregrasp.params.update(
+            q_left=HOVER_Q_LEFT,
+            q_right=HOVER_Q_RIGHT,
+            box_x_range=HOVER_BOX_X_RANGE,
+            box_y_range=HOVER_BOX_Y_RANGE,
+            box_yaw=HOVER_BOX_YAW,
+        )
+        cfg.rewards.plate_on_box_top = RewTerm(func=plate_on_box_top, weight=HOVER_TOP_CONTACT_WEIGHT)
+        cfg.curriculum.hover_mix = CurrTerm(
+            func=ramp_env_scale_on_success,
+            params={"attr": "_hover_mix", "trigger": CURR_HOVER_TRIGGER, "ramp_steps": CURR_HOVER_RAMP_STEPS},
+        )
+    if flags["critic_dr"]:
+        cfg.observations.critic.dr_privileged = ObsTerm(func=box_dr_privileged)
+    if flags["obs_history"]:
+        # 그룹 설정이 항마다 CircularBuffer를 만든다: 항별 (N, dim)을 오래된 것 -> 최신으로 펴서 항 순서대로 이어 붙임, 리셋 직후는 첫 관측 반복
+        cfg.observations.policy.history_length = OBS_HISTORY_STEPS
+        cfg.observations.policy.flatten_history_dim = True
+
+
+def _apply_box_curriculum_final(cfg, flags: dict, hover_mix: float) -> None:
+    """평가 cfg: 커리큘럼이 끝난 상태로 고정한다 (마찰 SOFTLIFT, goal xy 독립, 호버 비율 hover_mix, shaping 최종 weight)."""
+    if flags["friction_ramp"]:
+        cfg.events.randomize_box_friction.params.update(
+            static_friction_range=SOFTLIFT_BOX_FRICTION_STATIC, dynamic_friction_range=SOFTLIFT_BOX_FRICTION_DYNAMIC
+        )
+        cfg.events.randomize_plate_friction.params.update(
+            static_friction_range=SOFTLIFT_PLATE_FRICTION_STATIC, dynamic_friction_range=SOFTLIFT_PLATE_FRICTION_DYNAMIC
+        )
+        cfg.curriculum.friction_box_friction = None
+        cfg.curriculum.friction_plate_friction = None
+    attrs = {"_goalxy_scale": 1.0, "_hover_mix": hover_mix, "_yawtrack_scale": 1.0, "_disturb_scale": 1.0, "_qprime_scale": 1.0}
+    cfg.events.curriculum_final = EventTerm(func=set_env_attrs, mode="startup", params={"attrs": attrs})
+    if flags["goalxy_ramp"]:
+        cfg.curriculum.goalxy = None
+    if flags["hover"]:
+        cfg.curriculum.hover_mix = None
+    for name, weight in (
+        ("plate_face_tilt", FLATSQUEEZE_TILT_WEIGHT),
+        ("plate_face_offcenter", FLATSQUEEZE_OFFCENTER_WEIGHT),
+        ("min_squeeze", MINSQUEEZE_WEIGHT),
+        ("box_lift_accel", SOFTLIFT_ACCEL_WEIGHT),
+        ("plate_box_slip", SLIP_WEIGHT),
+        ("box_yaw_drift", BOX_YAW_DRIFT_WEIGHT),
+    ):
+        getattr(cfg.rewards, name).weight = weight
+    if flags["grasp_height"]:
+        cfg.rewards.plate_face_z_excess.weight = GRASP_HEIGHT_WEIGHT
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_FaceGrip_BoxDrop_FlatSqueeze_LowMuSoftLift_GoalXY
+):
+    """5499(GoalXY)의 보상·관측·행동을 처음부터 한 run으로 배우는 커리큘럼 + 후보 항목 전부 (BOX_CURRICULUM_FLAGS). from-scratch.
+
+    - 보상 ramp: FaceGrip·FlatSqueeze·SoftLift 항은 -1e-4에서 success EMA 3 뒤 각자의 ramp(계보와 같음). yawtrack은 Scratch처럼 EMA 1.5.
+    - 환경 ramp: goal xy(EMA 3, 200 iter) -> 마찰(EMA 4, 400 iter, reset마다 재배정) -> 호버 시작 혼합(EMA 5, 400 iter).
+    - actor 관측은 5499와 같은 항·차원(policy 그룹)이라 배포 노드를 그대로 쓴다. critic은 DR 값 14D가 더해져 5499 checkpoint는 못 읽는다.
+    - 호버가 켜지면 에피소드 6 s. 평가는 *_PLAY(커리큘럼 최종 상태, 표 50 % + 호버 50 %), *_PLAY_TABLE, *_PLAY_HOVER.
+    ablation은 _flags를 덮어쓴 하위 클래스로 만든다 (예: 아래 NoHover).
+    """
+
+    def _flags(self) -> dict:
+        return dict(BOX_CURRICULUM_FLAGS)
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_box_curriculum(self, self._flags())
+
+
+def _curriculum_play(cfg, hover_mix: float) -> None:
+    cfg.scene.num_envs = 50
+    cfg.scene.env_spacing = 3.0
+    cfg.observations.policy.enable_corruption = False
+    _apply_box_curriculum_final(cfg, cfg._flags(), hover_mix)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum
+):
+    """Curriculum 평가 cfg: 커리큘럼 최종 상태, 시작은 표 50 % + 호버 50 % (DR·지연·끊김은 켜 둔다)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _curriculum_play(self, 0.5 if self._flags()["hover"] else 0.0)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_PLAY_TABLE(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum
+):
+    """Curriculum 평가 cfg: 표(접근 끝) 시작만. 5499 평가와 같은 조건."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _curriculum_play(self, 0.0)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_PLAY_HOVER(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum
+):
+    """Curriculum 평가 cfg: 호버 시작만."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _curriculum_play(self, 1.0)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoHover(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum
+):
+    """Curriculum에서 호버 시작만 뺀 ablation (에피소드 4 s, 표 시작만)."""
+
+    def _flags(self) -> dict:
+        return {**BOX_CURRICULUM_FLAGS, "hover": False}
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoHover_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoHover
+):
+    def __post_init__(self):
+        super().__post_init__()
+        _curriculum_play(self, 0.0)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_History(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum
+):
+    """Curriculum + actor 관측 OBS_HISTORY_STEPS step 쌓기 (56 x 4 = 224D). 낮은 마찰 적응(미끄럼 전에 μ를 알 수 없음)을 보는 ablation.
+
+    배포하려면 노드가 항별로 같은 순서(오래된 것 -> 최신)로 쌓고 첫 step은 현재 관측으로 채워야 한다.
+    """
+
+    def _flags(self) -> dict:
+        return {**BOX_CURRICULUM_FLAGS, "obs_history": True}
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_History_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_History
+):
+    def __post_init__(self):
+        super().__post_init__()
+        _curriculum_play(self, 0.5)

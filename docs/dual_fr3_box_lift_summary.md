@@ -149,3 +149,9 @@ sim 비교 (Isaac, 1024 env, 4 s, DR·외란. 미끄럼은 512 env `sim_slip_pro
 | 5499 보고서 | `fr3_husky_etri/docs/dual_fr3_boxlift_5499_report.md` |
 
 평가 스크립트(`box_rl_eval_dr.py`, `sim_slip_probe.py`, `real_slip_table.py` 등)는 아직 저장소 밖(임시 작업 폴더)에 있다. 다시 쓰려면 저장소로 옮겨야 한다.
+
+## 커리큘럼 단일 정책 (2026-11-12 환경 완성, 학습 전)
+
+5499의 네 단계를 처음부터 한 run으로 배우는 `Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-Curriculum-v0`
+(critic DR 값, 마찰·goal xy·호버 시작 ramp, 작은 관절 지연, 카메라 오프셋, 파지 높이·j1 거울 벌점, 전부 on). actor는 5499와 같은 56D.
+항목 설명·평가·ablation 절차는 `docs/dual_fr3_curriculum_eval.md`.

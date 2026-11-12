@@ -478,3 +478,14 @@ class LiftPlateSim2Real100HzLightBox410WideJ1MirrorFaceGripBoxDropFlatSqueezeLow
     """Sim2Real-100Hz-Light-Box410-Wide-J1Mirror-FaceGrip-BoxDrop-FlatSqueeze-LowMuSoftLift-GoalFine: 같은 actor/critic 그룹, dedicated log namespace."""
 
     experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_box410_wide_j1mirror_facegrip_boxdrop_flatsqueeze_lowmusoftlift_goalfine"
+
+
+@configclass
+class LiftPlateSim2Real100HzLightPregraspWideRollAlignCurriculumPPORunnerCfg(
+    LiftPlateSim2Real100HzLightPregraspWideRollAlignFaceGripBoxDropScratchPPORunnerCfg
+):
+    """Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-Curriculum: actor는 policy 그룹(5499와 같은 차원), critic은 critic 그룹(실제 박스 pose
+    + DR 값 14D). 한 run에 5499 계보 네 단계를 모두 넣으므로 6000 iter."""
+
+    max_iterations = 6000
+    experiment_name = "dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_curriculum"

@@ -1582,3 +1582,26 @@ gym.register(
     },
     disable_env_checker=True,
 )
+
+# Pregrasp-Wide-RollAlign-Curriculum (2026-11-10): 5499 보상을 처음부터 한 run으로 + 후보 항목 전부(critic DR, 마찰·goal xy·호버 ramp,
+# 관절 지연, 카메라 오프셋, 파지 높이, j1 거울). 평가는 Play(표 50 %/호버 50 %), Play-Table, Play-Hover. docs/dual_fr3_curriculum_eval.md
+# 로그 dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_curriculum
+for _suffix, _cls in (
+    ("", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum"),
+    ("-Play", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_PLAY"),
+    ("-Play-Table", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_PLAY_TABLE"),
+    ("-Play-Hover", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_PLAY_HOVER"),
+    ("-NoHover", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoHover"),
+    ("-NoHover-Play", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoHover_PLAY"),
+    ("-History", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_History"),
+    ("-History-Play", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_History_PLAY"),
+):
+    gym.register(
+        id=f"Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-Curriculum{_suffix}-v0",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.joint_pos_env_cfg:{_cls}",
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:LiftPlateSim2Real100HzLightPregraspWideRollAlignCurriculumPPORunnerCfg",
+        },
+        disable_env_checker=True,
+    )

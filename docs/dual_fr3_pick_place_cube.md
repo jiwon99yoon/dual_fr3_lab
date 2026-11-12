@@ -480,3 +480,8 @@ python scripts/tools/eval_dual_fr3_pick_place_grasp.py --headless --task Isaac-P
   - Pinto et al.(RSS 2018): Fetch, asymmetric actor-critic + DR, Pick 5/5.
   - MuJoCo Playground(2025): Franka 큐브 들기 12/12, 그리퍼 지연을 최대 250 ms까지 무작위로 넣었어요.
 - 우리는 그리퍼 지연을 실측값(최대 0.9 s + 대기)으로 넣었는데, 이렇게 한 레퍼런스는 찾지 못했어요. 성공 2.5 cm는 레퍼런스 수준이에요.
+
+## 커리큘럼 단일 정책 (2026-11-12 환경 완성, 학습 전)
+
+GripperBusy + CriticPlus + 기울기·끌기 금지·손가락 힘 벌점 커리큘럼 + 그리퍼 settle 0.8~1.2 s + Near 범위 ramp를 한 run에 넣은
+`Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-v0` (actor 37D 그대로). 항목·평가·ablation 절차는 `docs/dual_fr3_curriculum_eval.md`.

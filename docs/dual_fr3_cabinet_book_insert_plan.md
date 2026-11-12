@@ -104,7 +104,7 @@ plate·cube lift 때처럼 rule-based로 작업이 물리적으로 되는지, �
 | 4 | 왼손은 손잡이를 UMI 그리퍼로 쥔 형태. v1은 손잡이에 왼손을 붙인다(제약). 손가락 관절은 손잡이 두께에 맞춰 고정 |
 | 5 | 성공: 책 중심이 캐비닛 내부 중심 근처(일정 깊이 이상). 정확한 기준은 rule-based를 보고 정한다 |
 | 6 | 그리퍼는 손잡이·책 두께에 맞는 열림으로 고정. 행동은 팔 관절 14개 |
-| 7 | codex `cabinet_insert`는 두고 새 task를 따로 만든다 |
+| 7 | codex `cabinet_insert`는 두고 새 task를 따로 만든다 (2026-11-10: codex `cabinet_insert` task, `content/cabinet/` MJCF, 미리보기 스크립트 2개는 커밋하지 않은 채 지웠다. 책 넣기 task가 대신하고, 캐비닛 MJCF는 `assets/cabinet_book/cabinet_book_insert.xml`에 고친 사본이 있다) |
 | 8 | 실로봇에 UMI 그리퍼가 있고 실물 캐비닛도 있다(준헌 description). 처음부터 plate와 같은 sim2real 계약으로 만든다 |
 | 9 | husky 고정. 캐비닛 높이는 실물 기준. 테이블 높이는 조절 가능하므로 workspace에 맞춘다 |
 

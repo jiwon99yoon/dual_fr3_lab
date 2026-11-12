@@ -132,3 +132,24 @@ gym.register(
     },
     disable_env_checker=True,
 )
+
+# -Curriculum (11-10): GripperBusy + CriticPlus + 기울기·끌기·손가락 힘 벌점 커리큘럼 + 그리퍼 settle 0.8~1.2 s + Near 범위 ramp
+gym.register(
+    id="Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.pick_place_env_cfg:DualFR3PickPlaceCubeCurriculumEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PickPlaceCubeCurriculumPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-Play-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.pick_place_env_cfg:DualFR3PickPlaceCubeCurriculumEnvCfg_PLAY",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PickPlaceCubeCurriculumPPORunnerCfg",
+    },
+    disable_env_checker=True,
+)

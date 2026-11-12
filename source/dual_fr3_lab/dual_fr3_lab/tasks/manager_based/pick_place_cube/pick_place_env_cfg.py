@@ -597,3 +597,95 @@ class DualFR3PickPlaceCubeGripperBusyNearEnvCfg_PLAY(DualFR3PickPlaceCubeGripper
     def __post_init__(self):
         super().__post_init__()
         _apply_play(self)
+
+
+# ---------- -Curriculum (2026-11-10): 11-09 실험 변형과 후보 항목 전부를 한 run에 ----------
+# 기준은 GripperBusy(4000 계보: busy 비트, 실물 그리퍼 지연, 큐브 pose 오프셋). 항목은 CUBE_CURRICULUM_FLAGS로 켜고 끄고, 결과를 보고
+# 나쁜 것을 빼는 ablation 절차는 docs/dual_fr3_curriculum_eval.md.
+from dual_fr3_lab.tasks.manager_based.lift_plate.joint_pos_env_cfg import set_env_attrs  # noqa: E402  # isort: skip
+
+CUBE_CURRICULUM_FLAGS = {
+    "critic_plus": True,  # critic에 그리퍼 내부 상태 8D + DR 값 7D (4090 B: 파지·운반 기울기 작음)
+    "tilt": True,  # 기울기 15° 초과 벌점 -5, 들기(reach_held EMA 0.5)를 배운 뒤
+    "carry_strict": True,  # 놓기(reach_placed EMA 0.3)를 배운 뒤 들었던 큐브를 끌면 HELD가 아님 (목표 5 cm 안은 예외)
+    "finger_force": True,  # 손가락-책상 접촉력 비례 벌점 (20 N에 -2/s, 100 N에 -10/s). 닿음 0/1 벌점 -5는 그대로
+    "gripper_settle": True,  # 그리퍼 멈춤 -> result 대기 0.8~1.2 s (sim 기본 0.3~0.4)
+    "near_ramp": True,  # 책상은 처음부터 -Near(앞 모서리 0.30), 큐브 시작·목표 x 0.45~0.65 -> 0.35~0.65 ramp (놓기를 배운 뒤 200 iter)
+}
+GRIPPER_SETTLE_REAL_S = (0.8, 1.2)
+CUBE_TILT_WEIGHT = -5.0
+CUBE_TILT_KEY, CUBE_TILT_THRESHOLD = "reach_held", 0.5
+FINGER_FORCE_WEIGHT = -2.0
+CUBE_NEAR_RAMP_STEPS = 4800  # 200 iter
+
+
+def _apply_cube_curriculum(cfg, flags: dict) -> None:
+    if flags["critic_plus"]:
+        _add_critic_plus(cfg)
+    if flags["tilt"]:
+        cfg.rewards.cube_tilt_excess = RewTerm(
+            func=mdp.cube_tilt_excess, params={"threshold_deg": mdp.TILT_EXCESS_DEG}, weight=-1e-4
+        )
+        cfg.curriculum.cube_tilt_excess = CurrTerm(
+            func=mdp.modify_reward_weight_on_placed,
+            params={"term_name": "cube_tilt_excess", "weight": CUBE_TILT_WEIGHT, "threshold": CUBE_TILT_THRESHOLD, "key": CUBE_TILT_KEY},
+        )
+    if flags["carry_strict"]:
+        cfg.curriculum.carry_strict = CurrTerm(
+            func=mdp.set_env_attr_on_placed, params={"attr": "_pp_carry_strict", "threshold": LEARNED_THRESHOLD}
+        )
+    if flags["finger_force"]:
+        cfg.rewards.finger_table_force = RewTerm(func=mdp.finger_table_force_norm, weight=FINGER_FORCE_WEIGHT)
+    if flags["gripper_settle"]:
+        cfg.actions.gripper_action.settle_range_s = GRIPPER_SETTLE_REAL_S
+    if flags["near_ramp"]:
+        _apply_near_table(cfg)
+        cfg.events.reset_cube.params["x_range"] = mdp.CUBE_X_B
+        cfg.commands.goal_pose.ranges.pos_x = mdp.CUBE_X_B
+        cfg.curriculum.near_x = CurrTerm(
+            func=mdp.ramp_cube_x_range_on_placed,
+            params={
+                "start": mdp.CUBE_X_B,
+                "end": mdp.NEAR_CUBE_X_B,
+                "ramp_steps": CUBE_NEAR_RAMP_STEPS,
+                "threshold": LEARNED_THRESHOLD,
+            },
+        )
+
+
+def _apply_cube_curriculum_final(cfg, flags: dict) -> None:
+    """평가 cfg: 커리큘럼 최종 상태 (기울기 벌점 최종, 끌기 금지, Near 전체 범위)."""
+    if flags["tilt"]:
+        cfg.rewards.cube_tilt_excess.weight = CUBE_TILT_WEIGHT
+        cfg.curriculum.cube_tilt_excess = None
+    if flags["carry_strict"]:
+        cfg.events.curriculum_final = EventTerm(func=set_env_attrs, mode="startup", params={"attrs": {"_pp_carry_strict": 1.0}})
+        cfg.curriculum.carry_strict = None
+    if flags["near_ramp"]:
+        cfg.events.reset_cube.params["x_range"] = mdp.NEAR_CUBE_X_B
+        cfg.commands.goal_pose.ranges.pos_x = mdp.NEAR_CUBE_X_B
+        cfg.curriculum.near_x = None
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumEnvCfg(DualFR3PickPlaceCubeGripperBusyEnvCfg):
+    """GripperBusy(4000 계보) + 후보 항목 전부 (CUBE_CURRICULUM_FLAGS), 처음부터 한 run.
+
+    actor는 GripperBusy와 같은 37D라 배포 노드를 그대로 쓴다. critic은 CriticPlus(38D)라 4000 checkpoint는 못 읽는다.
+    ablation은 _flags를 덮어쓴 하위 클래스로 만든다.
+    """
+
+    def _flags(self) -> dict:
+        return dict(CUBE_CURRICULUM_FLAGS)
+
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_cube_curriculum(self, self._flags())
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumEnvCfg_PLAY(DualFR3PickPlaceCubeCurriculumEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_play(self)
+        _apply_cube_curriculum_final(self, self._flags())

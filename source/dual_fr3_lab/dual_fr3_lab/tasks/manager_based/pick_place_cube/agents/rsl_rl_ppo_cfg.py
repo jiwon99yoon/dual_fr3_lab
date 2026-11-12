@@ -41,3 +41,11 @@ class PickPlaceCubeGripperBusyCriticPlusPPORunnerCfg(PickPlaceCubePPORunnerCfg):
 @configclass
 class PickPlaceCubeCriticPlusPPORunnerCfg(PickPlaceCubePPORunnerCfg):
     experiment_name = "dual_fr3_pick_place_cube_critic_plus"
+
+
+@configclass
+class PickPlaceCubeCurriculumPPORunnerCfg(PickPlaceCubePPORunnerCfg):
+    """-Curriculum: 후보 항목 전부, 한 run. 4000 계보는 6000 iter까지 봤다."""
+
+    max_iterations = 6000
+    experiment_name = "dual_fr3_pick_place_cube_curriculum"
