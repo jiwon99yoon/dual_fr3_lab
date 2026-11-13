@@ -49,3 +49,28 @@ class PickPlaceCubeCurriculumPPORunnerCfg(PickPlaceCubePPORunnerCfg):
 
     max_iterations = 6000
     experiment_name = "dual_fr3_pick_place_cube_curriculum"
+
+
+@configclass
+class PickPlaceCubeCurriculumNoNearPPORunnerCfg(PickPlaceCubeCurriculumPPORunnerCfg):
+    experiment_name = "dual_fr3_pick_place_cube_curriculum_nonear"
+
+
+@configclass
+class PickPlaceCubeCurriculumNoNearNoTiltPPORunnerCfg(PickPlaceCubeCurriculumPPORunnerCfg):
+    experiment_name = "dual_fr3_pick_place_cube_curriculum_nonear_notilt"
+
+
+@configclass
+class PickPlaceCubeCurriculumNoNearNoTiltNoFingerPPORunnerCfg(PickPlaceCubeCurriculumPPORunnerCfg):
+    experiment_name = "dual_fr3_pick_place_cube_curriculum_nonear_notilt_nofinger"
+
+
+@configclass
+class PickPlaceCubeCurriculumNoNearNoTiltNoSettlePPORunnerCfg(PickPlaceCubeCurriculumPPORunnerCfg):
+    experiment_name = "dual_fr3_pick_place_cube_curriculum_nonear_notilt_nosettle"
+
+
+@configclass
+class PickPlaceCubeCurriculumNoTiltPPORunnerCfg(PickPlaceCubeCurriculumPPORunnerCfg):
+    experiment_name = "dual_fr3_pick_place_cube_curriculum_notilt"

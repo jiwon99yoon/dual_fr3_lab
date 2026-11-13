@@ -704,3 +704,95 @@ class DualFR3PickPlaceCubeCurriculumEnvCfg_PLAY(DualFR3PickPlaceCubeCurriculumEn
         super().__post_init__()
         _apply_play(self)
         _apply_cube_curriculum_final(self, self._flags())
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumNoNearEnvCfg(DualFR3PickPlaceCubeCurriculumEnvCfg):
+    """Curriculum에서 Near 배치·x ramp만 끈 ablation (기준 배치 x 0.45~0.65, 앞 모서리 0.40). run 2(80 %)가 Near 때문인지 가른다 (11-12)."""
+
+    def _flags(self) -> dict:
+        return {**CUBE_CURRICULUM_FLAGS, "near_ramp": False}
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumNoNearEnvCfg_PLAY(DualFR3PickPlaceCubeCurriculumNoNearEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_play(self)
+        _apply_cube_curriculum_final(self, self._flags())
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumNoNearNoTiltEnvCfg(DualFR3PickPlaceCubeCurriculumNoNearEnvCfg):
+    """NoNear 위에 tilt(기울기 15° 초과 벌점 −5 커리큘럼)만 더 끈 ablation; 기본 cube_tilt −2는 남는다 (11-13, 평가 md §6 순서 1)."""
+
+    def _flags(self) -> dict:
+        return {**super()._flags(), "tilt": False}
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumNoNearNoTiltEnvCfg_PLAY(DualFR3PickPlaceCubeCurriculumNoNearNoTiltEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_play(self)
+        _apply_cube_curriculum_final(self, self._flags())
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumNoNearNoTiltNoFingerEnvCfg(DualFR3PickPlaceCubeCurriculumNoNearNoTiltEnvCfg):
+    """NoNear+NoTilt 위에 finger_force(손가락−책상 힘 비례 벌점 −2)만 더 끈 ablation; 기본 finger_table −5는 남는다 (11-13, 평가 md §6 순서 2)."""
+
+    def _flags(self) -> dict:
+        return {**super()._flags(), "finger_force": False}
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumNoNearNoTiltNoFingerEnvCfg_PLAY(DualFR3PickPlaceCubeCurriculumNoNearNoTiltNoFingerEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_play(self)
+        _apply_cube_curriculum_final(self, self._flags())
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumNoNearNoTiltNoSettleEnvCfg(DualFR3PickPlaceCubeCurriculumNoNearNoTiltEnvCfg):
+    """NoNear+NoTilt 위에 gripper_settle(result 대기 0.8~1.2 s)만 더 끈 ablation → sim 기본 0.3~0.4 s. finger_force는 유지
+    (NoFinger는 최대 접촉력 7 → 11~15 N, 성공 92 → 83 %라 보류 안 함; 11-13, 평가 md §6 순서 3)."""
+
+    def _flags(self) -> dict:
+        return {**super()._flags(), "gripper_settle": False}
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumNoNearNoTiltNoSettleEnvCfg_PLAY(DualFR3PickPlaceCubeCurriculumNoNearNoTiltNoSettleEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_play(self)
+        _apply_cube_curriculum_final(self, self._flags())
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumNoTiltEnvCfg(DualFR3PickPlaceCubeCurriculumEnvCfg):
+    """전부 on에서 tilt만 끈 조합 = NoNear-NoTilt(5999 92/90 %) + Near 배치·x ramp. run 2(전부 on, 80 %)가 낮았던 게 Near 탓인지
+    tilt에 가려진 것인지 가리고, Near(x 0.35~0.65)를 배포에 쓸 수 있는지 본다 (11-13, 평가 md §7)."""
+
+    def _flags(self) -> dict:
+        return {**super()._flags(), "tilt": False}
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumNoTiltEnvCfg_PLAY(DualFR3PickPlaceCubeCurriculumNoTiltEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        _apply_play(self)
+        _apply_cube_curriculum_final(self, self._flags())
+
+
+@configclass
+class DualFR3PickPlaceCubeCurriculumEnvCfg_PLAY_NEAREND(DualFR3PickPlaceCubeCurriculumEnvCfg_PLAY):
+    """Curriculum 평가: 큐브 시작·목표 x를 Near 범위의 앞쪽 끝(0.35~0.45)만으로 (평가 md §4.2-4)."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.reset_cube.params["x_range"] = (mdp.NEAR_CUBE_X_B[0], 0.45)
+        self.commands.goal_pose.ranges.pos_x = (mdp.NEAR_CUBE_X_B[0], 0.45)

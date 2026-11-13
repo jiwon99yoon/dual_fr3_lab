@@ -92,6 +92,23 @@ parser.add_argument("--save_table", default=None, help="with --pregrasp_gap: wri
 parser.add_argument("--seed", type=int, default=None, help="env seed (DR samples)")
 parser.add_argument("--box_size", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"),
                     help="[m] box size: x front-back, y grip direction, z height (env: 0.555 0.475 0.275)")
+# rule-based vs RL comparison on the Pregrasp/GoalXY tasks (2026-11-13)
+parser.add_argument("--from_pregrasp", action="store_true",
+                    help="start in APPROACH from the env's own start pose (Pregrasp tasks): plates keep their height and squeeze in")
+parser.add_argument("--pregrasp_grip_dz", type=float, default=None,
+                    help="[m] with --from_pregrasp: squeeze at box centre + this instead of the start-table height (e.g. -0.03 = RL 5499)")
+parser.add_argument("--carry_xy", action="store_true", help="LIFT moves the box to the goal x/y as well as z (GoalXY tasks)")
+parser.add_argument("--obs_pose", action="store_true",
+                    help="drive the controller with the box pose the policy observes (noise/delay/dropout with --corrupt), not the truth")
+parser.add_argument("--corrupt", action="store_true", help="enable the policy observation corruption (Play cfgs turn it off)")
+parser.add_argument("--kp_scale", type=float, default=None, help="arm PD stiffness scale")
+parser.add_argument("--box_mu", type=float, nargs=2, default=None, help="box static friction range (dynamic = 0.85x)")
+parser.add_argument("--plate_mu", type=float, nargs=2, default=None,
+                    help="plate (link7) static friction range (dynamic = 0.85x); needs randomize_plate_friction")
+parser.add_argument("--push_t", type=float, default=None, help="[s] apply a box wrench from this time (use with --disturb 0)")
+parser.add_argument("--push_dur", type=float, default=0.3, help="[s] push duration")
+parser.add_argument("--push_force", type=float, nargs=3, default=(0.0, 0.0, 0.0), help="world-frame force on the box [N]")
+parser.add_argument("--push_torque", type=float, nargs=3, default=(0.0, 0.0, 0.0), help="world-frame torque on the box [Nm]")
 parser.add_argument("--video", default=None, help="write an mp4 of every env from three cameras (use few envs)")
 parser.add_argument("--video_size", type=int, nargs=2, default=(640, 480), metavar=("W", "H"))
 parser.add_argument("--log", default=None, help="write per-step arrays (phase, plates, joints, commands, forces) to .npz")
@@ -233,6 +250,21 @@ def main():
         # _box_halves() and every size-dependent term read spawn.size; spawn 2 cm above the floor like the env
         cfg.scene.object.spawn.size = tuple(args.box_size)
         cfg.scene.object.init_state.pos = (*cfg.scene.object.init_state.pos[:2], args.box_size[2] / 2 + 0.0225)
+    if args.corrupt:
+        cfg.observations.policy.enable_corruption = True
+    if args.kp_scale is not None:
+        for name in ("arms_shoulder", "arms_forearm"):
+            act = cfg.scene.robot.actuators[name]
+            act.stiffness = act.stiffness * args.kp_scale
+    if args.box_mu is not None:
+        cfg.events.randomize_box_friction.params.update(
+            static_friction_range=tuple(args.box_mu), dynamic_friction_range=tuple(0.85 * v for v in args.box_mu))
+    if args.plate_mu is not None:
+        cfg.events.randomize_plate_friction.params.update(
+            static_friction_range=tuple(args.plate_mu), dynamic_friction_range=tuple(0.85 * v for v in args.plate_mu))
+    print(f"[cfg] obs corruption {cfg.observations.policy.enable_corruption}, kp_scale {args.kp_scale},"
+          f" box mu {cfg.events.randomize_box_friction.params['static_friction_range']},"
+          f" mass {cfg.events.randomize_box_density.params['mass_distribution_params']}")
     if args.video:
         cfg.scene.env_spacing = 8.0  # keep the neighbours out of the frame
         for k in range(len(VIEWS)):
@@ -272,7 +304,9 @@ def main():
         cols = [k for k, nm in enumerate(names) if nm.startswith(side)]
         arms[side] = (body, cols, [jids[k] for k in cols])
     offset = torch.tensor(PLATE_TCP_OFFSET_POS, device=dev).repeat(n, 1)
-    q_ready = T(robot.data.default_joint_pos)
+    # null-space target: the ready pose, or the start-table pose with --from_pregrasp (the table is far from ready,
+    # and the pull toward ready would dominate the small DOWN/APPROACH task errors)
+    q_ready = T(robot.data.joint_pos).clone() if args.from_pregrasp else T(robot.data.default_joint_pos)
     lim = torch.tensor(FR3_JOINT_POS_LIMITS, device=dev)
     # the limits the arm action clamps q_target to (Light-Margin: FCI limits minus 0.05 rad)
     tlim = torch.tensor(term.cfg.target_limits, device=dev) if term.cfg.target_limits is not None else lim.repeat(2, 1)
@@ -306,11 +340,36 @@ def main():
         cmd = raw.command_manager.get_command("object_pose")[:, :3]
         return T(robot.data.root_pos_w) + quat_apply(T(robot.data.root_quat_w), cmd) - origin
 
+    # the box pose the policy observes (robot-root frame, with the cfg's noise/delay/dropout), read back from the last
+    # computed observation so the corruption state is not advanced twice
+    om = raw.observation_manager
+    sl, k0 = {}, 0
+    for nm, d in zip(om.active_terms["policy"], om.group_obs_term_dim["policy"]):
+        size = int(np.prod(d))
+        sl[nm] = slice(k0, k0 + size)
+        k0 += size
+
+    def box_pose_obs():
+        ob = raw.obs_buf["policy"]
+        rp, rq = T(robot.data.root_pos_w), T(robot.data.root_quat_w)
+        c = rp + quat_apply(rq, ob[:, sl["object_position"]]) - origin
+        q = quat_mul(rq, ob[:, sl["object_orientation"]])
+        q = q / torch.norm(q, dim=-1, keepdim=True)
+        tilt = torch.rad2deg(torch.acos(quat_apply(q, up)[:, 2].clamp(-1, 1)))
+        y_b = quat_apply(q, ey)
+        y_b[:, 2] = 0.0
+        return c, q, tilt, y_b / torch.norm(y_b, dim=-1, keepdim=True)
+
+    if args.obs_pose:
+        assert "object_position" in sl and "object_orientation" in sl, f"policy obs terms: {list(sl)}"
+    ctrl_pose = box_pose_obs if args.obs_pose else box_pose
+
     mass = T(box.data.body_mass)[:, 0].clone()
     mu = wp.to_torch(box.root_view.get_material_properties())[:, 0, 0].clone().to(dev)
 
     # ---- per-env state ----
-    c0, _, _, yb0 = box_pose()
+    c0, _, _, _ = box_pose()  # truth, for the metrics
+    cc0, _, _, yb0 = ctrl_pose()  # what the controller works from
     phase = torch.zeros(n, dtype=torch.long, device=dev)
     tph = torch.zeros(n, dtype=torch.long, device=dev)
     ref_p, ref_q, fin_p, fin_q = {}, {}, {}, {}
@@ -320,8 +379,8 @@ def main():
         z_cur = quat_apply(q, up)
         fin_q[side] = edge_aligned_quat(q, n_des, yb0) if args.roll_align else quat_mul(shortest_arc(z_cur, n_des), q)
         ref_p[side], ref_q[side] = p.clone(), q.clone()
-        f = c0 + s * (hy + args.pre_gap)[:, None] * yb0
-        f[:, 2] = c0[:, 2] + hz + 0.10
+        f = cc0 + s * (hy + args.pre_gap)[:, None] * yb0
+        f[:, 2] = cc0[:, 2] + hz + 0.10
         fin_p[side] = f
         if args.trace >= 0:
             i = args.trace
@@ -352,11 +411,41 @@ def main():
     pg_still = torch.zeros(n, dtype=torch.long, device=dev)
     pg_touch = torch.zeros(n, device=dev)
     face =(hy + args.pregrasp_gap) if pregrasp else (hy - args.depth)
-    log = {k: [] for k in ("phase", "dq", "q", "qd", "tcp", "ref", "force", "box")}
+    lift_dxy = torch.zeros(n, 2, device=dev)
+    grip_z = None  # per-side plate height to squeeze at; None = box centre + grip_dz
+    if args.from_pregrasp:
+        # the env already put the plates at the start table (outside the faces): squeeze straight in at that height
+        # with --pregrasp_grip_dz the plates first go DOWN (same x/y) to that height, then APPROACH as usual
+        grip_z = {}
+        if args.pregrasp_grip_dz is not None:
+            grip_z, args.grip_dz = None, args.pregrasp_grip_dz
+        start = APPROACH if grip_z is not None else DOWN
+        phase[:] = start
+        t_phase[:, HIGH] = -1
+        t_phase[:, start] = 0
+        for side, s in SIGN.items():
+            p, q, _ = tcp(side)
+            if grip_z is not None:
+                grip_z[side] = p[:, 2].clone()
+                inside = cc0 + s * face[:, None] * yb0
+                inside[:, 2] = grip_z[side]
+            else:
+                inside = p.clone()
+                inside[:, 2] = cc0[:, 2] + args.grip_dz
+            fin_p[side] = inside
+            ref_p[side] = p.clone()
+            q_lock = edge_aligned_quat(q, -s * yb0, yb0) if args.roll_align else quat_mul(shortest_arc(quat_apply(q, up), -s * yb0), q)
+            fin_q[side], ref_q[side] = q_lock, q_lock.clone()
+
+    def plate_z(side, cc):
+        return grip_z[side] if grip_z is not None else cc[:, 2] + args.grip_dz
+
+    log = {k: [] for k in ("phase", "dq", "q", "qd", "tcp", "ref", "force", "box", "tilt")}
     ref_v = {side: torch.zeros(n, device=dev) for side in SIGN}  # reference speed, with --a_ref
 
     for step in range(args.steps):
-        c, _, tilt, y_b = box_pose()
+        c, _, tilt, y_b = box_pose()  # truth (metrics, pre-grasp table)
+        cc, _, _, y_bc = ctrl_pose()  # controller input
         f = plate_forces()
         errs = {}
         for side in SIGN:
@@ -381,23 +470,27 @@ def main():
         if go.any():
             for side, s in SIGN.items():
                 to_down = go & (nxt == DOWN)
-                fin_p[side][to_down, 2] = (c[:, 2] + args.grip_dz)[to_down]
+                fin_p[side][to_down, 2] = plate_z(side, cc)[to_down]
                 to_app = go & (nxt == APPROACH)
-                inside = c + s * face[:, None] * y_b
-                inside[:, 2] = c[:, 2] + args.grip_dz
+                inside = cc + s * face[:, None] * y_bc
+                inside[:, 2] = plate_z(side, cc)
                 fin_p[side][to_app] = inside[to_app]
                 # from here the plate roll is servoed too: it is the box pitch axis once the box is squeezed
                 _, q_now, _ = tcp(side)
                 if args.roll_align:
-                    q_lock = edge_aligned_quat(q_now, -s * y_b, y_b)
+                    q_lock = edge_aligned_quat(q_now, -s * y_bc, y_bc)
                 else:
-                    q_lock = quat_mul(shortest_arc(quat_apply(q_now, up), -s * y_b), q_now)
+                    q_lock = quat_mul(shortest_arc(quat_apply(q_now, up), -s * y_bc), q_now)
                 fin_q[side][to_app] = q_lock[to_app]
                 ref_q[side][to_app] = q_lock[to_app]
             to_lift = go & (nxt == LIFT)
-            lift_dz = torch.where(to_lift, goal_env()[:, 2] - c[:, 2], lift_dz)
+            lift_dz = torch.where(to_lift, goal_env()[:, 2] - cc[:, 2], lift_dz)
+            if args.carry_xy:
+                lift_dxy = torch.where(to_lift[:, None], goal_env()[:, :2] - cc[:, :2], lift_dxy)
             for side in SIGN:
                 fin_p[side][to_lift, 2] += lift_dz[to_lift]
+                if args.carry_xy:
+                    fin_p[side][to_lift, :2] += lift_dxy[to_lift]
             phase = torch.where(go, nxt, phase)
             tph = torch.where(go, torch.zeros_like(tph), tph)
             t_phase[go, phase[go]] = step
@@ -406,8 +499,8 @@ def main():
         track = (phase == APPROACH) & (f.amax(-1) < 1.0)
         if track.any():
             for side, s in SIGN.items():
-                inside = c + s * face[:, None] * y_b
-                inside[:, 2] = c[:, 2] + args.grip_dz
+                inside = cc + s * face[:, None] * y_bc
+                inside[:, 2] = plate_z(side, cc)
                 fin_p[side][track] = inside[track]
         if pregrasp:
             # record once the reference has arrived and the arms have stopped (reached or blocked by a limit);
@@ -523,11 +616,19 @@ def main():
             log["qd"].append(T(robot.data.joint_vel)[:, jids].clone())
             log["tcp"].append(torch.stack([tcp(sd)[0] for sd in SIGN], 1))
             log["ref"].append(torch.stack([ref_p[sd] for sd in SIGN], 1))
+        if args.push_t is not None:
+            k0, k1 = round(args.push_t / dt), round((args.push_t + args.push_dur) / dt)
+            if k0 <= step <= k1:
+                on = float(k0 <= step < k1)
+                box.set_external_force_and_torque(torch.tensor(args.push_force, device=dev).repeat(n, 1, 1) * on,
+                                                  torch.tensor(args.push_torque, device=dev).repeat(n, 1, 1) * on,
+                                                  is_global=True)
         env.step(actions)
         tph += 1
         if args.log:
             log["force"].append(plate_forces())
             log["box"].append(box_pose()[0])
+            log["tilt"].append(box_pose()[2])
         in_settle = phase == SETTLE
         f_settle = torch.where(in_settle[:, None], plate_forces(), f_settle)
         c, _, tilt, _ = box_pose()
@@ -546,7 +647,8 @@ def main():
                 f"env {i} (box x {float(box_x0[i]):.2f} m, {float(mass[i]):.2f} kg)  t {(step + 1) * dt:4.1f}s"
                 f"  {NAMES[int(phase[i])]:8s}  lift {100 * float(c[i, 2] - hz[i]):5.1f} cm"
                 f"  tilt {float(tilt[i]):4.1f} deg  F L/R {float(fp[i, 0]):4.1f}/{float(fp[i, 1]):4.1f} N"
-                f"  plate zL-zR {100 * float(dzlr[i]):+4.1f} cm  {'SUCCESS' if t_succ[i] > 0 else ''}")
+                f"  plate zL-zR {100 * float(dzlr[i]):+4.1f} cm  {'SUCCESS' if t_succ[i] > 0 else ''}"
+                f"  {'PUSH' if args.push_t is not None and args.push_t <= step * dt < args.push_t + args.push_dur else ''}")
                 for i in range(n)])
 
         i = args.trace
@@ -665,7 +767,9 @@ def main():
             row.append(f"mu[{mlo:.1f},{mhi:.1f}) {succ[k].float().mean() if k.any() else float('nan'):.2f} ({int(k.sum())})")
         print(f"   mass [{lo:.3f},{hi:.3f}): " + " | ".join(row))
     if args.log:
-        np.savez(args.log, joint_names=np.array(names), dt=dt, box_x0=box_x0.cpu().numpy(),
+        np.savez(args.log, joint_names=np.array(names), dt=dt, box_x0=box_x0.cpu().numpy(), goal=g.cpu().numpy(),
+                 mass=mass.cpu().numpy(), mu=mu.cpu().numpy(),
+                 push=np.array([args.push_t if args.push_t is not None else -1.0, args.push_dur, *args.push_force, *args.push_torque]),
                  **{k: torch.stack(v, 1).cpu().numpy() for k, v in log.items()})  # (env, step, ...)
     if args.video:
         os.makedirs(os.path.dirname(os.path.abspath(args.video)), exist_ok=True)

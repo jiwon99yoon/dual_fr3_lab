@@ -55,6 +55,12 @@ parser.add_argument("--null", type=float, default=0.0,
                     help="null-space pull toward the ready joints, per step (0.2 leaks ~1 cm into the TCP through the damped inverse)")
 parser.add_argument("--lim_k", type=float, default=0.5, help="null-space push away from limits (within 0.3 rad)")
 parser.add_argument("--seed", type=int, default=0)
+# stress conditions shared with eval_dual_fr3_pick_place_grasp.py (rule-based vs RL, 2026-11-13)
+parser.add_argument("--settle", type=float, nargs=2, default=None, help="gripper settle (command -> result) range [s]")
+parser.add_argument("--cube_mu", type=float, nargs=2, default=None, help="cube static friction range (dynamic = 0.85x)")
+parser.add_argument("--mass", type=float, nargs=2, default=None, help="cube mass range [kg]")
+parser.add_argument("--finger_scale", type=float, default=None, help="scale the finger PD stiffness DR range (squeeze force)")
+parser.add_argument("--kp_scale", type=float, default=None, help="arm PD stiffness scale")
 parser.add_argument("--pick", type=float, nargs=2, default=None, help="every env: cube centre x y (base) instead of the random start")
 parser.add_argument("--place", type=float, nargs=2, default=None, help="every env: goal x y (base) instead of the random goal")
 parser.add_argument("--video", default="", help="mp4 path (env 0, needs --enable_cameras)")
@@ -127,6 +133,26 @@ def main():
     cfg.rewards.drop = None
     if args.obs_pose:
         cfg.observations.policy.enable_corruption = True  # the Play cfg turns the noise off
+    if args.settle is not None:
+        cfg.actions.gripper_action.settle_range_s = tuple(args.settle)
+    if args.cube_mu is not None:
+        cfg.events.cube_friction.params.update(static_friction_range=tuple(args.cube_mu),
+                                               dynamic_friction_range=tuple(0.85 * v for v in args.cube_mu))
+    if args.mass is not None:
+        cfg.events.cube_mass.params["mass_distribution_params"] = tuple(args.mass)
+    if args.finger_scale is not None:
+        lo, hi = cfg.events.finger_gains.params["stiffness_distribution_params"]
+        cfg.events.finger_gains.params["stiffness_distribution_params"] = (lo * args.finger_scale, hi * args.finger_scale)
+    if args.kp_scale is not None:
+        acts = dict(cfg.scene.robot.actuators)
+        for k, a in acts.items():
+            if k != "hands":
+                st = a.stiffness
+                acts[k] = a.replace(stiffness={j: v * args.kp_scale for j, v in st.items()} if isinstance(st, dict) else st * args.kp_scale)
+        cfg.scene.robot = cfg.scene.robot.replace(actuators=acts)
+    print(f"[cfg] corruption {cfg.observations.policy.enable_corruption}, settle {getattr(cfg.actions.gripper_action, 'settle_range_s', None)},"
+          f" cube mu {cfg.events.cube_friction.params['static_friction_range']}, mass {cfg.events.cube_mass.params['mass_distribution_params']},"
+          f" finger stiffness scale {cfg.events.finger_gains.params['stiffness_distribution_params']}, arm kp scale {args.kp_scale}")
     cfg.commands.goal_pose.resampling_time_range = (args.duration + 1.0, args.duration + 1.0)
     if args.finger_stiffness is not None:
         actuators = dict(cfg.scene.robot.actuators)
@@ -400,6 +426,8 @@ def main():
           f"released, TCP {100 * mdp.HAND_CLEAR:.0f} cm above the cube) | first success "
           f"{np.nanmin(t_success.cpu().numpy()) if ok.any() else float('nan'):.2f}-"
           f"{np.nanmax(t_success.cpu().numpy()) if ok.any() else float('nan'):.2f} s")
+    reached = ~torch.isnan(t_success)
+    print(f"[rule] success reached at least once {int(reached.sum())}/{n} (same count as the RL eval's 'stages reached ... success')")
     ts = t_success[success].cpu().numpy()
     if len(ts):
         print(f"[rule] first success time: median {np.median(ts):.2f} s, p90 {np.percentile(ts, 90):.2f} s, max {ts.max():.2f} s, "

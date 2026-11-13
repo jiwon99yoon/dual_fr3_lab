@@ -4970,6 +4970,7 @@ BOX_CURRICULUM_FLAGS = {
     "size_dr": True,  # 박스 크기 ±BOX_SIZE_DR_M. prestartup(USD scale)이라 커리큘럼이 안 되고 처음부터 켠다
     "goalxy_ramp": True,  # goal xy를 박스 위(수직 들기)에서 독립 샘플(x 0.40~0.50, y ±0.10)로 ramp. 끄면 처음부터 독립
     "joint_delay": True,  # 관절 상태 0~10 ms, 명령 0~1 물리 step 지연 (DR task의 절반)
+    "vision_delay": True,  # 박스 pose 관측의 비전 지연 0~150 ms + 끊김(BOX_OBS_*, BoxDrop 계보). 끄면 지연·끊김 없이 현재 pose (오프셋·노이즈는 그대로)
     "camera_bias": True,  # 박스 pose 관측에 에피소드마다 고정되는 오프셋 ±1 cm, yaw ±3°
     "grasp_height": True,  # 판 중심이 면 중심에서 GRASP_HEIGHT_DEADBAND 넘게 벗어난 높이 벌점 (성공 뒤 ramp)
     "j1_mirror": True,  # j1 거울 대칭 drift 벌점 (시작 자세 기준, 처음부터)
@@ -5237,6 +5238,25 @@ def object_orientation_dropout_biased(
     return _box_obs_with_dropout(env, "object_orientation", quat * sign)
 
 
+def object_position_biased(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """박스 위치 + 에피소드 고정 오프셋(BOX_OBS_BIAS_POS), 비전 지연·끊김 없음 (vision_delay off). (num_envs, 3)"""
+    return mdp.object_position_in_robot_root_frame(env, robot_cfg, object_cfg) + _box_obs_bias(env)["pos"]
+
+
+def object_orientation_biased(
+    env,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+) -> torch.Tensor:
+    """박스 orientation + 에피소드 고정 yaw 오프셋, 비전 지연·끊김 없음 (vision_delay off). (num_envs, 4), xyzw, w>=0"""
+    quat = quat_mul(_box_obs_bias(env)["quat"], object_orientation_in_robot_root_frame(env, robot_cfg, object_cfg))
+    return quat * torch.where(quat[:, 3:4] >= 0.0, 1.0, -1.0)
+
+
 def _static_friction_of(env, asset, body_name: str | None = None) -> torch.Tensor:
     """asset(root_view)의 env별 정지 마찰 (num_envs,) 또는 body_name의 shape 평균. 실패하면 0."""
     try:
@@ -5259,9 +5279,11 @@ def box_dr_privileged(
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot", joint_names=DUAL_ARM_JOINT_NAMES, preserve_order=True),
     object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
     action_name: str = "arm_action",
+    vision_delay: bool = True,
 ) -> torch.Tensor:
     """critic 전용 DR 값 (num_envs, 14), 대략 [-1, 1]: 박스 정지 마찰, 왼·오른판 정지 마찰, 박스 질량 배율-1, 크기 배율-1 (y, z),
     왼·오른팔 강성 배율-1, 왼·오른팔 감쇠 배율-1, 관절 상태 지연, 명령 지연, 비전 지연, 비전 끊김.
+    관절·명령 지연은 action term에 없으면 0, 비전 지연·끊김은 vision_delay=False면 0 (차원은 그대로라 ablation끼리 checkpoint 호환).
 
     마찰·질량·크기는 startup DR이라 한 번 읽어 캐시한다(관측 manager가 차원을 재는 첫 호출은 startup 전이라 common_step_counter가
     0인 동안은 매번 다시 읽는다). ramp_friction_on_success가 재질을 바꾸면 캐시를 지운다.
@@ -5295,7 +5317,10 @@ def box_dr_privileged(
     obs_delay = obs_delay / max(CURR_JOINT_STATE_DELAY_S[1], 1e-6) if obs_delay is not None else torch.zeros(n, device=dev)
     cmd_delay = getattr(term, "cmd_delay", None)
     cmd_delay = cmd_delay.float() / max(CURR_COMMAND_DELAY_STEPS[1], 1) if cmd_delay is not None else torch.zeros(n, device=dev)
-    vis = _box_obs_dropout_mask(env)
+    if vision_delay:
+        vis = _box_obs_dropout_mask(env)
+    else:
+        vis = {"delay": torch.zeros(n, device=dev), "drop": torch.zeros(n, dtype=torch.bool, device=dev)}
     return torch.cat(
         [
             cache["mu_box"].unsqueeze(-1),
@@ -5490,9 +5515,14 @@ def _apply_box_curriculum(cfg, flags: dict) -> None:
             cmd_delay_steps_range=CURR_COMMAND_DELAY_STEPS,
         )
         cfg.observations.policy.joint_pos.func = joint_pos_rel_delayed
-    if flags["camera_bias"]:
-        cfg.observations.policy.object_position.func = object_position_dropout_biased
-        cfg.observations.policy.object_orientation.func = object_orientation_dropout_biased
+    # 박스 pose 관측: 카메라 고정 오프셋(camera_bias) x 비전 지연·끊김(vision_delay). 둘 다 켜면 오프셋을 더한 값을 늦추고 끊는다
+    obs_funcs = {
+        (True, True): (object_position_dropout_biased, object_orientation_dropout_biased),
+        (True, False): (object_position_biased, object_orientation_biased),
+        (False, True): (object_position_dropout, object_orientation_dropout),
+        (False, False): (mdp.object_position_in_robot_root_frame, object_orientation_in_robot_root_frame),
+    }[(flags["camera_bias"], flags["vision_delay"])]
+    cfg.observations.policy.object_position.func, cfg.observations.policy.object_orientation.func = obs_funcs
     if flags["grasp_height"]:
         cfg.rewards.plate_face_z_excess = RewTerm(func=plate_face_z_excess, weight=-1e-4)
         cfg.curriculum.plate_face_z_excess = CurrTerm(
@@ -5522,7 +5552,7 @@ def _apply_box_curriculum(cfg, flags: dict) -> None:
         cfg.rewards.plate_on_box_top = RewTerm(func=plate_on_box_top, weight=HOVER_TOP_CONTACT_WEIGHT)
         cfg.curriculum.hover_mix = CurrTerm(func=stage_env_scale, params={"attr": "_hover_mix", "stage": "hover"})
     if flags["critic_dr"]:
-        cfg.observations.critic.dr_privileged = ObsTerm(func=box_dr_privileged)
+        cfg.observations.critic.dr_privileged = ObsTerm(func=box_dr_privileged, params={"vision_delay": flags["vision_delay"]})
     if flags["obs_history"]:
         # 그룹 설정이 항마다 CircularBuffer를 만든다: 항별 (N, dim)을 오래된 것 -> 최신으로 펴서 항 순서대로 이어 붙임, 리셋 직후는 첫 관측 반복
         cfg.observations.policy.history_length = OBS_HISTORY_STEPS
@@ -5658,6 +5688,67 @@ class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curr
 @configclass
 class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_History_PLAY(
     DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_History
+):
+    def __post_init__(self):
+        super().__post_init__()
+        _curriculum_play(self, 0.5)
+
+
+# ---------- 지연 ablation (2026-11-13, KRoC): Curriculum v2(4090 run 2, 21ef198, model_5999)에서 지연 항만 끈다 ----------
+# 지연 항: 비전 = 박스 pose 0~150 ms 지연 + 끊김(vision_delay), 관절 = 관절 상태 0~10 ms + 명령 0~10 ms(joint_delay).
+# 제어 구조(20 Hz policy-step 목표 유지, 토크 변화율 1000 Nm/s, ±0.1 rad clip)는 지연 DR이 아니라 끄지 않는다.
+# actor 56D·critic 70D가 v2와 같아 어느 checkpoint든 v2 -Play(지연 전부 on)와 각 ablation -Play(해당 지연 off)에서 평가할 수 있다.
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoDelay(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum
+):
+    """Curriculum v2에서 지연 DR 전부 off: 비전 지연·끊김 없음, 관절 상태·명령 지연 없음."""
+
+    def _flags(self) -> dict:
+        return {**BOX_CURRICULUM_FLAGS, "vision_delay": False, "joint_delay": False}
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoDelay_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoDelay
+):
+    def __post_init__(self):
+        super().__post_init__()
+        _curriculum_play(self, 0.5)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoVisionDelay(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum
+):
+    """Curriculum v2에서 비전 지연·끊김만 off (관절 상태·명령 지연은 그대로)."""
+
+    def _flags(self) -> dict:
+        return {**BOX_CURRICULUM_FLAGS, "vision_delay": False}
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoVisionDelay_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoVisionDelay
+):
+    def __post_init__(self):
+        super().__post_init__()
+        _curriculum_play(self, 0.5)
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoJointDelay(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum
+):
+    """Curriculum v2에서 관절 상태·명령 지연만 off (비전 지연·끊김은 그대로)."""
+
+    def _flags(self) -> dict:
+        return {**BOX_CURRICULUM_FLAGS, "joint_delay": False}
+
+
+@configclass
+class DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoJointDelay_PLAY(
+    DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoJointDelay
 ):
     def __post_init__(self):
         super().__post_init__()

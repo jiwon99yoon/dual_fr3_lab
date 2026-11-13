@@ -1595,6 +1595,13 @@ for _suffix, _cls in (
     ("-NoHover-Play", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoHover_PLAY"),
     ("-History", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_History"),
     ("-History-Play", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_History_PLAY"),
+    # 지연 ablation (11-13): v2에서 지연 DR 전부 / 비전 지연·끊김 / 관절 상태·명령 지연을 끈 것
+    ("-NoDelay", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoDelay"),
+    ("-NoDelay-Play", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoDelay_PLAY"),
+    ("-NoVisionDelay", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoVisionDelay"),
+    ("-NoVisionDelay-Play", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoVisionDelay_PLAY"),
+    ("-NoJointDelay", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoJointDelay"),
+    ("-NoJointDelay-Play", "DualFR3PlateBoxLiftEnvCfg_Sim2Real100Hz_Light_Pregrasp_Wide_RollAlign_Curriculum_NoJointDelay_PLAY"),
 ):
     gym.register(
         id=f"Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-Curriculum{_suffix}-v0",

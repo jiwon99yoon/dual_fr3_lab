@@ -153,3 +153,31 @@ gym.register(
     },
     disable_env_checker=True,
 )
+
+# -Curriculum ablation (11-12): Near 배치·x ramp만 끔 (기준 배치). Play-NearEnd: Curriculum 정책을 x 0.35~0.45만으로 평가
+for _id, _cls, _runner in (
+    ("Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-NoNear-v0", "DualFR3PickPlaceCubeCurriculumNoNearEnvCfg", "PickPlaceCubeCurriculumNoNearPPORunnerCfg"),
+    ("Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-NoNear-Play-v0", "DualFR3PickPlaceCubeCurriculumNoNearEnvCfg_PLAY", "PickPlaceCubeCurriculumNoNearPPORunnerCfg"),
+    ("Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-Play-NearEnd-v0", "DualFR3PickPlaceCubeCurriculumEnvCfg_PLAY_NEAREND", "PickPlaceCubeCurriculumPPORunnerCfg"),
+    # NoNear + tilt off (11-13 ablation 1)
+    ("Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-NoNear-NoTilt-v0", "DualFR3PickPlaceCubeCurriculumNoNearNoTiltEnvCfg", "PickPlaceCubeCurriculumNoNearNoTiltPPORunnerCfg"),
+    ("Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-NoNear-NoTilt-Play-v0", "DualFR3PickPlaceCubeCurriculumNoNearNoTiltEnvCfg_PLAY", "PickPlaceCubeCurriculumNoNearNoTiltPPORunnerCfg"),
+    # NoNear + NoTilt + finger_force off (11-13 ablation 2)
+    ("Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-NoNear-NoTilt-NoFinger-v0", "DualFR3PickPlaceCubeCurriculumNoNearNoTiltNoFingerEnvCfg", "PickPlaceCubeCurriculumNoNearNoTiltNoFingerPPORunnerCfg"),
+    ("Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-NoNear-NoTilt-NoFinger-Play-v0", "DualFR3PickPlaceCubeCurriculumNoNearNoTiltNoFingerEnvCfg_PLAY", "PickPlaceCubeCurriculumNoNearNoTiltNoFingerPPORunnerCfg"),
+    # NoNear + NoTilt + gripper_settle off (11-13 ablation 3; finger_force는 유지)
+    ("Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-NoNear-NoTilt-NoSettle-v0", "DualFR3PickPlaceCubeCurriculumNoNearNoTiltNoSettleEnvCfg", "PickPlaceCubeCurriculumNoNearNoTiltNoSettlePPORunnerCfg"),
+    ("Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-NoNear-NoTilt-NoSettle-Play-v0", "DualFR3PickPlaceCubeCurriculumNoNearNoTiltNoSettleEnvCfg_PLAY", "PickPlaceCubeCurriculumNoNearNoTiltNoSettlePPORunnerCfg"),
+    # Near on + tilt off (11-13 ablation 4: run 2의 80 %가 Near 탓인지)
+    ("Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-NoTilt-v0", "DualFR3PickPlaceCubeCurriculumNoTiltEnvCfg", "PickPlaceCubeCurriculumNoTiltPPORunnerCfg"),
+    ("Isaac-PickPlace-Cube-DualFR3-UMI-Curriculum-NoTilt-Play-v0", "DualFR3PickPlaceCubeCurriculumNoTiltEnvCfg_PLAY", "PickPlaceCubeCurriculumNoTiltPPORunnerCfg"),
+):
+    gym.register(
+        id=_id,
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.pick_place_env_cfg:{_cls}",
+            "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:{_runner}",
+        },
+        disable_env_checker=True,
+    )

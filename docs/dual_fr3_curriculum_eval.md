@@ -177,6 +177,28 @@ model_5999 결정적 평가(`eval_dual_fr3_plate_robustness.py`, seed 42, 커리
 - 판단: history 4 step은 학습 속도에만 이득, 최종 정책은 미끄럼 대처가 나쁘다(Peng 2018의 FF+history ≈ FF와 같은 방향). 실물 후보는 v2.
   배포하려면 노드에 4 step 관측 버퍼도 필요하다.
 
+### 박스 지연 ablation (KRoC, 2026-11-13 task 추가, 학습은 4090) — v2에서 지연 DR만 끈다
+
+지연 항은 둘로 묶는다. 제어 구조(20 Hz 목표 유지, 토크 변화율 1000 Nm/s, ±0.1 rad clip)는 지연 DR이 아니라 그대로 둔다.
+
+| 묶음 | 내용 | 플래그 |
+|---|---|---|
+| 비전 (박스 pose 추정) | 에피소드마다 0~150 ms 지연(0~3 policy step) + step마다 2 %로 0.1~1.0 s 끊김(마지막 값 유지) + 에피소드 10 %는 도중부터 끝까지 끊김 | `vision_delay` (11-13 추가, BoxDrop 계보 항을 플래그로) |
+| 관절 | 관절 상태 0~10 ms(`q − q̇·d`, 정책 관측과 목표 기준 q) + 명령 0~1 물리 step(0~10 ms) | `joint_delay` |
+
+| task | 비전 | 관절 | run_name (4090) |
+|---|---|---|---|
+| `-Curriculum-v0` (v2, 기준) | on | on | `curriculum_all_4090_v2` (끝남, model_5999) |
+| `-Curriculum-NoDelay-v0` | off | off | `curriculum_nodelay_4090` |
+| `-Curriculum-NoVisionDelay-v0` | off | on | `curriculum_novisiondelay_4090` |
+| `-Curriculum-NoJointDelay-v0` | on | off | `curriculum_nojointdelay_4090` |
+
+- 카메라 고정 오프셋(±1 cm, yaw ±3°)과 관측 노이즈는 지연이 아니라 모든 run에서 켠다. critic DR 14D의 지연 값은 꺼진 항만 0(차원은 같아 checkpoint 호환).
+- 학습: v2와 같은 seed 42, 4096 env, 6000 iter.
+  `python scripts/rsl_rl/train.py --task Isaac-Lift-Box-DualFR3-Plate-Sim2Real-100Hz-Light-Pregrasp-Wide-RollAlign-Curriculum-NoDelay-v0 --headless --num_envs 4096 --seed 42 --run_name curriculum_nodelay_4090`
+- sim 평가: 각 model_5999를 (a) 자기 `-<Ablation>-Play-v0`(학습 조건), (b) v2 `-Play-v0`(지연 전부 on) 두 곳에서 같은 도구·seed로 본다. 실물 측정 지연 분포를 넣은 평가 env는 bag 분석 뒤 추가.
+- 확인(5070, 11-13): cfg 8개(v2/3 ablation × 학습/Play), NoDelay·NoJointDelay env smoke(관측 56/70D, NoDelay 박스 관측 = 실제 pose + 오프셋 오차 0, 꺼진 지연의 critic 값 0), NoVisionDelay 학습 3 iter.
+
 ### 큐브 run 1 (5070, 2026-11-12 14:00, `curriculum_all_5070`, 2048 env, 1380 iter에서 중단) — carry_strict 보류
 - iter ~500 reach_held 0.9 (들기 습득, 기울기 벌점 −5 켜짐), 560~680 reach_placed 0.10 → 0.31.
 - iter 680 placed EMA 0.3을 넘자 carry_strict·Near x ramp·action/joint_vel/arm_contact 벌점(−0.1/−1)이 같은 iter에 켜짐 →
@@ -184,3 +206,116 @@ model_5999 결정적 평가(`eval_dual_fr3_plate_robustness.py`, seed 42, 커리
 - 해석: 그때까지의 placing이 "책상 위로 끌어서" 놓는 동작이라, 단계를 박탈하는 carry_strict가 켜지자 그 동작 전체가 stage 0이 되고
   정책은 공중에 든 채 버티는 국소해로 갔다. action 벌점 latch는 4000 계보와 같으므로 원인에서 제외.
 - 조치(run 2): carry_strict → 끌기 벌점 `cube_drag` −5/s(placed 0.3 뒤)로 대체, Near ramp는 reach_released 0.3 뒤로 미룸.
+
+### 큐브 run 2 (5070, 2026-11-12 14:34, `curriculum_all_5070_v2`, 2048 env, 6000 iter 완주) — 전부 on(carry_strict 대신 drag_penalty)
+- 학습: held 0.9(iter 500) → 끌기 벌점 −5가 placed 0.3 전(iter ~700)에 켜져 placed 0.12 → 0.006 dip → iter 1700 회복(0.89) → 손 떼기
+  iter 2000(released 0.47) → Near ramp 2000~2200(x 0.35 도달) → 이후 placed 0.75~0.84, success EMA 0.53~0.69(최고 5200)에서 평평.
+- 결정적 평가(`eval_dual_fr3_pick_place_grasp.py`, 128 env, Near 전체 범위 x 0.35~0.65, 종료 포함):
+
+| 체크포인트 | success | placed → released → success | 첫 파지 손가락 끝 높이(책상 위) | 쥘 때 기울기 중앙값 | 운반 최대 기울기 | 손가락−책상 접촉 env / 최대 힘 중앙값 |
+|---|---|---|---|---|---|---|
+| model_5999 | **103/128 (80 %)** | 115 → 114 → 103 | 2.6 cm (목표 5 cm) | 6.7° | 11~16° | 78/128 / 6.9 N |
+| model_5200 | 88/128 (69 %) | 113 → 107 → 88 | 2.6 cm | 10.0° | 12~17° | 89/128 / 5.9 N |
+
+- 비교: 4000 계보 기준 배치 91 %, Near 이어 학습 5999 92.6 %; 4090 scratch(기준 배치, 5000 it) Tilt 84 %, CriticPlus 89 %.
+  → 전부 on + Near 범위 scratch 6000 it는 **80 %**로 낮다. 파지 깊이는 여전히 깊고(2.6 cm, 손가락 힘 벌점이 못 고침; 접촉 env는 103 → 78,
+  최대 힘 136 → 7 N으로 세기만 줄었음), 기울기는 A(28~33°)보다 낫고 B(8~12°)보다는 크다.
+- x 0.35~0.45만(`-Curriculum-Play-NearEnd-v0`, model_5999): success **93/128 (73 %)**, held 116(못 집음 7), 손가락−책상 접촉 95/128 — Near 앞쪽 끝에서
+  집기·책상 찍기가 더 나쁘다. 영상 `…/curriculum_all_5070_v2/videos/play/curriculum_all_model_5999_1env_840step.mp4`.
+- 다음 ablation 후보: (1) `near_ramp` off(기준 배치)로 4000·4090 B와 같은 조건 비교 → 아래 NoNear, (2) x 0.35~0.45 구간만 평가 → 위 NearEnd,
+  (3) 깊은 파지는 벌점으로 안 잡히니 파지점 자체(GRASP_OFFSET)나 tip_floor 상향을 검토.
+
+### 큐브 NoNear ablation (5070, 2026-11-12 18:28, `curriculum_nonear_5070`, 21ef198, 2048 env, 6000 iter 완주) — near_ramp만 off
+- 학습: run 2와 같은 길(held iter 500, 끌기 벌점 dip, 회복)을 가되 손 떼기가 iter 1500~2000에 한 번에 올라옴(released 0.51 → 0.86, run 2는 0.18 → 0.78).
+  success EMA(reach_success) 5999에 0.69(run 2 0.64), Episode_Reward/success 0.52/s(run 2 0.48/s), value loss 130(run 2 165). 둘 다 6000에서 아직 완만히 오르는 중.
+- 결정적 평가(128 env, model_5999). x 범위는 학습한 범위(0.45~0.65)이고 run 2는 Near 전체(0.35~0.65)라 조건이 같지 않다:
+
+| 평가 | NoNear 5999 | run 2 5999 (Near 범위) |
+|---|---|---|
+| 종료 포함(`--keep_terminations`) success | **99/128 (77 %)** (held 116 → placed 108 → released 106) | 103/128 (80 %) |
+| 종료 시 리셋(기본) success | **108/128 (84 %)** (117 → 111 → 111) | 95/128 (74 %) |
+| 첫 파지 손가락 끝 높이 / 큐브 윗면부터 겹침 | **4.5 cm / 5.0 cm** (목표 5 cm) | 2.0 cm / 7.7 cm |
+| 쥘 때 기울기 중앙값 / 최대 | 5.5° / 28° | 6.7° / 21° |
+| 손가락−책상 접촉 env / 최대 힘 중앙값 | 62/128 / 10.3 N | 78/128 / 6.9 N |
+| 운반(HELD) 시간 중앙값 / 목표까지 xy | 0.8 s / 6.3 cm | 1.1 s / 8.4 cm |
+| x 0.35~0.45만(`-Play-NearEnd-v0`, 학습 범위 밖) | 61/128 (48 %), held 88 | 93/128 (73 %) |
+
+- 해석: (1) 성공률은 run 2와 같은 급(77~84 % vs 74~80 %)이고 4000 계보(91 %)·4090 B(89 %)에는 둘 다 못 미친다 → 80 % 언저리는 Near 때문이 아니라
+  전부-on 항목(기울기·손가락 힘·끌기 벌점·settle 1.2 s) 또는 scratch 6000 it 부족 쪽이다. (2) **파지 깊이는 Near가 원인**: Near를 빼자 2.0 → 4.5 cm로
+  목표(5 cm)에 거의 맞고, 책상 접촉 env도 78 → 62. 큐브가 몸쪽(x 0.35~0.45)에 있을수록 손목을 세워 깊게 찍어 쥐는 자세가 되고 그것이 전 범위로 번진 것으로 본다.
+  (3) NoNear는 학습 범위 밖(x 0.35~0.45)에서 48 %라 Near를 쓰려면 ramp 자체는 필요하다.
+- 다음: 실물 책상 배치가 Near(앞 모서리 0.30)라면 Near를 유지하되 파지 깊이를 보상으로 직접 잡아야 한다(GRASP_OFFSET를 큐브 윗면 기준으로 올리거나
+  tip_floor 기준 높이 상향). 그 전에 항목 하나씩 끄는 ablation(tilt → finger_force → gripper_settle 순)은 NoNear 조건(기준 배치)에서 돌려 91 %와 비교한다.
+
+### 큐브 NoNear+NoTilt ablation (5070, 2026-11-13 00:49, `curriculum_nonear_notilt_5070`, 2048 env, 6000 iter 완주) — tilt 보류
+- task `-Curriculum-NoNear-NoTilt-v0`(+`-Play`): NoNear 위에 `tilt`만 off(기울기 15° 초과 벌점 −5 커리큘럼 없음, 기본 `cube_tilt` −2는 유지).
+- 학습: 놓기(reach_placed)를 NoNear보다 1000 iter 빨리 배움(0.85 at 1000 vs 0.50 at 2000). 끝 EMA reach_success 0.75(NoNear 0.71), success 0.55/s(0.52).
+- 결정적 평가(128 env, model_5999):
+
+| 평가 | NoTilt 5999 | NoNear 5999 | 4000 계보 |
+|---|---|---|---|
+| 종료 포함 success | **118/128 (92 %)** (held 127 → placed 125 → released 124) | 99/128 (77 %) | 91 % |
+| 종료 시 리셋 success | **115/128 (90 %)** | 108/128 (84 %) | |
+| 첫 파지 손가락 끝 높이 / 윗면부터 겹침 | 2.0 cm / 7.7 cm | 4.5 cm / 5.0 cm | 2.6 cm |
+| 쥘 때 기울기 중앙값 / 최대 | 5.3° / 28° | 5.5° / 28° | |
+| 손가락−책상 접촉 env / 최대 힘 중앙값 | 78/128 / 7.1 N | 62/128 / 10.3 N | |
+| 운반 시간 중앙값 / 목표까지 xy | 0.9 s / 3.6 cm | 0.8 s / 6.3 cm | |
+| NearEnd(x 0.35~0.45, 학습 범위 밖) | 69/128 (54 %) | 61/128 (48 %) | |
+
+- 해석: (1) **tilt 벌점을 빼자 92 %로 4000 계보(91 %)와 같은 급**이 됐다. 기울기는 벌점 유무와 무관하게 중앙값 5°/최대 28°로 같다 → 벌점이
+  기울기를 줄이지 못한 채 성공률만 10~15 %p 깎고 있었다. tilt는 **보류**. (2) 파지 깊이 재해석: NoTilt는 2.0 cm로 run 2와 같다. 즉 NoNear의 4.5 cm는
+  Near를 뺀 효과가 아니라 "tilt 벌점 + 기준 배치"의 조합이었다(Near + tilt는 2.0, NoNear + tilt는 4.5, NoNear + no tilt는 2.0). 앞 절의 "Near가
+  깊은 파지 원인"은 철회한다. 깊은 파지는 이 계보의 기본 전략이고, 성공률과는 무관하게 책상 접촉(78/128)으로 남는다.
+- 다음: 남은 항목(finger_force → gripper_settle)을 NoNear+NoTilt 위에서 하나씩 뺀다. finger_force를 빼서 책상 접촉이 늘지 않으면 그것도 보류.
+
+### 큐브 NoNear+NoTilt+NoFinger ablation (5070, 2026-11-13 07:02, `curriculum_nonear_notilt_nofinger_5070`, 2048 env, 6000 iter 완주) — finger_force 유지
+- task `-Curriculum-NoNear-NoTilt-NoFinger-v0`(+`-Play`): 손가락−책상 힘 비례 벌점(−2)만 더 off, 기본 `finger_table` −5는 유지.
+  기준은 NoTilt 5999(92/90 %, 접촉 78/128, 최대 힘 7.1 N) — 성공률이 유지되고 접촉 env·힘이 늘지 않으면 finger_force도 보류.
+- 학습: 곡선은 NoTilt와 거의 같다(끝 200 iter 평균 reach_success EMA 0.70 vs 0.73, success 0.51/s vs 0.53, 기본 `finger_table` 벌점 −0.041/s vs −0.034/s).
+- 결정적 평가(128 env, model_5999):
+
+| 평가 | NoFinger 5999 | NoTilt 5999 |
+|---|---|---|
+| 종료 포함 success | 106/128 (83 %) (held 126 → placed 118 → released 115) | **118/128 (92 %)** |
+| 종료 시 리셋 success | 118/128 (92 %) | 115/128 (90 %) |
+| 첫 파지 손가락 끝 높이 | 2.4 cm (리셋 2.1) | 2.0 cm |
+| 쥘 때 기울기 중앙값 / 최대 | 4.8° / 21° | 5.3° / 28° |
+| 손가락−책상 접촉 env / 최대 힘 중앙값 | 73/128 / **11.3 N** (리셋 72/128 / **14.9 N**) | 78/128 / 7.1 N (리셋 79 / 8.5 N) |
+| 접촉 시간 중앙값 | 0.2 s | 0.1 s |
+| 운반 시간 중앙값 / 목표까지 xy | 0.9 s / 4.8 cm | 0.9 s / 3.6 cm |
+| NearEnd(x 0.35~0.45, 학습 범위 밖) | 99/128 (77 %), 접촉 107/128 / 14.7 N | 69/128 (54 %), 접촉 118/128 / 12.0 N |
+
+- 해석: 접촉하는 env 수(73 vs 78)는 그대로지만 **접촉력이 1.6~1.8배**(7.1 → 11.3 N, 리셋 모드 8.5 → 14.9 N)로 늘고 접촉 시간도 2배다. 힘 비례 벌점이
+  "닿더라도 세게 누르지 않게" 하는 역할은 하고 있었다. 종료 포함 성공률도 92 → 83 %로 떨어졌다(놓기 뒤 떨어뜨림·넘어뜨림 +7 env; 리셋 모드는 92 %로 같다).
+  NearEnd 77 %는 NoTilt 54 %보다 높지만 학습 범위 밖 평가라 한 run 차이로는 결론 안 냄. → **finger_force는 유지**. 실물 책상 접촉 안전(손가락 끝이
+  책상을 누르는 힘) 때문에도 남겨 둔다.
+- 다음: gripper_settle을 NoNear+NoTilt(finger_force on) 위에서 뺀다.
+
+### 큐브 NoNear+NoTilt+NoSettle ablation (5070, 2026-11-13 10:14, `curriculum_nonear_notilt_nosettle_5070`, 2048 env, 6000 iter 완주) — gripper_settle 유지
+- task `-Curriculum-NoNear-NoTilt-NoSettle-v0`(+`-Play`): 그리퍼 result 대기 0.8~1.2 s를 sim 기본 0.3~0.4 s로 되돌림(실물 그리퍼 지연 모사 off). finger_force 유지.
+  기준은 NoTilt 5999(92/90 %, 운반 0.9 s). settle이 짧으면 sim 성공률은 오르기 쉬우나 실물 그리퍼(0.8~1.2 s)와 어긋나므로, sim에서 같은 급이면
+  실물 지연이 있는 쪽(settle on)을 유지하고, settle on이 성공률을 크게 깎는 경우에만 폭을 좁히는 쪽으로 판단.
+- 학습: 2589 iter 시점에 NoTilt와 같은 곡선(mean reward 330 vs 339)이었으나 놓기(reach_placed ≥ 0.5)를 900 iter 늦게 배움(1513 vs 620).
+- 결정적 평가(128 env, model_5999):
+
+| 평가 | NoSettle 5999 | NoTilt 5999 |
+|---|---|---|
+| 종료 포함 success | 111/128 (87 %) (held 123 → placed 115 → released 114) | **118/128 (92 %)** |
+| 종료 시 리셋 success | 113/128 (88 %) | 115/128 (90 %) |
+| 쥘 때 기울기 중앙값 / 최대 | **12.9° / 41°** | 5.3° / 28° |
+| 손가락−책상 접촉 env / 최대 힘 중앙값 | 89/128 / 13.1 N (리셋 101 / 13.9 N) | 78/128 / 7.1 N |
+| HELD 중 OPEN 요청 비율 / PLACED 시간 | 21 % / 0.3 s | 74 % / 0.9 s |
+| NearEnd(x 0.35~0.45, 학습 범위 밖) | 24/128 (19 %) | 69/128 (54 %) |
+
+- 해석: settle을 짧게 해도 sim 성공률이 오르지 않고 오히려 5 %p 낮다. 기울기가 2배(13°), 책상 접촉도 늘었다. 그리퍼가 빨리 반응하니
+  정책이 놓기 전 미리 OPEN을 내는 습관(NoTilt 74 %)을 안 배우고 거칠게 다룬다. 실물 그리퍼 지연과도 어긋나므로 **gripper_settle(0.8~1.2 s) 유지**.
+- **ablation 결론(NoNear 기준 순서 tilt → finger_force → gripper_settle)**: 끌 것은 tilt뿐. 최종 조합 = `-Curriculum-NoNear-NoTilt-v0`
+  (critic_plus, drag_penalty, finger_force, gripper_settle on; tilt·carry_strict·near_ramp off) = 5999 92/90 %, 4000 계보와 같은 급.
+- 남은 질문: Near ramp는 run 2(전부 on, 80 %)가 낮았던 원인인지 tilt와 겹쳐서 못 가린 것인지 모른다. NoTilt 위에 Near만 켠
+  `-Curriculum-NoTilt-v0`(Near + tilt off) 한 run이면 Near를 배포에 쓸 수 있는지(x 0.35~0.65) 답이 나온다. 사용자 결정 뒤 진행.
+
+### 큐브 NoTilt (Near on) ablation (5070, 2026-11-13 12:42, `curriculum_notilt_5070`, 2048 env, 6000 iter) — 1250 iter에서 중단(13:14 메모리 부족으로 VSCode째 종료), 보류
+- task `-Curriculum-NoTilt-v0`(+`-Play`): 전부 on에서 tilt만 off = NoNear-NoTilt + Near 배치(앞 모서리 0.30)·x ramp(0.45~0.65 → 0.35~0.65, released 0.3 뒤).
+  cfg 확인: settle (0.8, 1.2), finger_force on, tilt_excess 없음, near_x ramp 있음, drag on.
+- 판단: 기본 범위 평가가 NoNear-NoTilt(92/90 %)와 같은 급이고 NearEnd(x 0.35~0.45)가 54 %보다 뚜렷이 높으면 Near를 최종 조합에 넣는다.
+  run 2처럼 80 %대로 떨어지면 Near ramp가 원인으로 확정되고 최종은 NoNear-NoTilt.

@@ -25,6 +25,14 @@ parser.add_argument("--task", default="Isaac-PickPlace-Cube-DualFR3-UMI-GripperB
 parser.add_argument("--checkpoint", required=True)
 parser.add_argument("--num_envs", type=int, default=128)
 parser.add_argument("--keep_terminations", action="store_true", help="keep drop/topple/off-table terminations")
+# stress conditions shared with eval_dual_fr3_pick_place_rule_based.py (rule-based vs RL, 2026-11-13)
+parser.add_argument("--seed", type=int, default=None, help="env seed (DR samples)")
+parser.add_argument("--corrupt", action="store_true", help="enable the policy observation corruption (Play cfgs turn it off)")
+parser.add_argument("--settle", type=float, nargs=2, default=None, help="gripper settle (command -> result) range [s]")
+parser.add_argument("--cube_mu", type=float, nargs=2, default=None, help="cube static friction range (dynamic = 0.85x)")
+parser.add_argument("--mass", type=float, nargs=2, default=None, help="cube mass range [kg]")
+parser.add_argument("--finger_scale", type=float, default=None, help="scale the finger PD stiffness DR range (squeeze force)")
+parser.add_argument("--kp_scale", type=float, default=None, help="arm PD stiffness scale")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 app = AppLauncher(args).app
@@ -43,6 +51,38 @@ env_cfg = load_cfg_from_registry(args.task, "env_cfg_entry_point")
 agent_cfg = handle_deprecated_rsl_rl_cfg(load_cfg_from_registry(args.task, "rsl_rl_cfg_entry_point"),
                                          metadata.version("rsl-rl-lib"))
 env_cfg.scene.num_envs = args.num_envs
+if args.seed is not None:
+    env_cfg.seed = args.seed
+
+
+def apply_conditions(cfg):
+    """--corrupt/--settle/--cube_mu/--mass/--finger_scale/--kp_scale on the env cfg (same code in the rule-based script)."""
+    if args.corrupt:
+        cfg.observations.policy.enable_corruption = True
+    if args.settle is not None:
+        cfg.actions.gripper_action.settle_range_s = tuple(args.settle)
+    if args.cube_mu is not None:
+        cfg.events.cube_friction.params.update(static_friction_range=tuple(args.cube_mu),
+                                               dynamic_friction_range=tuple(0.85 * v for v in args.cube_mu))
+    if args.mass is not None:
+        cfg.events.cube_mass.params["mass_distribution_params"] = tuple(args.mass)
+    if args.finger_scale is not None:
+        lo, hi = cfg.events.finger_gains.params["stiffness_distribution_params"]
+        cfg.events.finger_gains.params["stiffness_distribution_params"] = (lo * args.finger_scale, hi * args.finger_scale)
+    if args.kp_scale is not None:
+        acts = dict(cfg.scene.robot.actuators)
+        for k, a in acts.items():
+            if k != "hands":
+                st = a.stiffness
+                acts[k] = a.replace(stiffness={j: v * args.kp_scale for j, v in st.items()} if isinstance(st, dict) else st * args.kp_scale)
+        cfg.scene.robot = cfg.scene.robot.replace(actuators=acts)
+    print(f"[cfg] corruption {cfg.observations.policy.enable_corruption}, settle {getattr(cfg.actions.gripper_action, 'settle_range_s', None)},"
+          f" cube mu {cfg.events.cube_friction.params['static_friction_range']}, mass {cfg.events.cube_mass.params['mass_distribution_params']},"
+          f" finger stiffness scale {cfg.events.finger_gains.params['stiffness_distribution_params']}, arm kp scale {args.kp_scale},"
+          f" seed {cfg.seed}")
+
+
+apply_conditions(env_cfg)
 if not args.keep_terminations:
     for name in ("cube_dropped", "cube_toppled", "cube_off_table"):
         setattr(env_cfg.terminations, name, None)
