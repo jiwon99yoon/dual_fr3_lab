@@ -142,7 +142,8 @@ def _find_event(events: dict, *, func_suffix: str, asset: str = "object") -> dic
 def start_info(env: dict, joint_names: list[str], root_pos: list[float]) -> tuple[dict, dict]:
     """``manifest["start"]`` and the arrays to embed for it (see the module docstring)."""
     event = next((e for e in env["events"].values() if isinstance(e, dict)
-                  and str(e.get("func", "")).endswith(":reset_from_pregrasp_table")), None)
+                  and str(e.get("func", "")).endswith((":reset_from_pregrasp_table", ":reset_from_pregrasp_or_hover"))),
+                 None)
     if event is None:
         return {"mode": "ready_pose"}, {}
     params = event["params"]
@@ -170,6 +171,21 @@ def start_info(env: dict, joint_names: list[str], root_pos: list[float]) -> tupl
         "joint_noise_rad": float(params["joint_noise"]),
         "arrays": {"joint_position": "pregrasp_joint_position", "box_pose_base": "pregrasp_box_pose_base"},
     }
+    if str(event["func"]).endswith(":reset_from_pregrasp_or_hover"):
+        # -Curriculum: the run also started from one fixed hover pose (plates above the box, box on the floor in
+        # box_x/y_range). Either start is valid for the policy; the robot chooses one (table row via MoveIt, or hover)
+        q = {"left": list(params["q_left"]), "right": list(params["q_right"])}
+        hover_q = []
+        for name in joint_names:
+            side, num = ("left" if name.startswith("left") else "right"), int(name[-1])
+            hover_q.append(float(q[side][num - 1]))
+        start["hover"] = {
+            "joint_position": hover_q,
+            "box_x_range_base": [float(params["box_x_range"][0]) - root_pos[0], float(params["box_x_range"][1]) - root_pos[0]],
+            "box_y_range_base": [float(params["box_y_range"][0]) - root_pos[1], float(params["box_y_range"][1]) - root_pos[1]],
+            "box_yaw_range_rad": [-float(params["box_yaw"]), float(params["box_yaw"])],
+            "joint_noise_rad": float(params["joint_noise"]),
+        }
     # the box starts at a table row plus the reset noise, not in the object reset event's range (which the table
     # reset overwrites): the start ranges come from the table
     qx, qy, qz, qw = box_pose[:, 3:7].T
@@ -197,7 +213,9 @@ def build_manifest(env: dict, agent: dict, checkpoint: Path, env_yaml: Path, che
     policy_obs = env["observations"]["policy"]
     terms = [(name, str(term["func"]).split(":")[-1]) for name, term in policy_obs.items()
              if isinstance(term, dict) and "func" in term]
-    dropout = {name for name, func in terms if func == _DROPOUT_TERM_FUNCS.get(name)}
+    # -Curriculum camera_bias: dropout + a sim-only per-episode pose offset (the robot's real bias is the real input)
+    dropout = {name for name, func in terms
+               if name in _DROPOUT_TERM_FUNCS and func in (_DROPOUT_TERM_FUNCS[name], _DROPOUT_TERM_FUNCS[name] + "_biased")}
     _require(dropout in (set(), set(_DROPOUT_TERM_FUNCS)), f"box position and orientation must both have dropout or neither, got {dropout}")
     terms = [(name, _TERM_FUNCS[name] if name in dropout or func == _DR_TERM_FUNCS.get(name) else func)
              for name, func in terms]
@@ -249,7 +267,9 @@ def build_manifest(env: dict, agent: dict, checkpoint: Path, env_yaml: Path, che
     command_class = str(command["class_type"])
     if command_class.endswith(":VerticalLiftPoseCommand"):
         goal_xy = {"xy_offset_range_base": {"x": [0.0, 0.0], "y": [0.0, 0.0]}}
-    elif command_class.endswith(":UniformPoseCommand"):
+    elif command_class.endswith((":UniformPoseCommand", ":MixedGoalXYPoseCommand")):
+        # MixedGoalXY (-Curriculum) blends vertical -> independent goal x/y during training; its final state (scale 1)
+        # is UniformPoseCommand, which the trained policy ends on
         goal_xy = {"xy_range_base": {"x": _pair(ranges["pos_x"], "pos_x"), "y": _pair(ranges["pos_y"], "pos_y")}}
     else:
         _require(False, f"unsupported goal command {command_class}")

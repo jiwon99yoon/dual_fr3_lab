@@ -139,6 +139,44 @@ ablation 절차를 따른다. 5070과 4090이 같은 코드로 서로 다른 abl
 - 조치(run 2): §1 단계 스케줄러(성공률 기준 0.10/0.20/0.30, 순서, 멈춤, shaping a/b 분리, ramp 2배). 4090이 pull 뒤 `-Curriculum-v0` 재시작,
   `-History-v0`는 그 뒤.
 
+### 박스 run 2 (4090, 2026-11-12 15:54, `curriculum_all_4090_v2`, 21ef198, 4096 env, 6000 iter) — 실로봇 후보
+
+`logs/rsl_rl/dual_fr3_plate_lift_sim2real_100hz_light_pregrasp_wide_rollalign_curriculum/2026-11-12_15-54-59_curriculum_all_4090_v2`
+
+| iter | 학습 성공률(`schedule/success_rate`) | 끝난 단계 | 비고 |
+|---|---|---|---|
+| 500 | 0.43 | 0 | shaping ramp 중 |
+| 1000 | 0.66 | 2 | goal xy 0.66 |
+| 1500 | 0.66 | 3 | 마찰 0.46 |
+| 2000 | **0.25** | 3 | 마찰 0.95: 낮은 마찰이 병목 |
+| 2500~3750 | 0.26~0.30 | 4 | 호버 0.40 → 0.50, 기준 0.30 근처에서 멈춤·재개 |
+| ~5000 | 0.33 | 5 | 호버 1.0 (이후 학습은 전부 호버 시작, `hover_mix`는 호버 확률) |
+| 5999 | 0.51 | 5 | |
+
+model_5999 결정적 평가(`eval_dual_fr3_plate_robustness.py`, seed 42, 커리큘럼 최종 상태, 성공 = goal 거리·기울기 15°·양판 접촉을 연속 25 step(1.25 s)):
+
+| 조건 | env | 성공 (goal 10 cm) | 성공 (goal 5 cm, `--success_d 0.05`) | drop / 놓침 | TTS 중앙 (10 / 5 cm) | 판 힘 판당 중앙 / 최대 | 판 높이 차 중앙 |
+|---|---|---|---|---|---|---|---|
+| `-Play-Table` (표 시작, 5499와 같은 시작) | 128 | **97.7%** | **87.5%** | 0 / 1 | 3.20 / 3.50 s | 18.6 / 36 N | 3.6 cm |
+| `-Play-Hover` (호버 시작) | 128 | **99.2%** | **86.7%** | 0 / 1 | 3.45 / 3.80 s | 18.0 / 29 N | 2.1 cm |
+| `-Play` (반반) | 256 | 98.8% | | 0 / 3 | 3.35 s | 18.3 / 63 N | 3.0 cm |
+
+- 들고 있을 때 goal 오차 중앙 7.7~7.8 cm, yaw 오차 1.7~2.2°. 들고 있는 시간 중 goal 5 cm 안 비율 0.50~0.53, 10 cm 안 0.63~0.66.
+- 호버 시작은 첫 양판 접촉 시차가 크다(중앙 0.15 s, p95 0.40 s; 표 시작 0.10 / 0.15 s). 실물에서 한 판이 먼저 박스를 미는지 볼 것.
+- `box_slip_probe.py --mu 0.0`(512 env, 1.5 s에 0.3 s): 99%가 바닥까지 낙하, **다시 듦 53%**(Table) / **73%**(반반). 이전 계열(2999, Regrasp 포함) 0%.
+- 영상(`record_views.py`, 각 4 에피소드): run 폴더 `videos/model_{4200,5999}_{table,hover}_ep4.mp4`. 5999는 8 에피소드 모두 유지, goal 최소 1.6~3.7 cm, 기울기 평균 1~2°.
+- export: `exports/dual_fr3_boxlift_pregrasp_wide_rollalign_curriculum_v2_model5999.npz`(torch 대비 max |diff| 3.3e-6). manifest `start`는
+  `pregrasp_table`(3956줄)에 `start.hover`(고정 관절값 14, 박스 x 0.40~0.50, y ±0.10, yaw ±0.1)가 붙고, goal은 `xy_range_base`
+  (x 0.40~0.50, y ±0.10), 에피소드 6 s. 배포 노드에 호버 시작 모드(고정 관절값으로 이동 뒤 `start_policy`)가 필요하다.
+
+### 박스 History (4090, 2026-11-13 00:53, `curriculum_history_4090`, 21ef198, 6000 iter) — 관측 history 4 step
+
+- 학습: 낮은 마찰 직후 성공률 하락이 작았다(2000 it v2 0.25 vs History 0.53). 모든 단계 완료가 약 1500 iter 빨랐다(3500 vs ~5000). 최종 학습 성공률은 같다(0.51).
+- model_5999, v2와 같은 조건(`-Play` / `-History-Play` 반반, 256 env, seed 42): 성공 100% vs v2 98.8%(3 env 차이, 유의하지 않음), drop 0.
+- 미끄럼(`--mu 0.0`, 반반): 다시 듦 **40%** vs v2 73%, 미끄럼 뒤 최대 기울기 중앙 21° vs 13°, 끝에 성공 구역 16% vs 63%.
+- 판단: history 4 step은 학습 속도에만 이득, 최종 정책은 미끄럼 대처가 나쁘다(Peng 2018의 FF+history ≈ FF와 같은 방향). 실물 후보는 v2.
+  배포하려면 노드에 4 step 관측 버퍼도 필요하다.
+
 ### 큐브 run 1 (5070, 2026-11-12 14:00, `curriculum_all_5070`, 2048 env, 1380 iter에서 중단) — carry_strict 보류
 - iter ~500 reach_held 0.9 (들기 습득, 기울기 벌점 −5 켜짐), 560~680 reach_placed 0.10 → 0.31.
 - iter 680 placed EMA 0.3을 넘자 carry_strict·Near x ramp·action/joint_vel/arm_contact 벌점(−0.1/−1)이 같은 iter에 켜짐 →

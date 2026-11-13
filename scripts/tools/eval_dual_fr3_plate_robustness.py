@@ -40,6 +40,7 @@ parser.add_argument("--checkpoint", type=str, required=True)
 parser.add_argument("--num_envs", type=int, default=32)
 parser.add_argument("--episodes", type=int, default=4, help="에피소드 사이클 수 (사이클당 5s x num_envs)")
 parser.add_argument("--seed", type=int, default=42, help="평가 env/DR seed. 음수면 cfg 기본값 사용")
+parser.add_argument("--success_d", type=float, default=0.10, help="성공·정밀 유지의 goal 거리 기준 [m] (기본 0.10)")
 parser.add_argument(
     "--disturbance_scale",
     type=float,
@@ -88,18 +89,23 @@ from dual_fr3_lab.tasks.manager_based.lift_plate.joint_pos_env_cfg import LIFT_D
 from dual_fr3_lab.tasks.manager_based.lift_plate.agents.rsl_rl_ppo_cfg import LiftPlateV2PPORunnerCfg
 from isaaclab_tasks.utils import parse_env_cfg
 
-SUCCESS_D = 0.10  # goal 10cm 이내면 "정밀 유지"로 카운트 (P7 success 설계와 동일 기준)
+SUCCESS_D = args_cli.success_d  # goal 거리 기준 (기본 10cm, P7 success 설계와 동일). --success_d로 바꿈
 UPRIGHT_TILT = 0.034  # 1 - cos(15도): 이보다 작으면 "수평"
 YAW_ALIGN = 0.2618  # 15도(rad): 박스 x축이 base x축과 이보다 가까우면 "정렬" [0804 똑바로들기]
 YAW_STRICT = 0.174533  # 10도(rad): P38 목표
-SUCCESS_HOLD_STEPS = 25  # 0.5s @ 50Hz
+SUCCESS_HOLD_STEPS = 25  # 연속 25 step (50 Hz task 0.5 s, 20 Hz task 1.25 s)
 CONTACT_THRESHOLD = 1.0  # N, 학습의 bilateral grasp gate와 동일
 OBJECT_FILTER_IDX = 0
 
 
+def _T(x):
+    """Isaac Lab 3 asset/sensor data는 ProxyArray(.torch)다. 옛 버전의 torch.Tensor는 그대로."""
+    return x.torch if hasattr(x, "torch") else x
+
+
 def _object_contact_force(sensor, filter_idx: int = OBJECT_FILTER_IDX) -> torch.Tensor:
     """Object-filtered per-env contact-force magnitude, matching the P39 reward semantics."""
-    matrix = sensor.data.force_matrix_w
+    matrix = _T(sensor.data.force_matrix_w)
     if matrix is None or matrix.ndim != 4:
         shape = None if matrix is None else tuple(matrix.shape)
         raise RuntimeError(f"{sensor.cfg.prim_path}: expected force_matrix_w (N,B,M,3), got {shape}")
@@ -127,7 +133,19 @@ def main():
     env = gym.make(args_cli.task, cfg=env_cfg)
     wrapped = RslRlVecEnvWrapper(env)
 
-    agent_dict = LiftPlateV2PPORunnerCfg().to_dict()
+    # task에 등록된 runner cfg (actor 분포·critic 그룹이 checkpoint와 맞아야 한다). 등록이 없으면 옛 V2 cfg
+    try:
+        import importlib.metadata as _metadata
+
+        from isaaclab_rl.rsl_rl import handle_deprecated_rsl_rl_cfg
+        from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
+
+        agent_dict = handle_deprecated_rsl_rl_cfg(
+            load_cfg_from_registry(args_cli.task, "rsl_rl_cfg_entry_point"), _metadata.version("rsl-rl-lib")
+        ).to_dict()
+    except Exception as _e:  # noqa: BLE001
+        print(f"[compat] task runner cfg를 못 읽어 LiftPlateV2PPORunnerCfg 사용: {_e}")
+        agent_dict = LiftPlateV2PPORunnerCfg().to_dict()
     # rsl_rl 버전 호환: isaaclab_rl(2.3+) cfg의 미지 키(optimizer 등)를 PPO 시그니처 기준 제거
     try:
         import inspect as _inspect
@@ -224,7 +242,7 @@ def main():
     ep_grasp_loss_count = torch.zeros(num_envs, dtype=torch.long, device=eval_device)
     bilateral_joint_path_left = torch.zeros((num_envs, 7), device=eval_device)
     bilateral_joint_path_right = torch.zeros((num_envs, 7), device=eval_device)
-    prev_joint_pos = robot_asset.data.joint_pos.clone()
+    prev_joint_pos = _T(robot_asset.data.joint_pos).clone()
     base_streak = torch.zeros(num_envs, dtype=torch.long, device=eval_device)
     yaw10_streak = torch.zeros(num_envs, dtype=torch.long, device=eval_device)
     yaw15_streak = torch.zeros(num_envs, dtype=torch.long, device=eval_device)
@@ -270,7 +288,7 @@ def main():
         bilateral_total_steps += int(bilateral_pre.sum().item())
 
         # Once an actual same-step bilateral contact occurred, track joint travel (not net displacement).
-        joint_pos_pre = robot_asset.data.joint_pos
+        joint_pos_pre = _T(robot_asset.data.joint_pos)
         joint_travel = (joint_pos_pre - prev_joint_pos).abs()
         bilateral_joint_path_left += joint_travel[:, left_joint_ids] * bilateral_phase_before.unsqueeze(-1).float()
         bilateral_joint_path_right += joint_travel[:, right_joint_ids] * bilateral_phase_before.unsqueeze(-1).float()
@@ -278,7 +296,7 @@ def main():
         ep_had_bilateral |= bilateral_pre
 
         obj_pre = uenv.scene["object"]
-        lifted_pre = obj_pre.data.root_pos_w[:, 2] > _box_halves(uenv)[1] + LIFT_DELTA
+        lifted_pre = _T(obj_pre.data.root_pos_w)[:, 2] > _box_halves(uenv)[1] + LIFT_DELTA
         hold_pre = lifted_pre & bilateral_pre
         loss_now = prev_sample_hold & lifted_pre & ~bilateral_pre
         grasp_loss_events += int(loss_now.sum().item())
@@ -294,11 +312,11 @@ def main():
         obj = uenv.scene["object"]
         # goal (base frame) -> world
         cmd = uenv.command_manager.get_command("object_pose")[:, :3]
-        goal_w, _ = combine_frame_transforms(robot.data.root_pos_w, robot.data.root_quat_w, cmd)
-        err = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
+        goal_w, _ = combine_frame_transforms(_T(robot.data.root_pos_w), _T(robot.data.root_quat_w), cmd)
+        err = torch.norm(goal_w - _T(obj.data.root_pos_w), dim=1)
         # env별 판정 높이 (안착 중심 + LIFT_DELTA)
         half_z = _box_halves(uenv)[1]
-        lifted = (obj.data.root_pos_w[:, 2] > half_z + LIFT_DELTA).float()
+        lifted = (_T(obj.data.root_pos_w)[:, 2] > half_z + LIFT_DELTA).float()
         grasped = mdp.object_grasped(
             uenv, f1, f2, threshold=CONTACT_THRESHOLD, filter_idx=OBJECT_FILTER_IDX
         )
@@ -306,14 +324,14 @@ def main():
         left_force = _object_contact_force(left_sensor)
         right_force = _object_contact_force(right_sensor)
         # 박스 기울기 (1 - z_box·z_world)
-        z_axis = torch.zeros_like(obj.data.root_pos_w)
+        z_axis = torch.zeros_like(_T(obj.data.root_pos_w))
         z_axis[:, 2] = 1.0
-        tilt = 1.0 - quat_apply(obj.data.root_quat_w, z_axis)[:, 2]
+        tilt = 1.0 - quat_apply(_T(obj.data.root_quat_w), z_axis)[:, 2]
         # 박스 yaw 정렬 오차 [0804]: 박스 로컬 x축 vs base 로컬 x축의 수평면 각도 (0=완전 정렬)
-        x_axis = torch.zeros_like(obj.data.root_pos_w)
+        x_axis = torch.zeros_like(_T(obj.data.root_pos_w))
         x_axis[:, 0] = 1.0
-        bx = quat_apply(obj.data.root_quat_w, x_axis)  # 박스 x (world)
-        rx = quat_apply(robot.data.root_quat_w, x_axis)  # base x (world)
+        bx = quat_apply(_T(obj.data.root_quat_w), x_axis)  # 박스 x (world)
+        rx = quat_apply(_T(robot.data.root_quat_w), x_axis)  # base x (world)
         yaw_signed = torch.atan2(
             bx[:, 0] * rx[:, 1] - bx[:, 1] * rx[:, 0], bx[:, 0] * rx[:, 0] + bx[:, 1] * rx[:, 1]
         )
@@ -322,17 +340,17 @@ def main():
         ee = uenv.scene["ee_frame"]
         _names = ee.data.target_frame_names
         _li, _ri = _names.index("left_ee"), _names.index("right_ee")
-        grip = ee.data.target_pos_w[:, _ri] - ee.data.target_pos_w[:, _li]  # 오른-왼 (world)
-        y_axis = torch.zeros_like(obj.data.root_pos_w)
+        grip = _T(ee.data.target_pos_w)[:, _ri] - _T(ee.data.target_pos_w)[:, _li]  # 오른-왼 (world)
+        y_axis = torch.zeros_like(_T(obj.data.root_pos_w))
         y_axis[:, 1] = 1.0
-        ry = quat_apply(robot.data.root_quat_w, y_axis)  # base +y (world)
+        ry = quat_apply(_T(robot.data.root_quat_w), y_axis)  # base +y (world)
         grip_yaw_raw = torch.atan2(
             grip[:, 0] * ry[:, 1] - grip[:, 1] * ry[:, 0], grip[:, 0] * ry[:, 0] + grip[:, 1] * ry[:, 1]
         ).abs()
         grip_off = torch.minimum(grip_yaw_raw, torch.pi - grip_yaw_raw)
-        plate_height_diff = (ee.data.target_pos_w[:, _li, 2] - ee.data.target_pos_w[:, _ri, 2]).abs()
-        q_left_post = robot.data.joint_pos[:, left_joint_ids]
-        q_right_post = robot.data.joint_pos[:, right_joint_ids]
+        plate_height_diff = (_T(ee.data.target_pos_w)[:, _li, 2] - _T(ee.data.target_pos_w)[:, _ri, 2]).abs()
+        q_left_post = _T(robot.data.joint_pos)[:, left_joint_ids]
+        q_right_post = _T(robot.data.joint_pos)[:, right_joint_ids]
         q_right_mirror_expected = q_left_post * mirror_signs
         mirror_error_post = torch.atan2(
             torch.sin(q_right_post - q_right_mirror_expected),
@@ -360,7 +378,7 @@ def main():
             mirror_error_hold_samples.append(mirror_error_post[hold_b].abs().detach().cpu())
             left_joint_hold_samples.append(q_left_post[hold_b].detach().cpu())
             right_joint_hold_samples.append(q_right_post[hold_b].detach().cpu())
-            box_pos_err_hold_samples.append((obj.data.root_pos_w - goal_w)[hold_b].detach().cpu())
+            box_pos_err_hold_samples.append((_T(obj.data.root_pos_w) - goal_w)[hold_b].detach().cpu())
             grip_off_hold_samples.append(grip_off[hold_b].detach().cpu())
 
         episode_step[active] += 1
@@ -410,10 +428,10 @@ def main():
                                 mirror_error_post[env_id, joint_idx].item() * 57.2957795
                             ),
                             f"left_j{joint_num}_dq_rad_s": float(
-                                robot.data.joint_vel[env_id, left_joint_ids[joint_idx]].item()
+                                _T(robot.data.joint_vel)[env_id, left_joint_ids[joint_idx]].item()
                             ),
                             f"right_j{joint_num}_dq_rad_s": float(
-                                robot.data.joint_vel[env_id, right_joint_ids[joint_idx]].item()
+                                _T(robot.data.joint_vel)[env_id, right_joint_ids[joint_idx]].item()
                             ),
                             f"left_j{joint_num}_raw_action": float(action_left[env_id, joint_idx].item()),
                             f"right_j{joint_num}_raw_action": float(action_right[env_id, joint_idx].item()),
@@ -501,7 +519,7 @@ def main():
             bilateral_joint_path_left[dones_b] = 0.0
             bilateral_joint_path_right[dones_b] = 0.0
             prev_sample_hold[dones_b] = False
-            prev_joint_pos[dones_b] = robot.data.joint_pos[dones_b]
+            prev_joint_pos[dones_b] = _T(robot.data.joint_pos)[dones_b]
             base_streak[dones_b] = 0
             yaw10_streak[dones_b] = 0
             yaw15_streak[dones_b] = 0
