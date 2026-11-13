@@ -199,6 +199,25 @@ model_5999 결정적 평가(`eval_dual_fr3_plate_robustness.py`, seed 42, 커리
 - sim 평가: 각 model_5999를 (a) 자기 `-<Ablation>-Play-v0`(학습 조건), (b) v2 `-Play-v0`(지연 전부 on) 두 곳에서 같은 도구·seed로 본다. 실물 측정 지연 분포를 넣은 평가 env는 bag 분석 뒤 추가.
 - 확인(5070, 11-13): cfg 8개(v2/3 ablation × 학습/Play), NoDelay·NoJointDelay env smoke(관측 56/70D, NoDelay 박스 관측 = 실제 pose + 오프셋 오차 0, 꺼진 지연의 critic 값 0), NoVisionDelay 학습 3 iter.
 
+### 박스 지연 ablation (4090, 2026-11-13, d5cfdec, 4096 env, 6000 iter, seed 42) — KRoC
+
+run: `2026-11-13_17-04-54_curriculum_nodelay_4090`(완료), `..._curriculum_novisiondelay_4090`, `..._curriculum_nojointdelay_4090`(진행 중).
+
+학습(확률적 행동 성공률): 저마찰 단계(2000 it) v2 0.25 / NoDelay 0.69 / NoVisionDelay 0.60. 모든 단계 완료 v2 4517 it / NoDelay 3723 it.
+최종 학습 성공률 v2 0.51 / NoDelay 0.55. → 저마찰 단계의 붕괴는 주로 비전 지연 때문.
+
+model_5999 결정적 평가(반반 시작, 256 env, seed 42, 성공 10 cm / 5 cm):
+
+| 정책 \ 평가 | 지연 없음(`-NoDelay-Play`) | 지연 있음(`-Play`) |
+|---|---|---|
+| v2 | 97.3 / 81.2%, 놓침 7, goal 오차 7.4 cm | 98.8 / 82.8%, 놓침 3, 8.0 cm |
+| NoDelay | **100 / 96.9%**, 놓침 1, 6.6 cm | 89.1 / 83.6%, **놓침 48**, 낙하 1, 8.4 cm |
+
+- 미끄럼(`--mu 0.0`, 지연 있음): 다시 듦 NoDelay 78% / v2 73%, 미끄럼 뒤 최대 기울기 중앙 20.5° / 13°, 끝에 성공 구역 63% / 63%.
+- 해석: 지연 DR은 정밀도(5 cm 기준 약 15%p)를 내주고 지연 강건성(놓침 1/16)을 얻는다. v2는 지연을 빼도 정밀도가 오르지 않는다.
+  실물(비전 지연 35~90 ms) 후보는 v2 유지.
+- 로그: `logs/eval_stdout/boxcurr_nodelay_5999_*.log`, `boxcurr_v2_5999_nodelayenv_*.log`, `boxcurr_v2_5999_mixed_0.05.log`.
+
 ### 큐브 run 1 (5070, 2026-11-12 14:00, `curriculum_all_5070`, 2048 env, 1380 iter에서 중단) — carry_strict 보류
 - iter ~500 reach_held 0.9 (들기 습득, 기울기 벌점 −5 켜짐), 560~680 reach_placed 0.10 → 0.31.
 - iter 680 placed EMA 0.3을 넘자 carry_strict·Near x ramp·action/joint_vel/arm_contact 벌점(−0.1/−1)이 같은 iter에 켜짐 →
